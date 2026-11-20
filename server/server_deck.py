@@ -16,8 +16,8 @@ DB_PATH = os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.d
 AGENT_API_PATH = os.path.expanduser("~/.gemini/antigravity-cli/bin/agentapi")
 FLUTTER_WEB_DIR = os.path.expanduser("~/agy_remote/web")
 PORT = int(os.environ.get("AGY_PORT", 8768))
-AUTH_TOKEN = os.environ.get("AGY_AUTH_TOKEN", "change_me_to_your_token")
-WINDOWS_HOST = os.environ.get("AGY_WINDOWS_HOST", "192.168.1.100:8765")
+AUTH_TOKEN = os.environ.get("AGY_AUTH_TOKEN", "tetra2026")
+WINDOWS_HOST = os.environ.get("AGY_WINDOWS_HOST", "192.168.0.22:8765")
 
 connected_ws_clients = set()
 current_active_session_id = None
@@ -131,6 +131,8 @@ def list_workspace_files(base_dir, sub_path=""):
 
     return {"current_path": sub_path.replace("\\", "/"), "items": items[:80]}
 
+IGNORED_MSG_TYPES = {"GENERIC", "SYSTEM_MESSAGE", "CHECKPOINT", "STATUS_UPDATE", "TASK_NOTIFICATION", "USER_APPROVAL_RESPONSE"}
+
 def clean_display_content(raw_text):
     if not raw_text:
         return ""
@@ -139,7 +141,17 @@ def clean_display_content(raw_text):
         return user_match.group(1).strip()
     cleaned = re.sub(r"<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>", "", raw_text, flags=re.DOTALL)
     cleaned = re.sub(r"<SYSTEM_MESSAGE>.*?</SYSTEM_MESSAGE>", "", cleaned, flags=re.DOTALL)
-    return cleaned.strip()
+    cleaned = re.sub(r"<INSTRUCTIONS>.*?</INSTRUCTIONS>", "", cleaned, flags=re.DOTALL)
+
+    # 彻底拦截系统注入与控制台爆日志
+    if "The following is a" in cleaned or "<SYSTEM_MESSAGE>" in cleaned or "YOU MUST TAKE ONE OF THE FOLLOWING TWO ACTIONS" in cleaned:
+        return ""
+
+    stripped = cleaned.strip()
+    if stripped.startswith("Created At: 202") and ("Command output:" in stripped or "Command exited with code" in stripped or "Tool is running as a background task" in stripped or "cancelled" in stripped or "Task Description:" in stripped or "Log output:" in stripped):
+        return ""
+
+    return stripped
 
 def get_latest_transcript_path():
     pattern = os.path.join(BRAIN_DIR, "*", ".system_generated", "logs", "transcript.jsonl")
@@ -198,14 +210,23 @@ def load_session_history(session_file, max_lines=40):
                     continue
                 try:
                     record = json.loads(line)
+                    msg_type = record.get("type", "")
+                    if msg_type in IGNORED_MSG_TYPES:
+                        continue
+
                     raw_content = record.get("content", "")
                     content = clean_display_content(raw_content)
                     thinking = record.get("thinking", "")
                     tool_calls = record.get("tool_calls", [])
+
+                    if not content and not thinking and not tool_calls:
+                        continue
+
                     history.append({
                         "step_index": record.get("step_index", 0),
-                        "source": record.get("source", ""),
-                        "type": record.get("type", ""),
+                        "source": record.get("source", "AGENT"),
+                        "msg_type": msg_type,
+                        "type": msg_type,
                         "status": record.get("status", ""),
                         "content": content,
                         "thinking": thinking,
@@ -262,16 +283,25 @@ async def tail_transcript():
                     if line:
                         try:
                             record = json.loads(line)
+                            msg_type = record.get("type", "UNKNOWN")
+                            if msg_type in IGNORED_MSG_TYPES:
+                                continue
+
                             raw_content = record.get("content", "")
                             content = clean_display_content(raw_content)
                             thinking = record.get("thinking", "")
                             tool_calls = record.get("tool_calls", [])
+
+                            if not content and not thinking and not tool_calls:
+                                continue
+
                             await broadcast_message({
                                 "type": "agent_update",
                                 "session_id": current_active_session_id,
                                 "step_index": record.get("step_index", 0),
-                                "source": record.get("source", ""),
-                                "msg_type": record.get("type", ""),
+                                "source": record.get("source", "AGENT"),
+                                "msg_type": msg_type,
+                                "type": msg_type,
                                 "status": record.get("status", ""),
                                 "content": content,
                                 "thinking": thinking,
@@ -296,6 +326,16 @@ async def proxy_windows_ws(request, ws_client):
         async with aiohttp.ClientSession() as session:
             async with session.ws_connect(win_ws_url) as win_ws:
                 print(f"[Proxy] 成功与 Windows WS ({WINDOWS_HOST}) 建立隧道连接！")
+                try:
+                    await ws_client.send_json({
+                        "type": "nodes_status",
+                        "nodes": [
+                            {"id": "deck", "name": "Steam Deck", "online": True},
+                            {"id": "windows", "name": "Windows PC", "online": True}
+                        ]
+                    })
+                except Exception:
+                    pass
                 
                 async def client_to_win():
                     async for msg in ws_client:
@@ -321,9 +361,15 @@ async def proxy_windows_ws(request, ws_client):
         print(f"[-] 代理至 Windows PC 失败: {e}")
         try:
             await ws_client.send_json({
-                "type": "prompt_ack",
-                "status": "error",
-                "error": f"无法连接到 Windows 主力机 ({WINDOWS_HOST}): {e}"
+                "type": "nodes_status",
+                "nodes": [
+                    {"id": "deck", "name": "Steam Deck", "online": True},
+                    {"id": "windows", "name": "Windows PC", "online": False}
+                ]
+            })
+            await ws_client.send_json({
+                "type": "node_offline",
+                "msg": f"无法连接到 Windows 主力机 ({WINDOWS_HOST}): {e}"
             })
         except Exception:
             pass
@@ -363,7 +409,34 @@ async def websocket_handler(request):
 
     history = load_session_history(current_active_file, max_lines=40) if current_active_file else []
     data_tree = get_grouped_sessions()
+    win_online = await is_windows_alive()
 
+    # 1. 握手与连接成功确认
+    await ws.send_json({
+        "type": "connected",
+        "active_session": current_active_session_id or "unknown",
+        "node": "deck",
+        "msg": "Connected to Steam Deck Hub!"
+    })
+
+    # 2. 双机节点在线状态推送
+    await ws.send_json({
+        "type": "nodes_status",
+        "nodes": [
+            {"id": "deck", "name": "Steam Deck", "online": True},
+            {"id": "windows", "name": "Windows PC", "online": win_online}
+        ]
+    })
+
+    # 3. 会话树
+    await ws.send_json({
+        "type": "session_tree",
+        "projects": data_tree["projects"],
+        "general_sessions": data_tree["general_sessions"],
+        "current": current_active_session_id
+    })
+
+    # 4. 兼容老版本 init
     await ws.send_json({
         "type": "init",
         "session_id": current_active_session_id or "unknown",
@@ -389,6 +462,16 @@ async def websocket_handler(request):
                     if action == "ping":
                         await ws.send_json({"type": "pong", "time": time.time()})
 
+                    elif action == "get_nodes":
+                        win_online = await is_windows_alive()
+                        await ws.send_json({
+                            "type": "nodes_status",
+                            "nodes": [
+                                {"id": "deck", "name": "Steam Deck", "online": True},
+                                {"id": "windows", "name": "Windows PC", "online": win_online}
+                            ]
+                        })
+
                     elif action == "prompt":
                         content = data.get("content", "").strip()
                         session_id = data.get("session_id") or current_active_session_id
@@ -399,6 +482,19 @@ async def websocket_handler(request):
                                 "status": "ok" if ok else "error",
                                 "error": err_msg if not ok else ""
                             })
+
+                    elif action == "stop":
+                        target_id = data.get("session_id") or current_active_session_id
+                        print(f"[*] Deck 收到停止指令: 会话 {target_id}")
+                        await broadcast_message({
+                            "type": "stopped",
+                            "session_id": target_id
+                        })
+                        await ws.send_json({
+                            "type": "stop_ack",
+                            "status": "ok",
+                            "session_id": target_id
+                        })
 
                     elif action == "delete_session":
                         del_id = data.get("session_id")
@@ -433,8 +529,12 @@ async def websocket_handler(request):
 
                     elif action == "new_session":
                         content = data.get("content", "你好，开始新任务").strip()
-                        model = data.get("model", "flash")
-                        mode = data.get("mode", "auto")
+                        raw_model = data.get("model", "gemini-3.8-flash-high").strip().lower()
+                        valid_models = {
+                            "gemini-3.8-flash-high", "claude-3-7-sonnet", "claude-3-7-opus",
+                            "gpt-oss-120b", "flash", "pro", "flash_lite"
+                        }
+                        model = raw_model if raw_model in valid_models else "gemini-3.8-flash-high"
 
                         cmd = [AGENT_API_PATH, "new-conversation", f"--model={model}", content]
                         if not os.path.exists(AGENT_API_PATH):
@@ -442,11 +542,28 @@ async def websocket_handler(request):
 
                         try:
                             res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=12)
+                            out_text = res.stdout.strip()
+                            new_cid = ""
+                            if res.returncode == 0:
+                                try:
+                                    parsed = json.loads(out_text)
+                                    new_cid = parsed.get("response", {}).get("newConversation", {}).get("conversationId", "")
+                                except Exception:
+                                    pass
                             await ws.send_json({
                                 "type": "new_session_ack",
                                 "status": "ok" if res.returncode == 0 else "error",
+                                "session_id": new_cid,
                                 "error": res.stderr.strip() if res.returncode != 0 else ""
                             })
+                            if new_cid:
+                                data_tree = get_grouped_sessions()
+                                await broadcast_message({
+                                    "type": "session_tree",
+                                    "projects": data_tree["projects"],
+                                    "general_sessions": data_tree["general_sessions"],
+                                    "current": new_cid
+                                })
                         except Exception as e:
                             await ws.send_json({"type": "new_session_ack", "status": "error", "error": str(e)})
 
@@ -574,6 +691,59 @@ async def websocket_handler(request):
                                 "error": str(e)
                             })
 
+                    elif action == "get_artifacts":
+                        target_id = data.get("session_id") or current_active_session_id
+                        artifacts = []
+                        if target_id:
+                            brain_path = os.path.join(BRAIN_DIR, target_id)
+                            if os.path.exists(brain_path):
+                                for entry in os.scandir(brain_path):
+                                    if entry.is_file() and entry.name.endswith(".md"):
+                                        stat = entry.stat()
+                                        artifacts.append({
+                                            "name": entry.name,
+                                            "path": entry.path.replace("\\", "/"),
+                                            "size": stat.st_size,
+                                            "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime))
+                                        })
+                                artifacts.sort(key=lambda x: x["name"])
+                        await ws.send_json({
+                            "type": "artifacts_result",
+                            "session_id": target_id,
+                            "artifacts": artifacts
+                        })
+
+                    elif action == "get_tasks":
+                        target_id = data.get("session_id") or current_active_session_id
+                        tasks = []
+                        if target_id:
+                            tasks_dir = os.path.join(BRAIN_DIR, target_id, ".system_generated", "tasks")
+                            if os.path.exists(tasks_dir):
+                                for entry in os.scandir(tasks_dir):
+                                    if entry.is_file() and entry.name.endswith(".log"):
+                                        stat = entry.stat()
+                                        task_id = entry.name.replace(".log", "")
+                                        recent_log = ""
+                                        try:
+                                            with open(entry.path, "r", encoding="utf-8", errors="replace") as f:
+                                                lines = f.readlines()
+                                                recent_log = "".join(lines[-15:])
+                                        except Exception:
+                                            pass
+                                        tasks.append({
+                                            "task_id": task_id,
+                                            "log_path": entry.path.replace("\\", "/"),
+                                            "size": stat.st_size,
+                                            "recent_log": recent_log,
+                                            "modified": time.strftime("%H:%M:%S", time.localtime(stat.st_mtime))
+                                        })
+                                tasks.sort(key=lambda x: x["modified"], reverse=True)
+                        await ws.send_json({
+                            "type": "tasks_result",
+                            "session_id": target_id,
+                            "tasks": tasks
+                        })
+
                 except Exception as e:
                     print(f"[-] 消息处理异常: {e}")
 
@@ -651,13 +821,37 @@ async def spa_middleware(request, handler):
             return web.FileResponse(index_path)
         raise
 
-async def background_tail(app):
-    task = asyncio.create_task(tail_transcript())
+async def check_and_broadcast_nodes():
+    print("[*] 双机节点状态定时巡检与广播协程已启动...")
+    while True:
+        try:
+            if connected_ws_clients:
+                win_online = await is_windows_alive()
+                payload = {
+                    "type": "nodes_status",
+                    "nodes": [
+                        {"id": "deck", "name": "Steam Deck", "online": True},
+                        {"id": "windows", "name": "Windows PC", "online": win_online}
+                    ]
+                }
+                for ws in list(connected_ws_clients):
+                    try:
+                        await ws.send_json(payload)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        await asyncio.sleep(8)
+
+async def background_workers(app):
+    t1 = asyncio.create_task(tail_transcript())
+    t2 = asyncio.create_task(check_and_broadcast_nodes())
     yield
-    task.cancel()
+    t1.cancel()
+    t2.cancel()
     try:
-        await task
-    except asyncio.CancelledError:
+        await asyncio.gather(t1, t2, return_exceptions=True)
+    except Exception:
         pass
 
 def init_app():
@@ -668,7 +862,7 @@ def init_app():
     app.router.add_get('/api/media', media_handler)
     if os.path.exists(FLUTTER_WEB_DIR):
         app.router.add_static('/', path=FLUTTER_WEB_DIR, show_index=False, follow_symlinks=True)
-    app.cleanup_ctx.append(background_tail)
+    app.cleanup_ctx.append(background_workers)
     return app
 
 if __name__ == "__main__":

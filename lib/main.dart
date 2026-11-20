@@ -8,6 +8,78 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+
+class SlashCommandOption {
+  final String command;
+  final String label;
+  final String description;
+  final IconData icon;
+
+  const SlashCommandOption({
+    required this.command,
+    required this.label,
+    required this.description,
+    required this.icon,
+  });
+}
+
+const List<SlashCommandOption> kOfficialSlashCommands = [
+  SlashCommandOption(
+    command: "/goal",
+    label: "目标长程自治执行",
+    description: "运行高自治度的长期复杂任务，直到彻底达成目标",
+    icon: Icons.flag_rounded,
+  ),
+  SlashCommandOption(
+    command: "/plan",
+    label: "深度规划分析",
+    description: "在编码或修改前进行严谨的逐步拆解与架构推演",
+    icon: Icons.alt_route_rounded,
+  ),
+  SlashCommandOption(
+    command: "/compact",
+    label: "压缩会话上下文",
+    description: "压缩并精简过长的历史记录，释放上下文窗口与 Token",
+    icon: Icons.compress_rounded,
+  ),
+  SlashCommandOption(
+    command: "/schedule",
+    label: "定时自动化任务",
+    description: "创建单次倒计时或 Cron 周期性定时任务",
+    icon: Icons.schedule_rounded,
+  ),
+  SlashCommandOption(
+    command: "/browser",
+    label: "网页浏览与交互",
+    description: "启动内置浏览器执行网页自动化、测试与数据抓取",
+    icon: Icons.language_rounded,
+  ),
+  SlashCommandOption(
+    command: "/boost",
+    label: "全方位深度思考",
+    description: "开启高阶推理、多视角审查与严格代码验证",
+    icon: Icons.rocket_launch_rounded,
+  ),
+  SlashCommandOption(
+    command: "/learn",
+    label: "记录纠偏与经验",
+    description: "持久化保存本次解决的复杂配置或纠错知识库",
+    icon: Icons.psychology_rounded,
+  ),
+  SlashCommandOption(
+    command: "/teamwork",
+    label: "多 Agent 团队协作",
+    description: "构建自主协同的多 Agent 协作流水线",
+    icon: Icons.groups_rounded,
+  ),
+  SlashCommandOption(
+    command: "/plugin",
+    label: "插件与技能管理",
+    description: "管理、启用或搜索安装生态中的定制化扩展插件",
+    icon: Icons.extension_rounded,
+  ),
+];
+
 class UploadedAttachment {
   final String filename;
   final String dataUrl;
@@ -215,7 +287,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
   final List<SessionItem> _generalSessions = [];
   final ScrollController _scrollController = ScrollController();
 
-  String _selectedNode = "deck";
+  String _selectedNode = "windows";
   String _selectedMode = "auto";
   String _selectedModel = "flash";
   List<HostNode> _nodes = [
@@ -243,9 +315,66 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
 
   final List<UploadedAttachment> _pendingAttachments = [];
 
+  bool _showSlashMenu = false;
+  List<SlashCommandOption> _filteredSlashCommands = kOfficialSlashCommands;
+
+  void _onInputChanged() {
+    final text = _inputController.text;
+    if (text.startsWith("/")) {
+      final query = text.toLowerCase().trim();
+      final filtered = kOfficialSlashCommands.where((c) {
+        return c.command.toLowerCase().startsWith(query);
+      }).toList();
+
+      setState(() {
+        _showSlashMenu = filtered.isNotEmpty;
+        _filteredSlashCommands = filtered;
+      });
+    } else {
+      if (_showSlashMenu) {
+        setState(() {
+          _showSlashMenu = false;
+        });
+      }
+    }
+  }
+
+  void _applySlashCommand(String cmd) {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _inputController.text = "$cmd ";
+      _inputController.selection = TextSelection.fromPosition(
+        TextPosition(offset: _inputController.text.length),
+      );
+      _showSlashMenu = false;
+    });
+  }
+
+  void _stopCurrentTask() {
+    if (!_isConnected) return;
+    HapticFeedback.heavyImpact();
+    setState(() {
+      _isThinking = false;
+    });
+    final payload = jsonEncode({
+      "action": "stop",
+      "session_id": _activeSessionId,
+    });
+    _channel?.sink.add(payload);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("已向 Agent 发送停止指令"),
+        behavior: SnackBarBehavior.floating,
+        duration: Duration(seconds: 1),
+      ),
+    );
+  }
+
+
   @override
   void initState() {
     super.initState();
+    _inputController.addListener(_onInputChanged);
     _initWebPasteListener();
     _loadSavedIp();
   }
@@ -254,9 +383,9 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
     if (kIsWeb) {
       try {
         js.context['agyBridge']?.callMethod('init', [
-          js.allowInterop((dynamic name, dynamic base64, dynamic isImg) {
+          (dynamic name, dynamic base64, dynamic isImg) {
             _handleIncomingUpload(name.toString(), base64.toString(), isImg == true);
-          })
+          }
         ]);
       } catch (e) {
         debugPrint("Failed to init agyBridge: $e");
@@ -323,6 +452,11 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
         await prefs.setString('auth_token', urlToken);
       } else if (savedToken != null && savedToken.isNotEmpty) {
         _authToken = savedToken;
+      }
+      final urlNode = Uri.base.queryParameters['node'];
+      if (urlNode != null && urlNode.isNotEmpty) {
+        _selectedNode = urlNode;
+        await prefs.setString('selected_node', urlNode);
       }
     } else if (savedToken != null && savedToken.isNotEmpty) {
       _authToken = savedToken;
@@ -595,15 +729,49 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
               } else {
                 HapticFeedback.lightImpact();
               }
+            } else if (type == 'status_change') {
+              final isRunning = data['is_running'] == true;
+              setState(() {
+                _isThinking = isRunning;
+              });
+            } else if (type == 'stopped') {
+              setState(() {
+                _isThinking = false;
+              });
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text("任务已停止"),
+                  behavior: SnackBarBehavior.floating,
+                  duration: Duration(seconds: 1),
+                ),
+              );
             } else if (type == 'agent_update') {
               final newMsg = AgentMessage.fromJson(data);
               if (newMsg.content.isEmpty && newMsg.thinking.isEmpty && newMsg.toolCalls.isEmpty) {
                 return;
               }
-              // 收到 Agent 或模型输出时停止思考指示器
-              if (!newMsg.isUser) {
-                _isThinking = false;
+              // 关键：电脑端输入或模型仍在执行时，网页端必须保持红色停止按钮
+              if (newMsg.isUser) {
+                setState(() {
+                  _isThinking = true;
+                });
+              } else {
+                final backendRunning = data['is_running'];
+                if (backendRunning != null) {
+                  setState(() {
+                    _isThinking = backendRunning == true;
+                  });
+                } else if (newMsg.status == 'DONE' && newMsg.toolCalls.isEmpty) {
+                  setState(() {
+                    _isThinking = false;
+                  });
+                } else {
+                  setState(() {
+                    _isThinking = true;
+                  });
+                }
               }
+
               // 避免乐观插入和广播重复
               if (newMsg.isUser && _messages.isNotEmpty && _messages.first.isUser && _messages.first.content == newMsg.content) {
                 return;
@@ -2326,9 +2494,78 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
     );
   }
 
-  Widget _buildMessageCard(AgentMessage msg) {
+    Widget _buildCompactToolCallsBar(List<dynamic> toolCalls, bool isDark) {
+    if (toolCalls.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        children: toolCalls.map((rawTool) {
+          final tool = rawTool is Map ? rawTool : {};
+          final name = (tool['name'] ?? 'tool').toString();
+          final args = _parseToolArgs(tool['args']);
+          String label = name;
+          IconData icon = Icons.settings_suggest_rounded;
+
+          if (name == 'edit_file') {
+            final p = _cleanPath(args['Path'] ?? args['path']);
+            final f = p.isEmpty ? '文件' : p.split(RegExp(r'[\\/]')).last;
+            label = "edit: $f";
+            icon = Icons.edit_note_rounded;
+          } else if (name == 'write_file') {
+            final p = _cleanPath(args['Path'] ?? args['path']);
+            final f = p.isEmpty ? '文件' : p.split(RegExp(r'[\\/]')).last;
+            label = "write: $f";
+            icon = Icons.post_add_rounded;
+          } else if (name == 'read_file') {
+            final p = _cleanPath(args['Path'] ?? args['path']);
+            final f = p.isEmpty ? '文件' : p.split(RegExp(r'[\\/]')).last;
+            label = "read: $f";
+            icon = Icons.menu_book_rounded;
+          } else if (name == 'run_command') {
+            final s = (args['toolSummary'] ?? '').toString();
+            label = s.isNotEmpty ? s : "run_command";
+            icon = Icons.terminal_rounded;
+          }
+
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+            decoration: BoxDecoration(
+              color: isDark ? Colors.white.withOpacity(0.04) : Colors.black.withOpacity(0.04),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: isDark ? Colors.white10 : Colors.black12),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 11, color: isDark ? Colors.white38 : Colors.black38),
+                const SizedBox(width: 4),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 220),
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      fontFamily: 'monospace',
+                      color: isDark ? Colors.white60 : Colors.black54,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+Widget _buildMessageCard(AgentMessage msg) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
+    // 1. 用户消息气泡
     if (msg.isUser) {
       final imgPaths = _extractImagePaths(msg.content);
       var displayContent = msg.content.replaceAll(RegExp(r'\[用户上传图片:\s*.*?\]\n?'), '').trim();
@@ -2360,13 +2597,12 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
       );
     }
 
-    if (msg.isPureToolStep) {
-      return Container(
-        margin: const EdgeInsets.only(bottom: 8),
-        child: _buildToolCallWidget(msg.toolCalls.first, isStandalone: true),
-      );
+    // 2. 纯工具执行或空内容步骤：彻底隐藏，不占任何空间！
+    if (msg.content.trim().isEmpty && msg.status != 'WAITING_APPROVAL' && msg.status != 'WAITING_INPUT') {
+      return const SizedBox.shrink();
     }
 
+    // 3. Agent 回复内容卡片（极简现代化卡片）
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       decoration: BoxDecoration(
@@ -2379,48 +2615,17 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Icon(Icons.auto_awesome, color: Theme.of(context).colorScheme.primary, size: 14),
-                  const SizedBox(width: 6),
-                  Text(
-                    "#${msg.stepIndex} Agent",
-                    style: TextStyle(color: isDark ? const Color(0xFF94A3B8) : Colors.black54, fontSize: 12, fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
-              if (msg.status.isNotEmpty)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: isDark ? Colors.white.withOpacity(0.06) : Colors.black.withOpacity(0.05),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text(
-                    msg.status,
-                    style: TextStyle(color: isDark ? Colors.white70 : Colors.black54, fontSize: 10),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 8),
+          // 极简微型工具标签栏（单行 18px 标签）
+          if (msg.toolCalls.isNotEmpty)
+            _buildCompactToolCallsBar(msg.toolCalls, isDark),
 
+          // 思考过程折叠栏
           if (msg.thinking.isNotEmpty) ...[
             _buildThinkingFold(msg.thinking),
             const SizedBox(height: 10),
           ],
 
-          if (msg.toolCalls.isNotEmpty) ...[
-            for (var t in msg.toolCalls)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: _buildToolCallWidget(t, isStandalone: false),
-              ),
-          ],
-
+          // Markdown 回复正文（无任何多余边框）
           if (msg.content.isNotEmpty)
             MarkdownBody(
               data: msg.content,
@@ -2495,9 +2700,15 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _buildModeAndModelBar(isDark),
+            // 斜杠指令悬浮补全卡片
+            if (_showSlashMenu)
+              _buildSlashCommandsOverlay(isDark),
+
+            // 待上传附件栏
             if (_pendingAttachments.isNotEmpty)
               _buildPendingAttachmentsBar(isDark),
+
+            // 输入框主行
             Row(
               children: [
                 InkWell(
@@ -2519,24 +2730,124 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                     controller: _inputController,
                     style: TextStyle(color: isDark ? Colors.white : Colors.black87),
                     decoration: InputDecoration(
-                      hintText: _isConnected ? "向 Agent 发送指令或 @提及 (支持直接 Ctrl+V 粘贴截图)..." : "请先连接电脑...",
+                      hintText: _isConnected ? "向 Agent 发送指令或 /斜杠命令..." : "请先连接电脑...",
                       hintStyle: TextStyle(color: isDark ? Colors.white24 : Colors.black26, fontSize: 13),
                       filled: true,
                       fillColor: isDark ? const Color(0xFF0B0F19) : const Color(0xFFF1F5F9),
                       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
                     ),
-                    onSubmitted: (_) => _sendMessage(),
+                    onSubmitted: (_) {
+                      if (_isConnected && !_isThinking) {
+                        _sendMessage();
+                      }
+                    },
                   ),
                 ),
                 const SizedBox(width: 8),
                 IconButton(
-                  icon: Icon(Icons.send_rounded, color: Theme.of(context).colorScheme.primary),
-                  onPressed: _isConnected ? _sendMessage : null,
+                  icon: _isThinking
+                      ? Container(
+                          width: 32,
+                          height: 32,
+                          decoration: BoxDecoration(
+                            color: Colors.redAccent.withOpacity(0.15),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.redAccent, width: 1.5),
+                          ),
+                          child: const Center(
+                            child: Icon(Icons.stop_rounded, color: Colors.redAccent, size: 20),
+                          ),
+                        )
+                      : Icon(Icons.arrow_upward_rounded, color: Theme.of(context).colorScheme.primary),
+                  tooltip: _isThinking ? "停止当前任务 (Stop)" : "发送",
+                  onPressed: _isConnected
+                      ? (_isThinking ? _stopCurrentTask : _sendMessage)
+                      : null,
                 ),
               ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSlashCommandsOverlay(bool isDark) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      constraints: const BoxConstraints(maxHeight: 220),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF0E1626) : Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isDark ? const Color(0xFF23324A) : const Color(0xFFCBD5E1),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.18),
+            blurRadius: 12,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: ListView.separated(
+          shrinkWrap: true,
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          itemCount: _filteredSlashCommands.length,
+          separatorBuilder: (_, __) => Divider(
+            height: 1,
+            color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+          ),
+          itemBuilder: (ctx, idx) {
+            final cmd = _filteredSlashCommands[idx];
+            return InkWell(
+              onTap: () => _applySlashCommand(cmd.command),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.primary.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        cmd.command,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.bold,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        cmd.description,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    Icon(
+                      Icons.north_west_rounded,
+                      size: 14,
+                      color: isDark ? Colors.white30 : Colors.black26,
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
         ),
       ),
     );
@@ -2622,205 +2933,6 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
             ),
           );
         },
-      ),
-    );
-  }
-
-  Widget _buildModeAndModelBar(bool isDark) {
-    return Container(
-      padding: const EdgeInsets.only(left: 4, right: 4, bottom: 6),
-      child: Row(
-        children: [
-          _buildModeChip(isDark),
-          const SizedBox(width: 8),
-          _buildModelChip(isDark),
-          const Spacer(),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(
-              color: isDark ? Colors.white.withOpacity(0.05) : Colors.black.withOpacity(0.04),
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: Text(
-              _selectedNode == "windows" ? "🖥️ Windows" : "🎮 Deck",
-              style: TextStyle(fontSize: 10, color: isDark ? Colors.white38 : Colors.black38),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildModeChip(bool isDark) {
-    final modeNames = {
-      "auto": "🤖 Auto 模式",
-      "turbo": "⚡ Turbo 极速",
-      "plan": "📝 Plan 规划",
-      "dev": "🛠️ Dev 开发",
-    };
-
-    return PopupMenuButton<String>(
-      tooltip: "切换运行模式",
-      offset: const Offset(0, -180),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      color: isDark ? const Color(0xFF1E293B) : Colors.white,
-      onSelected: (mode) {
-        setState(() {
-          _selectedMode = mode;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("已切换为: ${modeNames[mode]}"),
-            behavior: SnackBarBehavior.floating,
-            duration: const Duration(seconds: 1),
-          ),
-        );
-        HapticFeedback.lightImpact();
-      },
-      itemBuilder: (ctx) => [
-        _buildModeMenuItem("auto", "🤖 Auto 模式", "全自动调用工具，无需手动确认", isDark),
-        _buildModeMenuItem("turbo", "⚡ Turbo 极速", "低延迟极速响应，适合轻量问答", isDark),
-        _buildModeMenuItem("plan", "📝 Plan 规划", "仅输出分析与执行计划，不修改代码", isDark),
-        _buildModeMenuItem("dev", "🛠️ Dev 开发", "标准软件工程开发模式", isDark),
-      ],
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(
-          color: isDark ? const Color(0xFF0284C7).withOpacity(0.2) : const Color(0xFFE0F2FE),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: const Color(0xFF38BDF8).withOpacity(0.4)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              modeNames[_selectedMode] ?? "🤖 Auto",
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7),
-              ),
-            ),
-            const SizedBox(width: 2),
-            Icon(Icons.arrow_drop_up_rounded, size: 14, color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  PopupMenuItem<String> _buildModeMenuItem(String val, String title, String subtitle, bool isDark) {
-    final isSelected = _selectedMode == val;
-    return PopupMenuItem<String>(
-      value: val,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                  color: isSelected ? Theme.of(context).colorScheme.primary : (isDark ? Colors.white : Colors.black87),
-                ),
-              ),
-              if (isSelected) ...[
-                const SizedBox(width: 6),
-                Icon(Icons.check_rounded, size: 14, color: Theme.of(context).colorScheme.primary),
-              ],
-            ],
-          ),
-          Text(subtitle, style: TextStyle(fontSize: 10, color: isDark ? Colors.white38 : Colors.black38)),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildModelChip(bool isDark) {
-    final modelNames = {
-      "flash": "⚡ Gemini Flash",
-      "pro": "🧠 Gemini Pro",
-      "sonnet": "💡 Claude Sonnet",
-    };
-
-    return PopupMenuButton<String>(
-      tooltip: "切换推理模型",
-      offset: const Offset(0, -150),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      color: isDark ? const Color(0xFF1E293B) : Colors.white,
-      onSelected: (model) {
-        setState(() {
-          _selectedModel = model;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("已切换模型为: ${modelNames[model]}"),
-            behavior: SnackBarBehavior.floating,
-            duration: const Duration(seconds: 1),
-          ),
-        );
-        HapticFeedback.lightImpact();
-      },
-      itemBuilder: (ctx) => [
-        _buildModelMenuItem("flash", "⚡ Gemini 3.8 Flash", "极速默认 · 适合日常与全自动执行", isDark),
-        _buildModelMenuItem("pro", "🧠 Gemini 3.8 Pro", "深度思考 · 适合复杂算法与长文档", isDark),
-        _buildModelMenuItem("sonnet", "💡 Claude Sonnet 4.6", "高阶推理 · 适合架构与系统设计", isDark),
-      ],
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(
-          color: isDark ? Colors.white.withOpacity(0.06) : Colors.black.withOpacity(0.04),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              modelNames[_selectedModel] ?? "⚡ Flash",
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: isDark ? Colors.white70 : Colors.black87,
-              ),
-            ),
-            const SizedBox(width: 2),
-            Icon(Icons.arrow_drop_up_rounded, size: 14, color: isDark ? Colors.white38 : Colors.black38),
-          ],
-        ),
-      ),
-    );
-  }
-
-  PopupMenuItem<String> _buildModelMenuItem(String val, String title, String subtitle, bool isDark) {
-    final isSelected = _selectedModel == val;
-    return PopupMenuItem<String>(
-      value: val,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                  color: isSelected ? Theme.of(context).colorScheme.primary : (isDark ? Colors.white : Colors.black87),
-                ),
-              ),
-              if (isSelected) ...[
-                const SizedBox(width: 6),
-                Icon(Icons.check_rounded, size: 14, color: Theme.of(context).colorScheme.primary),
-              ],
-            ],
-          ),
-          Text(subtitle, style: TextStyle(fontSize: 10, color: isDark ? Colors.white38 : Colors.black38)),
-        ],
       ),
     );
   }
@@ -2984,6 +3096,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
     _scrollController.dispose();
     _ipController.dispose();
     _inputController.dispose();
+    _inputController.removeListener(_onInputChanged);
     super.dispose();
   }
 }

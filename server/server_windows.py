@@ -15,8 +15,8 @@ DB_PATH = os.path.expanduser(r"~\.gemini\antigravity\conversation_summaries.db")
 AGENT_API_PATH = os.path.expanduser(r"~\.gemini\antigravity\bin\agentapi.bat")
 LANGUAGE_SERVER_EXE = os.path.expanduser(r"~\AppData\Local\Programs\antigravity\resources\bin\language_server.exe")
 FLUTTER_WEB_DIR = os.path.expanduser(r"~\.gemini\antigravity\scratch\agy_mobile_app\build\web")
-PORT = int(os.environ.get("AGY_PORT", 8765))
-AUTH_TOKEN = os.environ.get("AGY_AUTH_TOKEN", "change_me_to_your_token")
+PORT = 8765
+AUTH_TOKEN = os.environ.get("AGY_AUTH_TOKEN", "tetra2026")
 
 connected_ws_clients = set()
 current_active_session_id = None
@@ -126,16 +126,27 @@ def list_workspace_files(base_dir, sub_path=""):
 
     return {"current_path": sub_path.replace("\\", "/"), "items": items[:80]}
 
+IGNORED_MSG_TYPES = {"GENERIC", "SYSTEM_MESSAGE", "CHECKPOINT", "STATUS_UPDATE", "TASK_NOTIFICATION", "USER_APPROVAL_RESPONSE"}
+
 def clean_display_content(raw_text):
     if not raw_text:
         return ""
     user_match = re.search(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", raw_text, re.DOTALL)
     if user_match:
         return user_match.group(1).strip()
-    
     cleaned = re.sub(r"<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>", "", raw_text, flags=re.DOTALL)
     cleaned = re.sub(r"<SYSTEM_MESSAGE>.*?</SYSTEM_MESSAGE>", "", cleaned, flags=re.DOTALL)
-    return cleaned.strip()
+    cleaned = re.sub(r"<INSTRUCTIONS>.*?</INSTRUCTIONS>", "", cleaned, flags=re.DOTALL)
+
+    # 彻底拦截系统注入与控制台爆日志
+    if "The following is a" in cleaned or "<SYSTEM_MESSAGE>" in cleaned or "YOU MUST TAKE ONE OF THE FOLLOWING TWO ACTIONS" in cleaned:
+        return ""
+
+    stripped = cleaned.strip()
+    if stripped.startswith("Created At: 202") and ("Command output:" in stripped or "Command exited with code" in stripped or "Tool is running as a background task" in stripped or "cancelled" in stripped or "Task Description:" in stripped or "Log output:" in stripped):
+        return ""
+
+    return stripped
 
 def get_latest_transcript_path():
     pattern = os.path.join(BRAIN_DIR, "*", ".system_generated", "logs", "transcript.jsonl")
@@ -144,6 +155,98 @@ def get_latest_transcript_path():
         return None
     files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
     return files[0]
+
+def stop_cascade_invocation(session_id):
+    if not session_id:
+        return False, "缺少 session_id"
+    daemon_pattern = os.path.join(os.path.expanduser(r"~\.gemini\antigravity\daemon"), "hub_*.json")
+    files = glob.glob(daemon_pattern)
+    if not files:
+        return False, "未找到 language_server daemon 配置文件"
+    files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+    latest_hub = files[0]
+
+    try:
+        with open(latest_hub, "r", encoding="utf-8") as f:
+            hub = json.load(f)
+        port = hub.get("httpPort")
+        csrf_token = hub.get("csrfToken")
+        if not port or not csrf_token:
+            return False, "daemon 配置不完整"
+
+        headers = {
+            "x-codeium-csrf-token": csrf_token,
+            "Content-Type": "application/json"
+        }
+
+        # 1. 调用 CancelCascadeInvocation 打断当前生成并杀后台任务
+        try:
+            url_cancel = f"http://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/CancelCascadeInvocation"
+            payload = json.dumps({"cascadeId": session_id, "killBackgroundTasks": True}).encode()
+            req = urllib.request.Request(url_cancel, data=payload, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                print(f"[+] CancelCascadeInvocation 成功打断底层生成: {session_id}")
+        except Exception as e:
+            print(f"[-] CancelCascadeInvocation 调用提示: {e}")
+
+        # 2. 调用 ForceStopCascadeTree 停止树
+        try:
+            url_force = f"http://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/ForceStopCascadeTree"
+            payload = json.dumps({"conversationId": session_id}).encode()
+            req = urllib.request.Request(url_force, data=payload, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                print(f"[+] ForceStopCascadeTree 成功强制停止会话树: {session_id}")
+        except Exception as e:
+            print(f"[-] ForceStopCascadeTree 调用提示: {e}")
+
+        return True, "ok"
+    except Exception as e:
+        print(f"[-] stop_cascade_invocation 异常: {e}")
+        return False, str(e)
+
+def send_native_user_message(target_id, content):
+    """
+    通过 LanguageServerService/SendUserCascadeMessage 发送原生真实用户消息！
+    彻底消除 IDE 界面上难看且突兀的【来自 self 的消息 ∨】浅蓝色胶囊，
+    直接以原生 USER_REQUEST 呈现，与在 IDE 输入框亲手敲击回车完全一致！
+    """
+    try:
+        daemon_pattern = os.path.join(os.path.expanduser(r"~\.gemini\antigravity\daemon"), "hub_*.json")
+        files = glob.glob(daemon_pattern)
+        if not files:
+            return False, "未找到 daemon 配置文件"
+        files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+        latest_hub = files[0]
+
+        with open(latest_hub, "r", encoding="utf-8") as f:
+            hub = json.load(f)
+        port = hub.get("httpPort")
+        csrf_token = hub.get("csrfToken")
+        if not port or not csrf_token:
+            return False, "daemon 配置缺少端口或 token"
+
+        url = f"http://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage"
+        headers = {
+            "x-codeium-csrf-token": csrf_token,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "cascadeId": target_id,
+            "messageText": content,
+            "items": [
+                {"text": content}
+            ]
+        }
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status == 200:
+                print(f"[+] SendUserCascadeMessage 成功发送原生用户消息: {target_id}")
+                return True, "ok"
+            else:
+                return False, f"status {resp.status}"
+    except Exception as e:
+        print(f"[-] SendUserCascadeMessage 异常: {e}，准备降级为 agentapi")
+        return False, str(e)
 
 def dispatch_agent_message(session_id, content):
     global current_active_session_id
@@ -156,11 +259,19 @@ def dispatch_agent_message(session_id, content):
     if not target_id:
         return False, "未找到目标会话 ID"
 
+    # 1. 优先调用底层 RPC 注入 100% 原生用户消息（绝无“来自 self 的消息 ∨”丑陋胶囊）
+    ok, err = send_native_user_message(target_id, content)
+    if ok:
+        return True, "ok"
+
+    # 2. 降级方案：调用官方 agentapi
+    print(f"[*] 降级使用 agentapi send-message: {err}")
+    title_arg = "--title=AGY Remote 网页端"
     cmd = []
     if os.path.exists(LANGUAGE_SERVER_EXE):
-        cmd = [LANGUAGE_SERVER_EXE, "agentapi", "send-message", target_id, content]
+        cmd = [LANGUAGE_SERVER_EXE, "agentapi", "send-message", title_arg, target_id, content]
     elif os.path.exists(AGENT_API_PATH):
-        cmd = [AGENT_API_PATH, "send-message", target_id, content]
+        cmd = [AGENT_API_PATH, "send-message", title_arg, target_id, content]
     else:
         return False, "未找到 agentapi 可执行程序"
 
@@ -173,7 +284,6 @@ def dispatch_agent_message(session_id, content):
             return False, err
     except Exception as e:
         return False, str(e)
-
 async def broadcast_message(message_dict):
     if not connected_ws_clients:
         return
@@ -199,7 +309,7 @@ def load_session_history(session_file, max_lines=40):
                 try:
                     record = json.loads(line)
                     msg_type = record.get("type", "")
-                    if msg_type == "GENERIC":
+                    if msg_type in IGNORED_MSG_TYPES:
                         continue
                     
                     raw_content = record.get("content", "")
@@ -249,7 +359,7 @@ async def tail_transcript():
                         try:
                             record = json.loads(line)
                             msg_type = record.get("type", "UNKNOWN")
-                            if msg_type == "GENERIC":
+                            if msg_type in IGNORED_MSG_TYPES:
                                 continue
 
                             raw_content = record.get("content", "")
@@ -260,20 +370,33 @@ async def tail_transcript():
                             if not clean_content and not thinking and not tool_calls:
                                 continue
 
+                            src = record.get("source", "")
+                            st = record.get("status", "")
+                            is_user = (src == "USER_EXPLICIT" or msg_type == "USER_INPUT")
+                            # 只要收到用户消息，或者模型在调用工具，会话处于运行中
+                            # 只有模型输出 DONE 且无 tool_calls 时会话才进入空闲
+                            is_running = is_user or (len(tool_calls) > 0) or (st != "DONE")
+
                             event = {
                                 "type": "agent_update",
                                 "session_id": current_active_session_id,
                                 "step_index": record.get("step_index"),
-                                "source": record.get("source"),
+                                "source": src,
                                 "msg_type": msg_type,
-                                "status": record.get("status", ""),
+                                "status": st,
                                 "content": clean_content,
                                 "thinking": thinking,
                                 "tool_calls": tool_calls,
-                                "timestamp": record.get("created_at")
+                                "timestamp": record.get("created_at"),
+                                "is_running": is_running
                             }
                             await broadcast_message(event)
-                            print(f"[Push] step={event['step_index']} type={event['msg_type']}")
+                            await broadcast_message({
+                                "type": "status_change",
+                                "session_id": current_active_session_id,
+                                "is_running": is_running
+                            })
+                            print(f"[Push] step={event['step_index']} type={event['msg_type']} is_running={is_running}")
                         except Exception as e:
                             print(f"[-] JSON 解析异常: {e}")
                 else:
@@ -326,6 +449,15 @@ async def websocket_handler(request):
             "msg": "Connected to AGY Remote Single-Port Hub!"
         })
 
+        # 1.5 双机节点在线状态推送
+        await ws.send_json({
+            "type": "nodes_status",
+            "nodes": [
+                {"id": "deck", "name": "Steam Deck", "online": True},
+                {"id": "windows", "name": "Windows PC", "online": True}
+            ]
+        })
+
         # 2. 会话树
         data_tree = get_grouped_sessions()
         await ws.send_json({
@@ -360,6 +492,15 @@ async def websocket_handler(request):
                     if action == "ping":
                         await ws.send_json({"type": "pong"})
 
+                    elif action == "get_nodes":
+                        await ws.send_json({
+                            "type": "nodes_status",
+                            "nodes": [
+                                {"id": "deck", "name": "Steam Deck", "online": True},
+                                {"id": "windows", "name": "Windows PC", "online": True}
+                            ]
+                        })
+
                     elif action == "prompt":
                         content = data.get("content", "").strip()
                         target_id = data.get("session_id") or current_active_session_id
@@ -385,6 +526,21 @@ async def websocket_handler(request):
                                 "content": content,
                                 "error": err if not success else ""
                             })
+
+                    elif action == "stop":
+                        target_id = data.get("session_id") or current_active_session_id
+                        print(f"[*] 收到真实停止指令: 会话 {target_id}")
+                        stop_ok, stop_err = await asyncio.to_thread(stop_cascade_invocation, target_id)
+                        await broadcast_message({
+                            "type": "stopped",
+                            "session_id": target_id
+                        })
+                        await ws.send_json({
+                            "type": "stop_ack",
+                            "status": "ok" if stop_ok else "error",
+                            "session_id": target_id,
+                            "error": stop_err if not stop_ok else ""
+                        })
 
                     elif action == "delete_session":
                         del_cid = data.get("session_id")
@@ -434,9 +590,13 @@ async def websocket_handler(request):
 
                     elif action == "new_session":
                         content = data.get("content", "你好，请开始新会话").strip()
-                        model = data.get("model", "flash")
-                        mode = data.get("mode", "auto")
-                        print(f"[*] 请求开启新会话: prompt='{content}', model='{model}', mode='{mode}'")
+                        raw_model = data.get("model", "gemini-3.8-flash-high").strip().lower()
+                        valid_models = {
+                            "gemini-3.8-flash-high", "claude-3-7-sonnet", "claude-3-7-opus",
+                            "gpt-oss-120b", "flash", "pro", "flash_lite"
+                        }
+                        model = raw_model if raw_model in valid_models else "gemini-3.8-flash-high"
+                        print(f"[*] 请求开启新会话: prompt='{content}', model='{model}'")
                         cmd = []
                         if os.path.exists(LANGUAGE_SERVER_EXE):
                             cmd = [LANGUAGE_SERVER_EXE, "agentapi", "new-conversation", f"--model={model}", content]
@@ -445,11 +605,28 @@ async def websocket_handler(request):
                         if cmd:
                             try:
                                 res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=12)
+                                out_text = res.stdout.strip()
+                                new_cid = ""
+                                if res.returncode == 0:
+                                    try:
+                                        parsed = json.loads(out_text)
+                                        new_cid = parsed.get("response", {}).get("newConversation", {}).get("conversationId", "")
+                                    except Exception:
+                                        pass
                                 await ws.send_json({
                                     "type": "new_session_ack",
                                     "status": "ok" if res.returncode == 0 else "error",
+                                    "session_id": new_cid,
                                     "error": res.stderr.strip() if res.returncode != 0 else ""
                                 })
+                                if new_cid:
+                                    data_tree = get_grouped_sessions()
+                                    await broadcast_message({
+                                        "type": "session_tree",
+                                        "projects": data_tree["projects"],
+                                        "general_sessions": data_tree["general_sessions"],
+                                        "current": new_cid
+                                    })
                             except Exception as e:
                                 await ws.send_json({"type": "new_session_ack", "status": "error", "error": str(e)})
 
@@ -577,6 +754,59 @@ async def websocket_handler(request):
                                 "error": str(e)
                             })
 
+                    elif action == "get_artifacts":
+                        target_id = data.get("session_id") or current_active_session_id
+                        artifacts = []
+                        if target_id:
+                            brain_path = os.path.join(BRAIN_DIR, target_id)
+                            if os.path.exists(brain_path):
+                                for entry in os.scandir(brain_path):
+                                    if entry.is_file() and entry.name.endswith(".md"):
+                                        stat = entry.stat()
+                                        artifacts.append({
+                                            "name": entry.name,
+                                            "path": entry.path.replace("\\", "/"),
+                                            "size": stat.st_size,
+                                            "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime))
+                                        })
+                                artifacts.sort(key=lambda x: x["name"])
+                        await ws.send_json({
+                            "type": "artifacts_result",
+                            "session_id": target_id,
+                            "artifacts": artifacts
+                        })
+
+                    elif action == "get_tasks":
+                        target_id = data.get("session_id") or current_active_session_id
+                        tasks = []
+                        if target_id:
+                            tasks_dir = os.path.join(BRAIN_DIR, target_id, ".system_generated", "tasks")
+                            if os.path.exists(tasks_dir):
+                                for entry in os.scandir(tasks_dir):
+                                    if entry.is_file() and entry.name.endswith(".log"):
+                                        stat = entry.stat()
+                                        task_id = entry.name.replace(".log", "")
+                                        recent_log = ""
+                                        try:
+                                            with open(entry.path, "r", encoding="utf-8", errors="replace") as f:
+                                                lines = f.readlines()
+                                                recent_log = "".join(lines[-15:])
+                                        except Exception:
+                                            pass
+                                        tasks.append({
+                                            "task_id": task_id,
+                                            "log_path": entry.path.replace("\\", "/"),
+                                            "size": stat.st_size,
+                                            "recent_log": recent_log,
+                                            "modified": time.strftime("%H:%M:%S", time.localtime(stat.st_mtime))
+                                        })
+                                tasks.sort(key=lambda x: x["modified"], reverse=True)
+                        await ws.send_json({
+                            "type": "tasks_result",
+                            "session_id": target_id,
+                            "tasks": tasks
+                        })
+
                 except Exception as e:
                     print(f"[-] 消息处理异常: {e}")
 
@@ -598,12 +828,30 @@ async def spa_middleware(request, handler):
         if response.status == 404:
             index_path = os.path.join(FLUTTER_WEB_DIR, "index.html")
             if os.path.exists(index_path):
-                return web.FileResponse(index_path)
+                resp = web.FileResponse(index_path)
+                resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+                resp.headers["Pragma"] = "no-cache"
+                resp.headers["Expires"] = "0"
+                resp.headers["CDN-Cache-Control"] = "no-cache, no-store, max-age=0"
+                resp.headers["Cloudflare-CDN-Cache-Control"] = "no-cache, no-store, max-age=0"
+                return resp
+        if hasattr(response, "headers"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            response.headers["CDN-Cache-Control"] = "no-cache, no-store, max-age=0"
+            response.headers["Cloudflare-CDN-Cache-Control"] = "no-cache, no-store, max-age=0"
         return response
     except web.HTTPNotFound:
         index_path = os.path.join(FLUTTER_WEB_DIR, "index.html")
         if os.path.exists(index_path):
-            return web.FileResponse(index_path)
+            resp = web.FileResponse(index_path)
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
+            resp.headers["CDN-Cache-Control"] = "no-cache, no-store, max-age=0"
+            resp.headers["Cloudflare-CDN-Cache-Control"] = "no-cache, no-store, max-age=0"
+            return resp
         raise
 
 async def background_tail(app):
