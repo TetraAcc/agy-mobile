@@ -1,172 +1,14 @@
 import 'dart:convert';
 import 'dart:async';
 import 'bridge/js_bridge.dart';
+import 'constants/app_colors.dart';
+import 'models/models.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-
-class SlashCommandOption {
-  final String command;
-  final String label;
-  final String description;
-  final IconData icon;
-
-  const SlashCommandOption({
-    required this.command,
-    required this.label,
-    required this.description,
-    required this.icon,
-  });
-}
-
-const List<SlashCommandOption> kOfficialSlashCommands = [
-  SlashCommandOption(
-    command: "/goal",
-    label: "目标长程自治执行",
-    description: "运行高自治度的长期复杂任务，直到彻底达成目标",
-    icon: Icons.flag_rounded,
-  ),
-  SlashCommandOption(
-    command: "/plan",
-    label: "深度规划分析",
-    description: "在编码或修改前进行严谨的逐步拆解与架构推演",
-    icon: Icons.alt_route_rounded,
-  ),
-  SlashCommandOption(
-    command: "/compact",
-    label: "压缩会话上下文",
-    description: "压缩并精简过长的历史记录，释放上下文窗口与 Token",
-    icon: Icons.compress_rounded,
-  ),
-  SlashCommandOption(
-    command: "/schedule",
-    label: "定时自动化任务",
-    description: "创建单次倒计时或 Cron 周期性定时任务",
-    icon: Icons.schedule_rounded,
-  ),
-  SlashCommandOption(
-    command: "/browser",
-    label: "网页浏览与交互",
-    description: "启动内置浏览器执行网页自动化、测试与数据抓取",
-    icon: Icons.language_rounded,
-  ),
-  SlashCommandOption(
-    command: "/boost",
-    label: "全方位深度思考",
-    description: "开启高阶推理、多视角审查与严格代码验证",
-    icon: Icons.rocket_launch_rounded,
-  ),
-  SlashCommandOption(
-    command: "/learn",
-    label: "记录纠偏与经验",
-    description: "持久化保存本次解决的复杂配置或纠错知识库",
-    icon: Icons.psychology_rounded,
-  ),
-  SlashCommandOption(
-    command: "/teamwork",
-    label: "多 Agent 团队协作",
-    description: "构建自主协同的多 Agent 协作流水线",
-    icon: Icons.groups_rounded,
-  ),
-  SlashCommandOption(
-    command: "/plugin",
-    label: "插件与技能管理",
-    description: "管理、启用或搜索安装生态中的定制化扩展插件",
-    icon: Icons.extension_rounded,
-  ),
-];
-
-class OfficialModelOption {
-  final String id;
-  final String displayName;
-  final String group;
-  final String thinkingBadge;
-  final String icon;
-
-  const OfficialModelOption({
-    required this.id,
-    required this.displayName,
-    required this.group,
-    this.thinkingBadge = "",
-    this.icon = "⚡",
-  });
-}
-
-const List<OfficialModelOption> kAllOfficialModels = [
-  OfficialModelOption(
-    id: "gemini-3.8-flash-high",
-    displayName: "Gemini 3.8 Flash (高思考)",
-    group: "Gemini",
-    thinkingBadge: "High",
-    icon: "⚡",
-  ),
-  OfficialModelOption(
-    id: "gemini-3.8-flash-medium",
-    displayName: "Gemini 3.8 Flash (中思考)",
-    group: "Gemini",
-    thinkingBadge: "Med",
-    icon: "⚡",
-  ),
-  OfficialModelOption(
-    id: "gemini-3.8-flash-low",
-    displayName: "Gemini 3.8 Flash (极速)",
-    group: "Gemini",
-    thinkingBadge: "Low",
-    icon: "⚡",
-  ),
-  OfficialModelOption(
-    id: "claude-sonnet-4-6",
-    displayName: "Claude Sonnet 4.6",
-    group: "Claude",
-    thinkingBadge: "Fast",
-    icon: "💡",
-  ),
-  OfficialModelOption(
-    id: "claude-opus-4-6-thinking",
-    displayName: "Claude Opus 4.6 (思考版)",
-    group: "Claude",
-    thinkingBadge: "Thinking",
-    icon: "🧠",
-  ),
-  OfficialModelOption(
-    id: "gpt-oss-120b-medium",
-    displayName: "GPT-OSS 120B (开源旗舰)",
-    group: "GPT",
-    thinkingBadge: "120B",
-    icon: "🌐",
-  ),
-  OfficialModelOption(
-    id: "gemini-2.5-pro",
-    displayName: "Gemini 2.5 Pro",
-    group: "Gemini",
-    thinkingBadge: "Pro",
-    icon: "💎",
-  ),
-];
-
-class UploadedAttachment {
-  final String filename;
-  final String dataUrl;
-  final bool isImage;
-  String? serverPath;
-  bool isUploading;
-  int size;
-  Uint8List? imageBytes;
-
-  UploadedAttachment({
-    required this.filename,
-    required this.dataUrl,
-    required this.isImage,
-    this.serverPath,
-    this.isUploading = true,
-    this.size = 0,
-    this.imageBytes,
-  });
-}
 
 // 全局主题监听器
 final ValueNotifier<ThemeMode> themeNotifier = ValueNotifier(ThemeMode.dark);
@@ -209,132 +51,27 @@ class _AgyRemoteAppState extends State<AgyRemoteApp> {
           theme: ThemeData(
             useMaterial3: true,
             brightness: Brightness.light,
-            scaffoldBackgroundColor: const Color(0xFFF1F5F9), // 柔和浅灰蓝
+            scaffoldBackgroundColor: AppColors.lightBg,
             colorScheme: const ColorScheme.light(
-              primary: Color(0xFF0284C7),
-              surface: Color(0xFFFFFFFF),
-              background: Color(0xFFF1F5F9),
+              primary: AppColors.primaryBlue,
+              surface: AppColors.lightSurface,
+              background: AppColors.lightBg,
             ),
           ),
           // 深度暗夜模式
           darkTheme: ThemeData(
             useMaterial3: true,
             brightness: Brightness.dark,
-            scaffoldBackgroundColor: const Color(0xFF0B0F19), // 深空黑
+            scaffoldBackgroundColor: AppColors.darkBg,
             colorScheme: const ColorScheme.dark(
-              primary: Color(0xFF38BDF8),
-              surface: Color(0xFF161F30),
-              background: Color(0xFF0B0F19),
+              primary: AppColors.primarySky,
+              surface: AppColors.darkSurface,
+              background: AppColors.darkBg,
             ),
           ),
           home: const MainRemoteScreen(),
         );
       },
-    );
-  }
-}
-
-class SessionItem {
-  final String id;
-  final String title;
-  final String time;
-  final bool isActive;
-
-  SessionItem({required this.id, required this.title, required this.time, this.isActive = false});
-
-  factory SessionItem.fromJson(Map<String, dynamic> json) {
-    return SessionItem(
-      id: json['id'] ?? '',
-      title: json['title'] ?? '未命名会话',
-      time: json['time'] ?? '',
-      isActive: json['is_active'] ?? false,
-    );
-  }
-}
-
-class FileItem {
-  final String name;
-  final bool isDir;
-  final String path;
-  final int size;
-
-  FileItem({required this.name, required this.isDir, required this.path, required this.size});
-
-  factory FileItem.fromJson(Map<String, dynamic> json) {
-    return FileItem(
-      name: json['name'] ?? '',
-      isDir: json['is_dir'] ?? false,
-      path: json['path'] ?? '',
-      size: json['size'] ?? 0,
-    );
-  }
-}
-
-class AgentMessage {
-  final int stepIndex;
-  final String source;
-  final String msgType;
-  final String status;
-  final String content;
-  final String thinking;
-  final List<dynamic> toolCalls;
-  final String timestamp;
-
-  AgentMessage({
-    required this.stepIndex,
-    required this.source,
-    required this.msgType,
-    required this.status,
-    required this.content,
-    required this.thinking,
-    required this.toolCalls,
-    required this.timestamp,
-  });
-
-  bool get isUser => source == 'USER_EXPLICIT' || msgType == 'USER_INPUT';
-  bool get isPureToolStep => content.isEmpty && thinking.isEmpty && toolCalls.isNotEmpty;
-
-  factory AgentMessage.fromJson(Map<String, dynamic> json) {
-    String rawContent = json['content'] ?? '';
-    if (rawContent.contains('<USER_REQUEST>')) {
-      final reg = RegExp(r'<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>', dotAll: true);
-      final match = reg.firstMatch(rawContent);
-      if (match != null) {
-        rawContent = match.group(1)?.trim() ?? rawContent;
-      }
-    }
-    rawContent = rawContent.replaceAll(RegExp(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', dotAll: true), '').trim();
-    rawContent = rawContent.replaceAll(RegExp(r'<SYSTEM_MESSAGE>.*?</SYSTEM_MESSAGE>', dotAll: true), '').trim();
-
-    return AgentMessage(
-      stepIndex: json['step_index'] ?? 0,
-      source: json['source'] ?? 'AGENT',
-      msgType: json['msg_type'] ?? 'UNKNOWN',
-      status: json['status'] ?? '',
-      content: rawContent,
-      thinking: json['thinking'] ?? '',
-      toolCalls: json['tool_calls'] ?? [],
-      timestamp: json['timestamp'] ?? '',
-    );
-  }
-}
-
-class HostNode {
-  final String id;
-  final String name;
-  final bool isOnline;
-
-  HostNode({
-    required this.id,
-    required this.name,
-    this.isOnline = false,
-  });
-
-  factory HostNode.fromJson(Map<String, dynamic> json) {
-    return HostNode(
-      id: json['id'] ?? '',
-      name: json['name'] ?? '',
-      isOnline: json['online'] ?? false,
     );
   }
 }
