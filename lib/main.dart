@@ -182,13 +182,11 @@ class AgentMessage {
 class HostNode {
   final String id;
   final String name;
-  final String desc;
   final bool isOnline;
 
   HostNode({
     required this.id,
     required this.name,
-    required this.desc,
     this.isOnline = false,
   });
 
@@ -196,7 +194,6 @@ class HostNode {
     return HostNode(
       id: json['id'] ?? '',
       name: json['name'] ?? '',
-      desc: json['desc'] ?? '',
       isOnline: json['online'] ?? false,
     );
   }
@@ -222,8 +219,8 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
   String _selectedMode = "auto";
   String _selectedModel = "flash";
   List<HostNode> _nodes = [
-    HostNode(id: "deck", name: "Steam Deck", desc: "常驻主机 · 24h值守", isOnline: true),
-    HostNode(id: "windows", name: "Windows PC", desc: "主力开发机", isOnline: false),
+    HostNode(id: "deck", name: "Steam Deck", isOnline: true),
+    HostNode(id: "windows", name: "Windows PC", isOnline: false),
   ];
 
   WebSocketChannel? _channel;
@@ -349,7 +346,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
   void _switchNode(String nodeId) async {
     if (_selectedNode == nodeId) return;
 
-    final target = _nodes.firstWhere((n) => n.id == nodeId, orElse: () => HostNode(id: nodeId, name: nodeId, desc: ''));
+    final target = _nodes.firstWhere((n) => n.id == nodeId, orElse: () => HostNode(id: nodeId, name: nodeId));
     if (!target.isOnline && nodeId != "deck") {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -1593,23 +1590,13 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        node.name,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                          color: isDark ? Colors.white : Colors.black87,
-                        ),
-                      ),
-                      Text(
-                        node.desc,
-                        style: TextStyle(fontSize: 10, color: isDark ? Colors.white38 : Colors.black38),
-                      ),
-                    ],
+                  child: Text(
+                    node.name,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                      color: isDark ? Colors.white : Colors.black87,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 8),

@@ -29,8 +29,8 @@ async def is_windows_alive():
     try:
         timeout = aiohttp.ClientTimeout(total=1.2)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(f"http://{WINDOWS_HOST}/") as resp:
-                return resp.status == 200
+            async with session.get(f"http://{WINDOWS_HOST}/?token={AUTH_TOKEN}") as resp:
+                return resp.status in (200, 401)
     except Exception:
         return False
 
@@ -629,8 +629,8 @@ async def api_nodes_handler(request):
     return web.json_response({
         "current": "deck",
         "nodes": [
-            {"id": "deck", "name": "Steam Deck", "desc": "常驻主机 · 24h值守", "online": True},
-            {"id": "windows", "name": "Windows PC", "desc": "主力开发机", "online": win_online}
+            {"id": "deck", "name": "Steam Deck", "online": True},
+            {"id": "windows", "name": "Windows PC", "online": win_online}
         ]
     })
 
