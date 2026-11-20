@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:async';
-import 'dart:js' as js;
+import 'bridge/js_bridge.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -77,6 +77,74 @@ const List<SlashCommandOption> kOfficialSlashCommands = [
     label: "插件与技能管理",
     description: "管理、启用或搜索安装生态中的定制化扩展插件",
     icon: Icons.extension_rounded,
+  ),
+];
+
+class OfficialModelOption {
+  final String id;
+  final String displayName;
+  final String group;
+  final String thinkingBadge;
+  final String icon;
+
+  const OfficialModelOption({
+    required this.id,
+    required this.displayName,
+    required this.group,
+    this.thinkingBadge = "",
+    this.icon = "⚡",
+  });
+}
+
+const List<OfficialModelOption> kAllOfficialModels = [
+  OfficialModelOption(
+    id: "gemini-3.8-flash-high",
+    displayName: "Gemini 3.8 Flash (高思考)",
+    group: "Gemini",
+    thinkingBadge: "High",
+    icon: "⚡",
+  ),
+  OfficialModelOption(
+    id: "gemini-3.8-flash-medium",
+    displayName: "Gemini 3.8 Flash (中思考)",
+    group: "Gemini",
+    thinkingBadge: "Med",
+    icon: "⚡",
+  ),
+  OfficialModelOption(
+    id: "gemini-3.8-flash-low",
+    displayName: "Gemini 3.8 Flash (极速)",
+    group: "Gemini",
+    thinkingBadge: "Low",
+    icon: "⚡",
+  ),
+  OfficialModelOption(
+    id: "claude-sonnet-4-6",
+    displayName: "Claude Sonnet 4.6",
+    group: "Claude",
+    thinkingBadge: "Fast",
+    icon: "💡",
+  ),
+  OfficialModelOption(
+    id: "claude-opus-4-6-thinking",
+    displayName: "Claude Opus 4.6 (思考版)",
+    group: "Claude",
+    thinkingBadge: "Thinking",
+    icon: "🧠",
+  ),
+  OfficialModelOption(
+    id: "gpt-oss-120b-medium",
+    displayName: "GPT-OSS 120B (开源旗舰)",
+    group: "GPT",
+    thinkingBadge: "120B",
+    icon: "🌐",
+  ),
+  OfficialModelOption(
+    id: "gemini-2.5-pro",
+    displayName: "Gemini 2.5 Pro",
+    group: "Gemini",
+    thinkingBadge: "Pro",
+    icon: "💎",
   ),
 ];
 
@@ -289,7 +357,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
 
   String _selectedNode = "windows";
   String _selectedMode = "auto";
-  String _selectedModel = "flash";
+  String _selectedModel = "gemini-3.8-flash-high";
   List<HostNode> _nodes = [
     HostNode(id: "deck", name: "Steam Deck", isOnline: true),
     HostNode(id: "windows", name: "Windows PC", isOnline: false),
@@ -317,6 +385,18 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
 
   bool _showSlashMenu = false;
   List<SlashCommandOption> _filteredSlashCommands = kOfficialSlashCommands;
+
+  Map<String, dynamic>? _quotaData;
+  bool _isLoadingQuota = false;
+
+  void _requestQuota() {
+    if (_channel != null && _isConnected) {
+      setState(() {
+        _isLoadingQuota = true;
+      });
+      _channel!.sink.add(jsonEncode({"action": "get_quota"}));
+    }
+  }
 
   void _onInputChanged() {
     final text = _inputController.text;
@@ -382,11 +462,9 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
   void _initWebPasteListener() {
     if (kIsWeb) {
       try {
-        js.context['agyBridge']?.callMethod('init', [
-          (dynamic name, dynamic base64, dynamic isImg) {
-            _handleIncomingUpload(name.toString(), base64.toString(), isImg == true);
-          }
-        ]);
+        JsBridge.initBridge((name, base64, isImg) {
+          _handleIncomingUpload(name, base64, isImg);
+        });
       } catch (e) {
         debugPrint("Failed to init agyBridge: $e");
       }
@@ -655,6 +733,17 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                 _messages.clear();
                 _messages.addAll(hist.reversed);
               });
+            } else if (type == 'quota_update') {
+              if (data['quota'] != null && data['quota'] is Map) {
+                setState(() {
+                  _quotaData = Map<String, dynamic>.from(data['quota']);
+                  _isLoadingQuota = false;
+                });
+              } else {
+                setState(() {
+                  _isLoadingQuota = false;
+                });
+              }
             } else if (type == 'file_browser_result') {
               final items = (data['items'] as List).map((e) => FileItem.fromJson(e)).toList();
               if (_fileModalSetState != null) {
@@ -919,6 +1008,25 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
 
   void _showFileContentViewer(String name, String path, String content, int totalLines, bool truncated, int size) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    // 🛡️ 防御：如果检测到 NUL 字节或二进制后缀，坚决拒绝纯文本排版，防止 CanvasKit 死锁
+    if (content.contains('\x00') || _isBinaryFile(name)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("📦 文件 [$name] 为二进制文件，已自动转为下载通道"),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 3),
+          action: SnackBarAction(
+            label: "立即下载",
+            textColor: Colors.cyanAccent,
+            onPressed: () => _downloadFile(path),
+          ),
+        ),
+      );
+      _downloadFile(path);
+      return;
+    }
+
     final lines = content.split('\n');
 
     showModalBottomSheet(
@@ -1195,6 +1303,63 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
     );
   }
 
+
+  bool _isBinaryFile(String path) {
+    final lower = path.toLowerCase();
+    final ext = lower.contains('.') ? lower.split('.').last : '';
+    const binaryExts = {
+      'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'tgz',
+      'exe', 'dll', 'so', 'dylib', 'bin', 'iso', 'apk', 'msi',
+      'pdf', 'docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt',
+      'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'svg',
+      'mp3', 'wav', 'ogg', 'm4a', 'flac',
+      'mp4', 'mkv', 'avi', 'mov', 'webm',
+      'wasm', 'pyc', 'class', 'o', 'a', 'lib', 'db', 'sqlite'
+    };
+    return binaryExts.contains(ext);
+  }
+
+  IconData _getFileIconData(String name, bool isDir) {
+    if (isDir) return Icons.folder_rounded;
+    final lower = name.toLowerCase();
+    final ext = lower.contains('.') ? lower.split('.').last : '';
+    if (const {'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'tgz'}.contains(ext)) {
+      return Icons.folder_zip_rounded;
+    }
+    if (const {'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'svg'}.contains(ext)) {
+      return Icons.image_rounded;
+    }
+    if (const {'pdf', 'docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt'}.contains(ext)) {
+      return Icons.description_rounded;
+    }
+    if (const {'exe', 'msi', 'apk', 'bin', 'iso'}.contains(ext)) {
+      return Icons.extension_rounded;
+    }
+    if (const {'dart', 'py', 'js', 'ts', 'html', 'css', 'json', 'yaml', 'yml', 'sh', 'bat', 'c', 'cpp', 'h', 'java', 'go', 'rs', 'sql'}.contains(ext)) {
+      return Icons.code_rounded;
+    }
+    return Icons.insert_drive_file_outlined;
+  }
+
+  Color _getFileIconColor(String name, bool isDir, BuildContext context) {
+    if (isDir) return const Color(0xFFFBBF24);
+    final lower = name.toLowerCase();
+    final ext = lower.contains('.') ? lower.split('.').last : '';
+    if (const {'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'tgz'}.contains(ext)) {
+      return const Color(0xFFF97316);
+    }
+    if (const {'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'svg'}.contains(ext)) {
+      return const Color(0xFF10B981);
+    }
+    if (const {'pdf', 'docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt'}.contains(ext)) {
+      return const Color(0xFFEF4444);
+    }
+    if (const {'exe', 'msi', 'apk', 'bin', 'iso'}.contains(ext)) {
+      return const Color(0xFF8B5CF6);
+    }
+    return Theme.of(context).colorScheme.primary;
+  }
+
   void _openWorkspaceFilePicker() {
     if (!_isConnected) return;
     _channel?.sink.add(jsonEncode({"action": "browse_files", "sub_path": ""}));
@@ -1271,12 +1436,13 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                             itemCount: _currentFiles.length,
                             itemBuilder: (c, idx) {
                               final item = _currentFiles[idx];
+                              final isBin = _isBinaryFile(item.path);
                               return ListTile(
                                 dense: true,
                                 visualDensity: const VisualDensity(vertical: -2),
                                 leading: Icon(
-                                  item.isDir ? Icons.folder_rounded : Icons.insert_drive_file_outlined,
-                                  color: item.isDir ? const Color(0xFFFBBF24) : Theme.of(context).colorScheme.primary,
+                                  _getFileIconData(item.name, item.isDir),
+                                  color: _getFileIconColor(item.name, item.isDir, context),
                                   size: 18,
                                 ),
                                 title: Text(
@@ -1293,11 +1459,18 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
                                           IconButton(
-                                            icon: const Icon(Icons.visibility_outlined, size: 18),
-                                            tooltip: "查看内容",
-                                            color: Theme.of(context).colorScheme.primary,
-                                            onPressed: () => _requestReadFile(item.path),
+                                            icon: const Icon(Icons.download_rounded, size: 18),
+                                            tooltip: "下载到本地",
+                                            color: Colors.greenAccent.shade400,
+                                            onPressed: () => _downloadFile(item.path),
                                           ),
+                                          if (!isBin)
+                                            IconButton(
+                                              icon: const Icon(Icons.visibility_outlined, size: 18),
+                                              tooltip: "查看内容",
+                                              color: Theme.of(context).colorScheme.primary,
+                                              onPressed: () => _requestReadFile(item.path),
+                                            ),
                                           IconButton(
                                             icon: const Icon(Icons.add_comment_outlined, size: 18),
                                             tooltip: "引用到输入框",
@@ -1313,6 +1486,15 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                                 onTap: () {
                                   if (item.isDir) {
                                     _channel?.sink.add(jsonEncode({"action": "browse_files", "sub_path": item.path}));
+                                  } else if (isBin) {
+                                    _downloadFile(item.path);
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text("📦 检测到文档/二进制文件 [${item.name}]，已为您触发直接下载"),
+                                        behavior: SnackBarBehavior.floating,
+                                        duration: const Duration(seconds: 2),
+                                      ),
+                                    );
                                   } else {
                                     _requestReadFile(item.path);
                                   }
@@ -1358,7 +1540,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                 _buildContextMenuItem(Icons.upload_file_rounded, "添加本地文件", "从电脑/手机选择并上传本地代码、文档或配置", () {
                   if (kIsWeb) {
                     try {
-                      js.context['agyBridge']?.callMethod('pickFile', ['*/*', false]);
+                      JsBridge.pickFile('*/*', false);
                     } catch (e) {
                       debugPrint("pickFile error: $e");
                     }
@@ -1367,7 +1549,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                 _buildContextMenuItem(Icons.image_outlined, "上传图片", "选择本地图片上传 (也可直接按 Ctrl+V 粘贴)", () {
                   if (kIsWeb) {
                     try {
-                      js.context['agyBridge']?.callMethod('pickFile', ['image/*', true]);
+                      JsBridge.pickFile('image/*', true);
                     } catch (e) {
                       debugPrint("pickFile error: $e");
                     }
@@ -1617,6 +1799,9 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
 
     return Scaffold(
       drawer: _buildAppDrawer(),
+      onDrawerChanged: (isOpen) {
+        if (isOpen) _requestQuota();
+      },
       appBar: AppBar(
         backgroundColor: isDark ? const Color(0xFF161F30) : Colors.white,
         elevation: isDark ? 0 : 1,
@@ -1919,6 +2104,9 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
               ),
             ),
 
+            // 实时模型额度展示卡片（官方底座真实配额）
+            _buildQuotaCard(isDark),
+
             // 顶部操作栏: + 新建会话
             Container(
               padding: const EdgeInsets.all(12),
@@ -2004,6 +2192,237 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
         ),
       ),
     );
+  }
+
+  // 官方底座模型实时配额卡片（周额度与 5 小时滑动额度）
+  Widget _buildQuotaCard(bool isDark) {
+    final groups = (_quotaData != null && _quotaData!['groups'] is List)
+        ? (_quotaData!['groups'] as List)
+        : [];
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF161F30) : const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.speed_rounded,
+                    size: 14,
+                    color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7),
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    "模型实时额度",
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: isDark ? Colors.white70 : Colors.black87,
+                    ),
+                  ),
+                ],
+              ),
+              InkWell(
+                onTap: _isLoadingQuota ? null : _requestQuota,
+                borderRadius: BorderRadius.circular(12),
+                child: Padding(
+                  padding: const EdgeInsets.all(2),
+                  child: _isLoadingQuota
+                      ? SizedBox(
+                          width: 11,
+                          height: 11,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.5,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                        )
+                      : Icon(
+                          Icons.refresh_rounded,
+                          size: 14,
+                          color: isDark ? Colors.white54 : Colors.black45,
+                        ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (groups.isEmpty)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: InkWell(
+                  onTap: _requestQuota,
+                  child: Text(
+                    _isLoadingQuota ? "正在拉取配额..." : "点击同步官方实时配额",
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: isDark ? Colors.white38 : Colors.black38,
+                    ),
+                  ),
+                ),
+              ),
+            )
+          else
+            Column(
+              children: [
+                for (int i = 0; i < groups.length; i++) ...[
+                  if (i > 0)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 5),
+                      child: Divider(
+                        color: isDark ? Colors.white10 : Colors.black12,
+                        height: 1,
+                      ),
+                    ),
+                  _buildQuotaGroup(groups[i], isDark),
+                ],
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQuotaGroup(dynamic groupData, bool isDark) {
+    if (groupData is! Map) return const SizedBox.shrink();
+    final group = Map<String, dynamic>.from(groupData);
+    final rawName = group['displayName']?.toString() ?? "";
+    String groupTitle = rawName;
+    if (rawName.toLowerCase().contains("gemini")) {
+      groupTitle = "Gemini 系列";
+    } else if (rawName.toLowerCase().contains("claude")) {
+      groupTitle = "Claude & GPT";
+    }
+
+    final buckets = (group['buckets'] is List) ? (group['buckets'] as List) : [];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          groupTitle,
+          style: TextStyle(
+            fontSize: 10.5,
+            fontWeight: FontWeight.bold,
+            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF475569),
+          ),
+        ),
+        const SizedBox(height: 3),
+        for (var bData in buckets)
+          if (bData is Map) _buildBucketProgress(Map<String, dynamic>.from(bData), isDark),
+      ],
+    );
+  }
+
+  Widget _buildBucketProgress(Map<String, dynamic> bucket, bool isDark) {
+    final rawId = bucket['bucketId']?.toString().toLowerCase() ?? "";
+    final rawName = bucket['displayName']?.toString().toLowerCase() ?? "";
+    final window = bucket['window']?.toString().toLowerCase() ?? "";
+
+    String bucketLabel = "额度";
+    if (rawId.contains("weekly") || rawName.contains("weekly") || window == "weekly") {
+      bucketLabel = "周额度";
+    } else if (rawId.contains("5h") || rawName.contains("5h") || window == "5h") {
+      bucketLabel = "5小时滑动";
+    }
+
+    final double fraction = ((bucket['remainingFraction'] as num?)?.toDouble() ?? 1.0).clamp(0.0, 1.0);
+    final pctText = "${(fraction * 100).toStringAsFixed(1)}%";
+    final resetText = _formatResetTime(bucket['resetTime']?.toString());
+
+    Color barColor;
+    if (fraction >= 0.5) {
+      barColor = isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7);
+    } else if (fraction >= 0.2) {
+      barColor = const Color(0xFFFBBF24);
+    } else {
+      barColor = const Color(0xFFF87171);
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2.5),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                bucketLabel,
+                style: TextStyle(
+                  fontSize: 10,
+                  color: isDark ? Colors.white60 : Colors.black54,
+                ),
+              ),
+              Row(
+                children: [
+                  if (resetText.isNotEmpty) ...[
+                    Text(
+                      resetText,
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: isDark ? Colors.white30 : Colors.black26,
+                      ),
+                    ),
+                    const SizedBox(width: 5),
+                  ],
+                  Text(
+                    pctText,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: barColor,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 2),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2.5),
+            child: LinearProgressIndicator(
+              value: fraction,
+              minHeight: 4,
+              backgroundColor: isDark ? const Color(0xFF0B0F19) : const Color(0xFFE2E8F0),
+              valueColor: AlwaysStoppedAnimation<Color>(barColor),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatResetTime(String? resetTimeStr) {
+    if (resetTimeStr == null || resetTimeStr.isEmpty) return "";
+    try {
+      final resetTime = DateTime.parse(resetTimeStr).toLocal();
+      final now = DateTime.now();
+      final diff = resetTime.difference(now);
+      if (diff.isNegative) return "已刷新";
+      final days = diff.inDays;
+      final hours = diff.inHours % 24;
+      final minutes = diff.inMinutes % 60;
+      if (days > 0) {
+        return "$days天$hours时重置";
+      } else if (hours > 0) {
+        return "$hours时$minutes分重置";
+      } else {
+        return "$minutes分重置";
+      }
+    } catch (_) {
+      return "";
+    }
   }
 
   Map<String, dynamic> _parseToolArgs(dynamic rawArgs) {
@@ -2459,6 +2878,117 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
     return paths;
   }
 
+  List<String> _extractDownloadableFiles(String text) {
+    final List<String> files = [];
+    final reg = RegExp(
+      r'(?:file:///)?([A-Za-z]:[\\/][^\s\n\r"\[\]<>]+\.(?:zip|tar\.gz|tgz|rar|7z|pdf|txt|py|json|bat|sh|csv|docx|xlsx|pptx)|/(?:home|tmp|root)[^\s\n\r"\[\]<>]+\.(?:zip|tar\.gz|tgz|rar|7z|pdf|txt|py|json|bat|sh|csv|docx|xlsx|pptx))',
+      caseSensitive: false,
+    );
+    for (final m in reg.allMatches(text)) {
+      final p = m.group(1)?.trim();
+      if (p != null && p.isNotEmpty && !files.contains(p)) {
+        files.add(p);
+      }
+    }
+    return files;
+  }
+
+  void _downloadFile(String filePath, {String? filename}) {
+    String cleanPath = filePath.trim();
+    if (cleanPath.startsWith("file:///")) {
+      cleanPath = cleanPath.replaceFirst("file:///", "");
+    } else if (cleanPath.startsWith("file://")) {
+      cleanPath = cleanPath.replaceFirst("file://", "");
+    }
+
+    final name = filename ?? cleanPath.split(RegExp(r'[\\/]')).last;
+    final encodedPath = Uri.encodeComponent(cleanPath);
+
+    final baseUri = Uri.base;
+    final portStr = baseUri.hasPort ? ':${baseUri.port}' : '';
+    final downloadUrl = "${baseUri.scheme}://${baseUri.host}$portStr/api/download?path=$encodedPath&token=$_authToken&node=$_selectedNode";
+
+    try {
+      JsBridge.downloadFile(downloadUrl, name);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("触发下载失败: $e")),
+      );
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text("已触发下载: $name"),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Widget _buildDownloadCard(String filePath, bool isDark) {
+    final cleanPath = filePath.replaceAll('file:///', '').replaceAll('file://', '').trim();
+    final fileName = cleanPath.split(RegExp(r'[\\/]')).last;
+
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1)),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.inventory_2_outlined,
+            size: 20,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  fileName,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.bold,
+                    color: isDark ? Colors.white : Colors.black87,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(
+                  cleanPath,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: isDark ? Colors.white38 : Colors.black38,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton.icon(
+            onPressed: () => _downloadFile(cleanPath, filename: fileName),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.primary,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              minimumSize: const Size(0, 32),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+              elevation: 0,
+            ),
+            icon: const Icon(Icons.download_rounded, size: 14),
+            label: const Text("下载", style: TextStyle(fontSize: 12)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildImagePreviewWidget(String path, bool isDark) {
     final url = "/api/media?path=${Uri.encodeComponent(path)}&token=$_authToken";
     return Container(
@@ -2630,13 +3160,40 @@ Widget _buildMessageCard(AgentMessage msg) {
             MarkdownBody(
               data: msg.content,
               selectable: true,
+              onTapLink: (text, href, title) {
+                if (href != null && href.isNotEmpty) {
+                  if (href.startsWith("http://") || href.startsWith("https://")) {
+                    JsBridge.openUrl(href);
+                  } else {
+                    _downloadFile(href);
+                  }
+                }
+              },
               styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
                 p: TextStyle(color: isDark ? const Color(0xFFE2E8F0) : const Color(0xFF1E293B), fontSize: 14, height: 1.6),
                 h1: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 18, fontWeight: FontWeight.bold),
                 h2: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 16, fontWeight: FontWeight.bold),
                 h3: TextStyle(color: Theme.of(context).colorScheme.primary, fontSize: 15, fontWeight: FontWeight.bold),
                 strong: TextStyle(color: isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.bold),
+                em: TextStyle(color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B), fontStyle: FontStyle.italic),
+                a: TextStyle(color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7), decoration: TextDecoration.underline),
                 listBullet: TextStyle(color: Theme.of(context).colorScheme.primary, fontSize: 14),
+                blockquote: TextStyle(
+                  color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
+                  fontSize: 13.5,
+                  height: 1.6,
+                ),
+                blockquotePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                blockquoteDecoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF161F30) : const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border(
+                    left: BorderSide(
+                      color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7),
+                      width: 3.5,
+                    ),
+                  ),
+                ),
                 code: TextStyle(
                   backgroundColor: isDark ? const Color(0xFF0B0F19) : const Color(0xFFF1F5F9),
                   color: Theme.of(context).colorScheme.primary,
@@ -2649,8 +3206,34 @@ Widget _buildMessageCard(AgentMessage msg) {
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0)),
                 ),
+                tableHead: TextStyle(
+                  color: isDark ? Colors.white : Colors.black87,
+                  fontWeight: FontWeight.bold,
+                ),
+                tableBody: TextStyle(
+                  color: isDark ? const Color(0xFFE2E8F0) : const Color(0xFF1E293B),
+                ),
+                tableBorder: TableBorder.all(
+                  color: isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0),
+                  width: 1,
+                ),
+                tableCellsDecoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+                ),
+                horizontalRuleDecoration: BoxDecoration(
+                  border: Border(
+                    top: BorderSide(
+                      color: isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0),
+                      width: 1,
+                    ),
+                  ),
+                ),
               ),
             ),
+
+          // 自动检测正文中提及的可下载文件，生成直观显眼的【下载卡片】
+          for (final fPath in _extractDownloadableFiles(msg.content))
+            _buildDownloadCard(fPath, isDark),
         ],
       ),
     );
@@ -2996,25 +3579,73 @@ Widget _buildMessageCard(AgentMessage msg) {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  Text("推理模型：", style: TextStyle(fontSize: 12, color: isDark ? Colors.white60 : Colors.black54)),
+                  Text("官方推理模型与思考分级：", style: TextStyle(fontSize: 12, color: isDark ? Colors.white60 : Colors.black54)),
                   const SizedBox(height: 6),
-                  Row(
-                    children: [
-                      _buildDialogChip("flash", "⚡ Flash", _selectedModel, (m) {
-                        setModalState(() => _selectedModel = m);
-                        setState(() {});
-                      }, isDark),
-                      const SizedBox(width: 6),
-                      _buildDialogChip("pro", "🧠 Pro", _selectedModel, (m) {
-                        setModalState(() => _selectedModel = m);
-                        setState(() {});
-                      }, isDark),
-                      const SizedBox(width: 6),
-                      _buildDialogChip("sonnet", "💡 Sonnet", _selectedModel, (m) {
-                        setModalState(() => _selectedModel = m);
-                        setState(() {});
-                      }, isDark),
-                    ],
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0)),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        value: kAllOfficialModels.any((m) => m.id == _selectedModel) ? _selectedModel : kAllOfficialModels.first.id,
+                        isExpanded: true,
+                        dropdownColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+                        icon: Icon(Icons.arrow_drop_down_rounded, color: isDark ? Colors.white70 : Colors.black54),
+                        items: kAllOfficialModels.map((m) {
+                          return DropdownMenuItem<String>(
+                            value: m.id,
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Row(
+                                  children: [
+                                    Text(m.icon, style: const TextStyle(fontSize: 13)),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      m.displayName,
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: m.id == _selectedModel ? FontWeight.bold : FontWeight.normal,
+                                        color: isDark ? Colors.white : Colors.black87,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                if (m.thinkingBadge.isNotEmpty)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                    decoration: BoxDecoration(
+                                      color: m.thinkingBadge == "High" || m.thinkingBadge == "Thinking"
+                                          ? (isDark ? const Color(0xFF0284C7).withOpacity(0.3) : const Color(0xFFE0F2FE))
+                                          : (isDark ? Colors.white10 : Colors.black12),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      m.thinkingBadge,
+                                      style: TextStyle(
+                                        fontSize: 9.5,
+                                        fontWeight: FontWeight.bold,
+                                        color: m.thinkingBadge == "High" || m.thinkingBadge == "Thinking"
+                                            ? (isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7))
+                                            : (isDark ? Colors.white60 : Colors.black54),
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                        onChanged: (val) {
+                          if (val != null) {
+                            setModalState(() => _selectedModel = val);
+                            setState(() {});
+                          }
+                        },
+                      ),
+                    ),
                   ),
                 ],
               ),

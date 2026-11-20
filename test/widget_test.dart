@@ -3,6 +3,6 @@ import 'package:agy_remote/main.dart';
 
 void main() {
   testWidgets('Smoke test', (WidgetTester tester) async {
-    expect(kOfficialModels.isNotEmpty, true);
+    expect(kAllOfficialModels.isNotEmpty, true);
   });
 }

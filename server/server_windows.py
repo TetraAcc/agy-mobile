@@ -248,6 +248,39 @@ def send_native_user_message(target_id, content):
         print(f"[-] SendUserCascadeMessage 异常: {e}，准备降级为 agentapi")
         return False, str(e)
 
+def get_user_quota_summary():
+    """
+    通过底层 Connect-RPC LanguageServerService/RetrieveUserQuotaSummary
+    获取官方模型真实配额信息（Gemini 及 3P 模型的周额度和 5 小时滑动额度）
+    """
+    try:
+        daemon_pattern = os.path.join(os.path.expanduser(r"~\.gemini\antigravity\daemon"), "hub_*.json")
+        hub_files = glob.glob(daemon_pattern)
+        if not hub_files:
+            return None, "未找到 hub 配置文件"
+        hub_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+        with open(hub_files[0], "r", encoding="utf-8") as f:
+            hub = json.load(f)
+        port = hub.get("httpPort")
+        csrf_token = hub.get("csrfToken")
+        if not port or not csrf_token:
+            return None, "daemon 配置缺少端口或 token"
+
+        url = f"http://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
+        headers = {
+            "x-codeium-csrf-token": csrf_token,
+            "Content-Type": "application/json"
+        }
+        req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data.get("response") or data, None
+            else:
+                return None, f"HTTP status {resp.status}"
+    except Exception as e:
+        return None, str(e)
+
 def dispatch_agent_message(session_id, content):
     global current_active_session_id
     target_id = session_id or current_active_session_id
@@ -482,6 +515,17 @@ async def websocket_handler(request):
                 "history": history
             })
 
+        # 4. 实时额度初始推送
+        try:
+            init_quota, _ = await asyncio.to_thread(get_user_quota_summary)
+            if init_quota:
+                await ws.send_json({
+                    "type": "quota_update",
+                    "quota": init_quota
+                })
+        except Exception:
+            pass
+
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
                 try:
@@ -499,6 +543,14 @@ async def websocket_handler(request):
                                 {"id": "deck", "name": "Steam Deck", "online": True},
                                 {"id": "windows", "name": "Windows PC", "online": True}
                             ]
+                        })
+
+                    elif action == "get_quota":
+                        quota_data, err = await asyncio.to_thread(get_user_quota_summary)
+                        await ws.send_json({
+                            "type": "quota_update",
+                            "quota": quota_data,
+                            "error": err
                         })
 
                     elif action == "prompt":
@@ -592,10 +644,22 @@ async def websocket_handler(request):
                         content = data.get("content", "你好，请开始新会话").strip()
                         raw_model = data.get("model", "gemini-3.8-flash-high").strip().lower()
                         valid_models = {
-                            "gemini-3.8-flash-high", "claude-3-7-sonnet", "claude-3-7-opus",
-                            "gpt-oss-120b", "flash", "pro", "flash_lite"
+                            "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+                            "claude-sonnet-4-6", "claude-opus-4-6-thinking", "claude-3-7-sonnet", "claude-3-7-opus",
+                            "gpt-oss-120b-medium", "gpt-oss-120b", "gemini-2.5-pro", "gemini-3.5-flash-lite",
+                            "flash", "pro", "flash_lite", "sonnet"
                         }
-                        model = raw_model if raw_model in valid_models else "gemini-3.8-flash-high"
+                        # 映射兼容旧缩写
+                        if raw_model == "sonnet":
+                            model = "claude-sonnet-4-6"
+                        elif raw_model == "pro":
+                            model = "gemini-2.5-pro"
+                        elif raw_model == "flash":
+                            model = "gemini-3.8-flash-high"
+                        elif raw_model in valid_models:
+                            model = raw_model
+                        else:
+                            model = "gemini-3.8-flash-high"
                         print(f"[*] 请求开启新会话: prompt='{content}', model='{model}'")
                         cmd = []
                         if os.path.exists(LANGUAGE_SERVER_EXE):
@@ -676,18 +740,37 @@ async def websocket_handler(request):
                         if os.path.exists(target) and os.path.isfile(target):
                             try:
                                 size = os.path.getsize(target)
-                                with open(target, "r", encoding="utf-8", errors="replace") as f:
-                                    lines = f.readlines()
-                                truncated = len(lines) > 2000
-                                await ws.send_json({
-                                    "type": "file_content",
-                                    "path": target,
-                                    "name": os.path.basename(target),
-                                    "content": "".join(lines[:2000]),
-                                    "total_lines": len(lines),
-                                    "truncated": truncated,
-                                    "size": size
-                                })
+                                # 🛡️ 二进制文件安全防御：拦截 zip/exe/pdf/png 等二进制，防止前端排版卡死
+                                binary_exts = {'.zip', '.tar', '.gz', '.tgz', '.7z', '.rar', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.pdf', '.exe', '.bin', '.dll', '.so', '.pyc', '.db', '.sqlite'}
+                                is_binary = os.path.splitext(target)[1].lower() in binary_exts
+                                if not is_binary:
+                                    try:
+                                        with open(target, 'rb') as check_f:
+                                            chunk = check_f.read(1024)
+                                            if b'\x00' in chunk:
+                                                is_binary = True
+                                    except Exception:
+                                        pass
+
+                                if is_binary:
+                                    await ws.send_json({
+                                        "type": "file_content_error",
+                                        "path": target,
+                                        "error": "该文件为二进制文件（如压缩包、媒体或程序），不支持作为文本查看。请直接点击下载按钮下载该文件。"
+                                    })
+                                else:
+                                    with open(target, "r", encoding="utf-8", errors="replace") as f:
+                                        lines = f.readlines()
+                                    truncated = len(lines) > 2000
+                                    await ws.send_json({
+                                        "type": "file_content",
+                                        "path": target,
+                                        "name": os.path.basename(target),
+                                        "content": "".join(lines[:2000]),
+                                        "total_lines": len(lines),
+                                        "truncated": truncated,
+                                        "size": size
+                                    })
                             except Exception as e:
                                 await ws.send_json({"type": "file_content_error", "path": target, "error": str(e)})
                         else:
@@ -884,6 +967,34 @@ async def media_handler(request):
     
     return web.FileResponse(norm_path)
 
+async def download_handler(request):
+    token = request.query.get("token") or request.headers.get("X-Auth-Token")
+    if AUTH_TOKEN and token != AUTH_TOKEN:
+        return web.Response(text="Unauthorized", status=401)
+    
+    file_path = request.query.get("path", "")
+    if not file_path:
+        return web.Response(text="Missing path", status=400)
+    
+    if file_path.startswith("file:///"):
+        file_path = file_path.replace("file:///", "")
+    elif file_path.startswith("file://"):
+        file_path = file_path.replace("file://", "")
+    file_path = urllib.parse.unquote(file_path)
+
+    norm_path = os.path.abspath(file_path)
+    if not os.path.exists(norm_path) or not os.path.isfile(norm_path):
+        return web.Response(text="File not found", status=404)
+    
+    filename = os.path.basename(norm_path)
+    quoted_name = urllib.parse.quote(filename)
+    headers = {
+        "Content-Disposition": f'attachment; filename="{quoted_name}"; filename*=UTF-8\'\'{quoted_name}',
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-cache"
+    }
+    return web.FileResponse(norm_path, headers=headers)
+
 async def index_handler(request):
     token = request.query.get("token")
     if AUTH_TOKEN and token != AUTH_TOKEN:
@@ -899,6 +1010,7 @@ def init_app():
     app.router.add_get('/ws', websocket_handler)
     app.router.add_get('/test', test_page_handler)
     app.router.add_get('/api/media', media_handler)
+    app.router.add_get('/api/download', download_handler)
     if os.path.exists(FLUTTER_WEB_DIR):
         app.router.add_static('/', path=FLUTTER_WEB_DIR, show_index=False, follow_symlinks=True)
     app.cleanup_ctx.append(background_tail)
