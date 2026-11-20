@@ -1,0 +1,18 @@
+[Unit]
+Description=AGY Remote Web Hub (Port 8768)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/deck/agy_remote
+ExecStart=/usr/bin/python3 -u /home/deck/agy_remote/server.py
+Restart=always
+RestartSec=5s
+Environment=AGY_PORT=8768
+Environment=AGY_AUTH_TOKEN=your_secure_token_here
+Environment=AGY_WINDOWS_HOST=192.168.1.100:8765
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

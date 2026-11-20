@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="AGY Remote Hub">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="agy_remote">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+  <link rel="icon" type="image/png" href="favicon.png"/>
+  <title>AGY Remote</title>
+  <link rel="manifest" href="manifest.json">
+  <script>
+    window.agyBridge = {
+      onFileReady: null,
+      init: function(callback) {
+        this.onFileReady = callback;
+        var self = this;
+
+        // 全局粘贴事件捕获 (Ctrl+V)
+        window.addEventListener('paste', function(e) {
+          if (!e.clipboardData || !e.clipboardData.items) return;
+          for (var i = 0; i < e.clipboardData.items.length; i++) {
+            var item = e.clipboardData.items[i];
+            if (item.type.indexOf('image') !== -1) {
+              var file = item.getAsFile();
+              if (file) {
+                self.readFile(file, true);
+                e.preventDefault();
+                break;
+              }
+            }
+          }
+        });
+
+        // 拖拽文件捕获
+        window.addEventListener('dragover', function(e) {
+          e.preventDefault();
+        });
+        window.addEventListener('drop', function(e) {
+          e.preventDefault();
+          if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            var file = e.dataTransfer.files[0];
+            var isImg = file.type.indexOf('image') !== -1;
+            self.readFile(file, isImg);
+          }
+        });
+      },
+
+      pickFile: function(accept, isImage) {
+        var self = this;
+        var input = document.createElement('input');
+        input.type = 'file';
+        if (accept) input.accept = accept;
+        input.onchange = function(e) {
+          if (e.target.files && e.target.files.length > 0) {
+            var file = e.target.files[0];
+            var isImg = isImage || (file.type.indexOf('image') !== -1);
+            self.readFile(file, isImg);
+          }
+        };
+        input.click();
+      },
+
+      readFile: function(file, isImg) {
+        var self = this;
+        var reader = new FileReader();
+        reader.onload = function(evt) {
+          var base64 = evt.target.result;
+          if (self.onFileReady) {
+            self.onFileReady(file.name || (isImg ? 'clipboard_image.png' : 'file.txt'), base64, isImg);
+          }
+        };
+        reader.readAsDataURL(file);
+      }
+    };
+  </script>
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
