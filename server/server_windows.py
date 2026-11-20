@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import urllib.parse
 import asyncio
+import base64
 from aiohttp import web, WSMsgType
 
 BRAIN_DIR = os.path.expanduser(r"~\.gemini\antigravity\brain")
@@ -15,8 +16,95 @@ DB_PATH = os.path.expanduser(r"~\.gemini\antigravity\conversation_summaries.db")
 AGENT_API_PATH = os.path.expanduser(r"~\.gemini\antigravity\bin\agentapi.bat")
 LANGUAGE_SERVER_EXE = os.path.expanduser(r"~\AppData\Local\Programs\antigravity\resources\bin\language_server.exe")
 FLUTTER_WEB_DIR = os.path.expanduser(r"~\.gemini\antigravity\scratch\agy_mobile_app\build\web")
-PORT = 8765
-AUTH_TOKEN = os.environ.get("AGY_AUTH_TOKEN", "tetra2026")
+
+# ==========================================
+# 🛡️ 外部配置文件加载与安全参数化
+# ==========================================
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server_config.json")
+def load_windows_config():
+    cfg = {}
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                cfg = data.get("windows", data)
+        except Exception as e:
+            print(f"[-] 加载 server_config.json 异常: {e}")
+    return cfg
+
+WIN_CONFIG = load_windows_config()
+PORT = int(WIN_CONFIG.get("port") or os.environ.get("AGY_PORT", 8765))
+AUTH_TOKEN = WIN_CONFIG.get("auth_token") or os.environ.get("AGY_AUTH_TOKEN", "change_me_to_your_token")
+ALLOWED_ORIGINS = WIN_CONFIG.get("allowed_origins", ["*"])
+
+# 允许访问的目录白名单（默认只允许 brain 目录和 scratch 目录）
+raw_roots = WIN_CONFIG.get("allowed_roots", [
+    r"~\.gemini\antigravity\brain",
+    r"~\.gemini\antigravity\scratch"
+])
+ALLOWED_ROOTS = [os.path.realpath(os.path.expanduser(r)) for r in raw_roots]
+
+# 敏感文件/凭据黑名单正则
+SENSITIVE_PATTERNS = [
+    r"[\\/]\.ssh([\\/]|$)",
+    r"[\\/]\.gnupg([\\/]|$)",
+    r"[\\/]\.aws([\\/]|$)",
+    r"[\\/]\.git([\\/]|$)",
+    r"[\\/]id_rsa([\\.]|$)",
+    r"[\\/]id_ed25519([\\.]|$)",
+    r"[\\/]known_hosts",
+    r"[\\/]authorized_keys",
+    r"[\\/]\.env([\\.]|$)",
+    r"[\\/]server_config\.json$",
+    r"[\\/]etc[\\/]shadow",
+    r"[\\/]etc[\\/]passwd",
+    r"[\\/]Windows[\\/]System32[\\/]config"
+]
+
+def is_path_safe(target_path, dynamic_workspace=None):
+    if not target_path:
+        return False, "Empty path"
+    try:
+        real_target = os.path.realpath(os.path.abspath(target_path))
+        # 1. 严格拦截敏感文件和私钥
+        for pat in SENSITIVE_PATTERNS:
+            if re.search(pat, real_target, re.IGNORECASE):
+                return False, "Access to sensitive credentials or configuration is forbidden"
+        
+        # 2. 检查是否在允许的白名单根目录之内
+        roots = list(ALLOWED_ROOTS)
+        if dynamic_workspace and os.path.exists(dynamic_workspace):
+            roots.append(os.path.realpath(os.path.abspath(dynamic_workspace)))
+        if FLUTTER_WEB_DIR and os.path.exists(FLUTTER_WEB_DIR):
+            roots.append(os.path.realpath(os.path.abspath(FLUTTER_WEB_DIR)))
+            
+        is_allowed = False
+        for r in roots:
+            if not r:
+                continue
+            if real_target == r or real_target.startswith(r + os.sep):
+                is_allowed = True
+                break
+                
+        if not is_allowed:
+            return False, "Path is outside allowed directories"
+            
+        return True, real_target
+    except Exception as e:
+        return False, str(e)
+
+def build_cors_headers(request, base_headers=None):
+    headers = dict(base_headers or {})
+    origin = request.headers.get("Origin")
+    if not origin:
+        return headers
+    if "*" in ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    elif origin in ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    return headers
 
 connected_ws_clients = set()
 current_active_session_id = None
@@ -734,9 +822,13 @@ async def websocket_handler(request):
 
                     elif action == "read_file":
                         rel_or_abs = data.get("path", "")
-                        base = current_workspace_dir if (current_workspace_dir and os.path.exists(current_workspace_dir)) else os.path.expanduser("~")
-                        target = rel_or_abs if os.path.isabs(rel_or_abs) else os.path.join(base, rel_or_abs)
-                        target = os.path.abspath(target)
+                        base = current_workspace_dir if (current_workspace_dir and os.path.exists(current_workspace_dir)) else None
+                        target = rel_or_abs if os.path.isabs(rel_or_abs) else (os.path.join(base, rel_or_abs) if base else rel_or_abs)
+                        safe, result = is_path_safe(target, current_workspace_dir)
+                        if not safe:
+                            await ws.send_json({"type": "file_content_error", "path": rel_or_abs, "error": f"安全拦截: {result}"})
+                            continue
+                        target = result
                         if os.path.exists(target) and os.path.isfile(target):
                             try:
                                 size = os.path.getsize(target)
@@ -777,7 +869,24 @@ async def websocket_handler(request):
                             await ws.send_json({"type": "file_content_error", "path": target, "error": "文件不存在或不可读取"})
 
                     elif action == "get_git_diff":
-                        base = current_workspace_dir if (current_workspace_dir and os.path.exists(current_workspace_dir)) else os.path.expanduser("~")
+                        base = current_workspace_dir if (current_workspace_dir and os.path.exists(current_workspace_dir)) else None
+                        if not base:
+                            await ws.send_json({
+                                "type": "git_diff_result",
+                                "workspace": "",
+                                "status": "",
+                                "diff": "未指定有效的工作区目录"
+                            })
+                            continue
+                        safe, _ = is_path_safe(base, base)
+                        if not safe:
+                            await ws.send_json({
+                                "type": "git_diff_result",
+                                "workspace": base,
+                                "status": "",
+                                "diff": "工作区不在允许的安全目录白名单内"
+                            })
+                            continue
                         diff_output = ""
                         status_output = ""
                         try:
@@ -814,7 +923,6 @@ async def websocket_handler(request):
                         if "," in raw_data:
                             raw_data = raw_data.split(",", 1)[1]
                         
-                        import base64
                         try:
                             decoded = base64.b64decode(raw_data)
                             with open(saved_path, "wb") as f:
@@ -961,11 +1069,17 @@ async def media_handler(request):
     if not file_path:
         return web.Response(text="Missing path", status=400)
     
-    norm_path = os.path.abspath(file_path)
+    clean_path = urllib.parse.unquote(file_path.replace("file:///", "").replace("file://", ""))
+    safe, result = is_path_safe(clean_path, current_workspace_dir)
+    if not safe:
+        return web.Response(text=f"Forbidden: {result}", status=403)
+    
+    norm_path = result
     if not os.path.exists(norm_path) or not os.path.isfile(norm_path):
         return web.Response(text="File not found", status=404)
     
-    return web.FileResponse(norm_path)
+    headers = build_cors_headers(request)
+    return web.FileResponse(norm_path, headers=headers)
 
 async def download_handler(request):
     token = request.query.get("token") or request.headers.get("X-Auth-Token")
@@ -976,13 +1090,12 @@ async def download_handler(request):
     if not file_path:
         return web.Response(text="Missing path", status=400)
     
-    if file_path.startswith("file:///"):
-        file_path = file_path.replace("file:///", "")
-    elif file_path.startswith("file://"):
-        file_path = file_path.replace("file://", "")
-    file_path = urllib.parse.unquote(file_path)
-
-    norm_path = os.path.abspath(file_path)
+    clean_path = urllib.parse.unquote(file_path.replace("file:///", "").replace("file://", ""))
+    safe, result = is_path_safe(clean_path, current_workspace_dir)
+    if not safe:
+        return web.Response(text=f"Forbidden: {result}", status=403)
+    
+    norm_path = result
     if not os.path.exists(norm_path) or not os.path.isfile(norm_path):
         return web.Response(text="File not found", status=404)
     
@@ -990,9 +1103,9 @@ async def download_handler(request):
     quoted_name = urllib.parse.quote(filename)
     headers = {
         "Content-Disposition": f'attachment; filename="{quoted_name}"; filename*=UTF-8\'\'{quoted_name}',
-        "Access-Control-Allow-Origin": "*",
         "Cache-Control": "no-cache"
     }
+    headers = build_cors_headers(request, headers)
     return web.FileResponse(norm_path, headers=headers)
 
 async def index_handler(request):

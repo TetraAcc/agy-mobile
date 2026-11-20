@@ -1,0 +1,53 @@
+{
+  "windows": {
+    "port": 8765,
+    "auth_token": "change_me_to_your_token",
+    "allowed_origins": [
+      "https://agy.your-domain.com",
+      "http://localhost:8768"
+    ],
+    "allowed_roots": [
+      "~/.gemini/antigravity/brain",
+      "~/.gemini/antigravity/scratch"
+    ]
+  },
+  "deck": {
+    "port": 8768,
+    "allowed_origins": [
+      "https://agy.your-domain.com"
+    ],
+    "user_profiles": {
+      "tetra_token_sample": {
+        "user": "Tetra",
+        "allowed_nodes": ["windows", "deck"],
+        "default_node": "windows"
+      },
+      "guest_token_sample": {
+        "user": "Guest",
+        "allowed_nodes": ["guest_pc"],
+        "default_node": "guest_pc"
+      }
+    },
+    "node_registry": {
+      "deck": {
+        "name": "Steam Deck",
+        "host": "127.0.0.1:8768",
+        "is_local": true
+      },
+      "windows": {
+        "name": "Windows PC",
+        "host": "192.168.0.22:8765",
+        "is_local": false
+      },
+      "guest_pc": {
+        "name": "我的电脑",
+        "host": "100.96.49.89:8765",
+        "is_local": false
+      }
+    },
+    "allowed_roots": [
+      "~/.gemini/antigravity-cli/brain",
+      "~/agy_remote"
+    ]
+  }
+}

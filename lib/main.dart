@@ -3724,10 +3724,10 @@ Widget _buildMessageCard(AgentMessage msg) {
     _heartbeatTimer?.cancel();
     _reconnectTimer?.cancel();
     _channel?.sink.close();
+    _inputController.removeListener(_onInputChanged);
     _scrollController.dispose();
     _ipController.dispose();
     _inputController.dispose();
-    _inputController.removeListener(_onInputChanged);
     super.dispose();
   }
 }

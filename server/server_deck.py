@@ -3,53 +3,116 @@ import sys
 import json
 import time
 import glob
+import re
 import asyncio
 import sqlite3
+import logging
 import urllib.parse
 import urllib.request
 from aiohttp import web, WSMsgType
 import aiohttp
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # 基础目录与配置
 BRAIN_DIR = os.path.expanduser("~/.gemini/antigravity-cli/brain")
 DB_PATH = os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.db")
 AGENT_API_PATH = os.path.expanduser("~/.gemini/antigravity-cli/bin/agentapi")
 FLUTTER_WEB_DIR = os.path.expanduser("~/agy_remote/web")
-PORT = int(os.environ.get("AGY_PORT", 8768))
 
 # ==========================================
-# 🛡️ 多租户白名单与节点隔离映射表
+# 🛡️ 外部配置文件加载与多租户白名单
 # ==========================================
-USER_PROFILES = {
-    "tetra2026": {
-        "user": "Tetra",
-        "allowed_nodes": ["windows", "deck"],
-        "default_node": "windows"
-    },
-    "simeng": {
-        "user": "Simeng",
-        "allowed_nodes": ["li"],
-        "default_node": "li"
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server_config.json")
+def load_deck_config():
+    cfg = {}
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                cfg = data.get("deck", data)
+        except Exception as e:
+            logging.error(f"加载 server_config.json 异常: {e}")
+    return cfg
+
+DECK_CONFIG = load_deck_config()
+PORT = int(DECK_CONFIG.get("port") or os.environ.get("AGY_PORT", 8768))
+ALLOWED_ORIGINS = DECK_CONFIG.get("allowed_origins", ["*"])
+
+USER_PROFILES = DECK_CONFIG.get("user_profiles", {
+    "sample_token": {
+        "user": "DefaultUser",
+        "allowed_nodes": ["deck"],
+        "default_node": "deck"
     }
-}
+})
 
-NODE_REGISTRY = {
+NODE_REGISTRY = DECK_CONFIG.get("node_registry", {
     "deck": {
         "name": "Steam Deck",
         "host": "127.0.0.1:8768",
         "is_local": True
-    },
-    "windows": {
-        "name": "Windows PC",
-        "host": "192.168.0.22:8765",  # 或 100.82.7.111:8765
-        "is_local": False
-    },
-    "li": {
-        "name": "我的电脑",
-        "host": "100.96.49.89:8765",  # Tailscale 虚拟局域网 IP
-        "is_local": False
     }
-}
+})
+
+raw_roots = DECK_CONFIG.get("allowed_roots", [
+    "~/.gemini/antigravity-cli/brain",
+    "~/agy_remote"
+])
+ALLOWED_ROOTS = [os.path.realpath(os.path.expanduser(r)) for r in raw_roots]
+
+# 敏感文件/凭据黑名单正则
+SENSITIVE_PATTERNS = [
+    r"[\\/]\.ssh([\\/]|$)",
+    r"[\\/]\.gnupg([\\/]|$)",
+    r"[\\/]\.aws([\\/]|$)",
+    r"[\\/]\.git([\\/]|$)",
+    r"[\\/]id_rsa([\\.]|$)",
+    r"[\\/]id_ed25519([\\.]|$)",
+    r"[\\/]known_hosts",
+    r"[\\/]authorized_keys",
+    r"[\\/]\.env([\\.]|$)",
+    r"[\\/]server_config\.json$",
+    r"[\\/]etc[\\/]shadow",
+    r"[\\/]etc[\\/]passwd"
+]
+
+def is_path_safe(target_path):
+    if not target_path:
+        return False, "Empty path"
+    try:
+        real_target = os.path.realpath(os.path.abspath(target_path))
+        for pat in SENSITIVE_PATTERNS:
+            if re.search(pat, real_target, re.IGNORECASE):
+                return False, "Access to sensitive credentials or configuration is forbidden"
+        
+        is_allowed = False
+        for r in ALLOWED_ROOTS:
+            if not r:
+                continue
+            if real_target == r or real_target.startswith(r + os.sep):
+                is_allowed = True
+                break
+                
+        if not is_allowed:
+            return False, "Path is outside allowed directories"
+            
+        return True, real_target
+    except Exception as e:
+        return False, str(e)
+
+def build_cors_headers(request, base_headers=None):
+    headers = dict(base_headers or {})
+    origin = request.headers.get("Origin")
+    if not origin:
+        return headers
+    if "*" in ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    elif origin in ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    return headers
 
 connected_ws_clients = {}  # ws -> token
 current_active_session_id = None
@@ -69,7 +132,8 @@ async def is_node_alive(node_id):
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(f"http://{host}/?token=probe") as resp:
                 return resp.status in (200, 401)
-    except Exception:
+    except Exception as e:
+        logging.debug(f"节点 {node_id} ({host}) 探活失败: {e}")
         return False
 
 async def get_user_nodes_status(user_token):
@@ -493,11 +557,17 @@ async def media_handler(request):
         except Exception as e:
             return web.Response(text=f"Failed to fetch from remote: {e}", status=502)
 
-    norm_path = os.path.abspath(file_path)
+    # 本地路径读取 — 严格白名单与敏感文件阻断
+    safe, result = is_path_safe(file_path)
+    if not safe:
+        return web.Response(text=f"Forbidden: {result}", status=403)
+        
+    norm_path = result
     if not os.path.exists(norm_path) or not os.path.isfile(norm_path):
         return web.Response(text="File not found", status=404)
     
-    return web.FileResponse(norm_path)
+    headers = build_cors_headers(request)
+    return web.FileResponse(norm_path, headers=headers)
 
 async def download_handler(request):
     token = request.query.get("token") or request.headers.get("X-Auth-Token")
@@ -534,15 +604,20 @@ async def download_handler(request):
                         ct = resp.headers.get("Content-Type", "application/octet-stream")
                         headers = {
                             "Content-Disposition": disposition,
-                            "Access-Control-Allow-Origin": "*",
                             "Cache-Control": "no-cache"
                         }
+                        headers = build_cors_headers(request, headers)
                         return web.Response(body=content, content_type=ct, headers=headers)
                     return web.Response(text=f"Remote host error: {resp.status}", status=resp.status)
         except Exception as e:
             return web.Response(text=f"Failed to fetch from remote: {e}", status=502)
 
-    norm_path = os.path.abspath(file_path)
+    # 本地路径下载 — 严格白名单与敏感文件阻断
+    safe, result = is_path_safe(file_path)
+    if not safe:
+        return web.Response(text=f"Forbidden: {result}", status=403)
+
+    norm_path = result
     if not os.path.exists(norm_path) or not os.path.isfile(norm_path):
         return web.Response(text="File not found", status=404)
     
@@ -550,9 +625,9 @@ async def download_handler(request):
     quoted_name = urllib.parse.quote(filename)
     headers = {
         "Content-Disposition": f'attachment; filename="{quoted_name}"; filename*=UTF-8\'\'{quoted_name}',
-        "Access-Control-Allow-Origin": "*",
         "Cache-Control": "no-cache"
     }
+    headers = build_cors_headers(request, headers)
     return web.FileResponse(norm_path, headers=headers)
 
 async def index_handler(request):
@@ -606,10 +681,10 @@ async def check_and_broadcast_nodes():
                             "type": "nodes_status",
                             "nodes": nodes
                         })
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    except Exception as e:
+                        logging.debug(f"向客户端广播节点状态失败: {e}")
+        except Exception as e:
+            logging.debug(f"节点状态巡检循环异常: {e}")
         await asyncio.sleep(8)
 
 async def background_workers(app):
