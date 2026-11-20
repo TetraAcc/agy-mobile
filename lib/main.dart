@@ -3,6 +3,7 @@ import 'dart:async';
 import 'bridge/js_bridge.dart';
 import 'constants/app_colors.dart';
 import 'models/models.dart';
+import 'widgets/widgets.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -3022,11 +3023,23 @@ Widget _buildMessageCard(AgentMessage msg) {
           children: [
             // 斜杠指令悬浮补全卡片
             if (_showSlashMenu)
-              _buildSlashCommandsOverlay(isDark),
+              SlashCommandMenu(
+                commands: _filteredSlashCommands,
+                onSelect: _applySlashCommand,
+                isDark: isDark,
+              ),
 
             // 待上传附件栏
             if (_pendingAttachments.isNotEmpty)
-              _buildPendingAttachmentsBar(isDark),
+              AttachmentPreviewBar(
+                attachments: _pendingAttachments,
+                onRemove: (idx) {
+                  setState(() {
+                    _pendingAttachments.removeAt(idx);
+                  });
+                },
+                isDark: isDark,
+              ),
 
             // 输入框主行
             Row(
@@ -3093,347 +3106,20 @@ Widget _buildMessageCard(AgentMessage msg) {
     );
   }
 
-  Widget _buildSlashCommandsOverlay(bool isDark) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      constraints: const BoxConstraints(maxHeight: 220),
-      decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF0E1626) : Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: isDark ? const Color(0xFF23324A) : const Color(0xFFCBD5E1),
-          width: 1,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.18),
-            blurRadius: 12,
-            offset: const Offset(0, -2),
-          ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: ListView.separated(
-          shrinkWrap: true,
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          itemCount: _filteredSlashCommands.length,
-          separatorBuilder: (_, __) => Divider(
-            height: 1,
-            color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-          ),
-          itemBuilder: (ctx, idx) {
-            final cmd = _filteredSlashCommands[idx];
-            return InkWell(
-              onTap: () => _applySlashCommand(cmd.command),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.primary.withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        cmd.command,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontFamily: 'monospace',
-                          fontWeight: FontWeight.bold,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        cmd.description,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    Icon(
-                      Icons.north_west_rounded,
-                      size: 14,
-                      color: isDark ? Colors.white30 : Colors.black26,
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPendingAttachmentsBar(bool isDark) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 6),
-      height: 48,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: _pendingAttachments.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
-        itemBuilder: (ctx, idx) {
-          final att = _pendingAttachments[idx];
-          return Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color: att.isUploading
-                    ? Colors.orangeAccent.withOpacity(0.6)
-                    : Theme.of(context).colorScheme.primary.withOpacity(0.5),
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (att.isImage && att.imageBytes != null)
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(6),
-                    child: Image.memory(att.imageBytes!, width: 36, height: 36, fit: BoxFit.cover),
-                  )
-                else
-                  Icon(
-                    att.isImage ? Icons.image_rounded : Icons.insert_drive_file_rounded,
-                    size: 24,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                const SizedBox(width: 8),
-                Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 130),
-                      child: Text(
-                        att.filename,
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: isDark ? Colors.white : Colors.black87,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    Text(
-                      att.isUploading
-                          ? "正在上传..."
-                          : (att.size > 0 ? "${(att.size / 1024).toStringAsFixed(1)} KB · 就绪" : "已就绪"),
-                      style: TextStyle(
-                        fontSize: 9,
-                        color: att.isUploading ? Colors.orangeAccent : Colors.greenAccent,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(width: 4),
-                InkWell(
-                  onTap: () {
-                    setState(() {
-                      _pendingAttachments.removeAt(idx);
-                    });
-                  },
-                  child: Padding(
-                    padding: const EdgeInsets.all(4),
-                    child: Icon(Icons.close_rounded, size: 16, color: isDark ? Colors.white54 : Colors.black45),
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
   void _showNewSessionDialog() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final titleController = TextEditingController();
-
     showDialog(
       context: context,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx, setModalState) {
-            return AlertDialog(
-              backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              title: const Row(
-                children: [
-                  Icon(Icons.add_comment_rounded, size: 20),
-                  SizedBox(width: 8),
-                  Text("开启全新会话", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                ],
-              ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text("初始任务或探讨主题：", style: TextStyle(fontSize: 12, color: isDark ? Colors.white60 : Colors.black54)),
-                  const SizedBox(height: 6),
-                  TextField(
-                    controller: titleController,
-                    autofocus: true,
-                    style: TextStyle(color: isDark ? Colors.white : Colors.black87),
-                    decoration: InputDecoration(
-                      hintText: "例如：帮我梳理项目结构 / 编写一段经典算法...",
-                      hintStyle: TextStyle(color: isDark ? Colors.white24 : Colors.black26, fontSize: 12),
-                      filled: true,
-                      fillColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  Text("运行模式：", style: TextStyle(fontSize: 12, color: isDark ? Colors.white60 : Colors.black54)),
-                  const SizedBox(height: 6),
-                  Row(
-                    children: [
-                      _buildDialogChip("auto", "🤖 Auto", _selectedMode, (m) {
-                        setModalState(() => _selectedMode = m);
-                        setState(() {});
-                      }, isDark),
-                      const SizedBox(width: 6),
-                      _buildDialogChip("turbo", "⚡ Turbo", _selectedMode, (m) {
-                        setModalState(() => _selectedMode = m);
-                        setState(() {});
-                      }, isDark),
-                      const SizedBox(width: 6),
-                      _buildDialogChip("plan", "📝 Plan", _selectedMode, (m) {
-                        setModalState(() => _selectedMode = m);
-                        setState(() {});
-                      }, isDark),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text("官方推理模型与思考分级：", style: TextStyle(fontSize: 12, color: isDark ? Colors.white60 : Colors.black54)),
-                  const SizedBox(height: 6),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0)),
-                    ),
-                    child: DropdownButtonHideUnderline(
-                      child: DropdownButton<String>(
-                        value: kAllOfficialModels.any((m) => m.id == _selectedModel) ? _selectedModel : kAllOfficialModels.first.id,
-                        isExpanded: true,
-                        dropdownColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-                        icon: Icon(Icons.arrow_drop_down_rounded, color: isDark ? Colors.white70 : Colors.black54),
-                        items: kAllOfficialModels.map((m) {
-                          return DropdownMenuItem<String>(
-                            value: m.id,
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Row(
-                                  children: [
-                                    Text(m.icon, style: const TextStyle(fontSize: 13)),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      m.displayName,
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: m.id == _selectedModel ? FontWeight.bold : FontWeight.normal,
-                                        color: isDark ? Colors.white : Colors.black87,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                if (m.thinkingBadge.isNotEmpty)
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                                    decoration: BoxDecoration(
-                                      color: m.thinkingBadge == "High" || m.thinkingBadge == "Thinking"
-                                          ? (isDark ? const Color(0xFF0284C7).withOpacity(0.3) : const Color(0xFFE0F2FE))
-                                          : (isDark ? Colors.white10 : Colors.black12),
-                                      borderRadius: BorderRadius.circular(4),
-                                    ),
-                                    child: Text(
-                                      m.thinkingBadge,
-                                      style: TextStyle(
-                                        fontSize: 9.5,
-                                        fontWeight: FontWeight.bold,
-                                        color: m.thinkingBadge == "High" || m.thinkingBadge == "Thinking"
-                                            ? (isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7))
-                                            : (isDark ? Colors.white60 : Colors.black54),
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          );
-                        }).toList(),
-                        onChanged: (val) {
-                          if (val != null) {
-                            setModalState(() => _selectedModel = val);
-                            setState(() {});
-                          }
-                        },
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: Text("取消", style: TextStyle(color: isDark ? Colors.white60 : Colors.black54)),
-                ),
-                ElevatedButton(
-                  onPressed: () {
-                    final prompt = titleController.text.trim();
-                    Navigator.pop(ctx);
-                    _startNewSession(prompt.isEmpty ? "你好，开始新任务" : prompt);
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Theme.of(context).colorScheme.primary,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                  ),
-                  child: const Text("立即开启"),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildDialogChip(String id, String label, String currentVal, Function(String) onSelect, bool isDark) {
-    final isSelected = id == currentVal;
-    return InkWell(
-      onTap: () => onSelect(id),
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: isSelected ? Theme.of(context).colorScheme.primary.withOpacity(0.2) : (isDark ? Colors.white.withOpacity(0.06) : Colors.black12),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: isSelected ? Theme.of(context).colorScheme.primary : Colors.transparent,
-          ),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-            color: isSelected ? Theme.of(context).colorScheme.primary : (isDark ? Colors.white70 : Colors.black87),
-          ),
-        ),
+      builder: (ctx) => NewSessionDialog(
+        initialMode: _selectedMode,
+        initialModel: _selectedModel,
+        models: kAllOfficialModels,
+        onStart: (prompt, mode, model) {
+          setState(() {
+            _selectedMode = mode;
+            _selectedModel = model;
+          });
+          _startNewSession(prompt);
+        },
       ),
     );
   }

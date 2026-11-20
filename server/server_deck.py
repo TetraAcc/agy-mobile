@@ -11,6 +11,15 @@ import urllib.parse
 import urllib.request
 from aiohttp import web, WSMsgType
 import aiohttp
+from server_common import (
+    IGNORED_MSG_TYPES,
+    SENSITIVE_PATTERNS,
+    is_path_safe as common_is_path_safe,
+    build_cors_headers as common_build_cors_headers,
+    clean_display_content,
+    parse_project_name_and_path,
+    list_workspace_files
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -61,58 +70,15 @@ raw_roots = DECK_CONFIG.get("allowed_roots", [
 ])
 ALLOWED_ROOTS = [os.path.realpath(os.path.expanduser(r)) for r in raw_roots]
 
-# 敏感文件/凭据黑名单正则
-SENSITIVE_PATTERNS = [
-    r"[\\/]\.ssh([\\/]|$)",
-    r"[\\/]\.gnupg([\\/]|$)",
-    r"[\\/]\.aws([\\/]|$)",
-    r"[\\/]\.git([\\/]|$)",
-    r"[\\/]id_rsa([\\.]|$)",
-    r"[\\/]id_ed25519([\\.]|$)",
-    r"[\\/]known_hosts",
-    r"[\\/]authorized_keys",
-    r"[\\/]\.env([\\.]|$)",
-    r"[\\/]server_config\.json$",
-    r"[\\/]etc[\\/]shadow",
-    r"[\\/]etc[\\/]passwd"
-]
-
 def is_path_safe(target_path):
-    if not target_path:
-        return False, "Empty path"
-    try:
-        real_target = os.path.realpath(os.path.abspath(target_path))
-        for pat in SENSITIVE_PATTERNS:
-            if re.search(pat, real_target, re.IGNORECASE):
-                return False, "Access to sensitive credentials or configuration is forbidden"
-        
-        is_allowed = False
-        for r in ALLOWED_ROOTS:
-            if not r:
-                continue
-            if real_target == r or real_target.startswith(r + os.sep):
-                is_allowed = True
-                break
-                
-        if not is_allowed:
-            return False, "Path is outside allowed directories"
-            
-        return True, real_target
-    except Exception as e:
-        return False, str(e)
+    return common_is_path_safe(
+        target_path,
+        allowed_roots=ALLOWED_ROOTS,
+        extra_dirs=[FLUTTER_WEB_DIR]
+    )
 
 def build_cors_headers(request, base_headers=None):
-    headers = dict(base_headers or {})
-    origin = request.headers.get("Origin")
-    if not origin:
-        return headers
-    if "*" in ALLOWED_ORIGINS:
-        headers["Access-Control-Allow-Origin"] = origin
-        headers["Access-Control-Allow-Credentials"] = "true"
-    elif origin in ALLOWED_ORIGINS:
-        headers["Access-Control-Allow-Origin"] = origin
-        headers["Access-Control-Allow-Credentials"] = "true"
-    return headers
+    return common_build_cors_headers(request, allowed_origins=ALLOWED_ORIGINS, base_headers=base_headers)
 
 connected_ws_clients = {}  # ws -> token
 current_active_session_id = None
@@ -152,24 +118,6 @@ async def get_user_nodes_status(user_token):
             "online": online
         })
     return nodes
-
-def parse_project_name_and_path(ws_uris):
-    if not ws_uris or ws_uris.strip() in ("", "[]"):
-        return None, None
-    try:
-        uris = json.loads(ws_uris)
-        if isinstance(uris, list) and uris:
-            raw_uri = uris[0]
-            decoded = urllib.parse.unquote(raw_uri)
-            if decoded.startswith("file://"):
-                local_path = decoded.replace("file://", "")
-                folder_name = os.path.basename(local_path.rstrip("/"))
-                if not folder_name:
-                    folder_name = local_path.rstrip("/")
-                return folder_name, local_path
-    except Exception:
-        pass
-    return None, None
 
 def get_grouped_sessions():
     if not os.path.exists(DB_PATH):
