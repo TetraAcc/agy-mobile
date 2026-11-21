@@ -469,14 +469,27 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
             } else if (type == 'session_history') {
               final hist = (data['history'] as List).map((e) => AgentMessage.fromJson(e)).toList();
               final sid = data['session_id']?.toString() ?? _activeSessionId;
-              if (hist.isNotEmpty) {
-                final latest = hist.first;
-                if (latest.isUser || (latest.status != 'DONE' && latest.status != 'ERROR') || latest.toolCalls.isNotEmpty) {
+              
+              // 权威判定：优先以服务端下发的真实运行状态为准
+              if (data['is_running'] != null) {
+                if (data['is_running'] == true) {
                   _runningSessionIds.add(sid);
                 } else {
                   _runningSessionIds.remove(sid);
                 }
+              } else if (hist.isNotEmpty) {
+                // 回退逻辑：必须检查最新的一条（hist.last 而非 hist.first）
+                final latest = hist.last;
+                if (!latest.isUser && (latest.status == 'DONE' || latest.status == 'ERROR')) {
+                  _runningSessionIds.remove(sid);
+                } else {
+                  // 载入历史记录默认不悬挂运行态，除非明确有未完成标志
+                  _runningSessionIds.remove(sid);
+                }
+              } else {
+                _runningSessionIds.remove(sid);
               }
+
               setState(() {
                 _messages.clear();
                 _messages.addAll(hist.reversed);
@@ -607,7 +620,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                     } else {
                       _runningSessionIds.remove(sid);
                     }
-                  } else if (newMsg.status == 'DONE' && newMsg.toolCalls.isEmpty) {
+                  } else if (newMsg.status == 'DONE' || newMsg.status == 'ERROR') {
                     _runningSessionIds.remove(sid);
                   } else {
                     _runningSessionIds.add(sid);

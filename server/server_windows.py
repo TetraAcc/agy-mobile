@@ -69,6 +69,8 @@ current_active_session_id = None
 current_active_file = None
 current_workspace_dir = None
 file_handle = None
+is_current_session_running = False
+last_log_active_time = time.time()
 
 def get_grouped_sessions():
     if not os.path.exists(DB_PATH):
@@ -341,7 +343,7 @@ def load_session_history(session_file, max_lines=40):
     return history
 
 async def tail_transcript():
-    global current_active_file, file_handle, current_active_session_id
+    global current_active_file, file_handle, current_active_session_id, is_current_session_running, last_log_active_time
 
     print("[*] 日志监听常驻协程已就绪...")
     while True:
@@ -354,12 +356,15 @@ async def tail_transcript():
                     print(f"[+] 锁定活跃会话: {current_active_session_id}")
                     file_handle = open(current_active_file, "r", encoding="utf-8", errors="replace")
                     file_handle.seek(0, os.SEEK_END)
+                    is_current_session_running = False
+                    last_log_active_time = time.time()
 
             if file_handle:
                 line = file_handle.readline()
                 if line:
                     line = line.strip()
                     if line:
+                        last_log_active_time = time.time()
                         try:
                             record = json.loads(line)
                             msg_type = record.get("type", "UNKNOWN")
@@ -377,9 +382,9 @@ async def tail_transcript():
                             src = record.get("source", "")
                             st = record.get("status", "")
                             is_user = (src == "USER_EXPLICIT" or msg_type == "USER_INPUT")
-                            # 只要收到用户消息，或者模型在调用工具，会话处于运行中
-                            # 只有模型输出 DONE 且无 tool_calls 时会话才进入空闲
-                            is_running = is_user or (len(tool_calls) > 0) or (st != "DONE")
+                            # 判定状态：用户发问或未完成态标记为运行中；DONE 或 ERROR 标记为空闲
+                            is_running = is_user or (st != "DONE" and st != "ERROR")
+                            is_current_session_running = is_running
 
                             event = {
                                 "type": "agent_update",
@@ -404,6 +409,15 @@ async def tail_transcript():
                         except Exception as e:
                             print(f"[-] JSON 解析异常: {e}")
                 else:
+                    # 静默超时自动复位：若超过 2.5 秒没有新的日志产生，自动归位为空闲
+                    if is_current_session_running and (time.time() - last_log_active_time > 2.5):
+                        is_current_session_running = False
+                        await broadcast_message({
+                            "type": "status_change",
+                            "session_id": current_active_session_id,
+                            "is_running": False
+                        })
+                        print(f"[*] 会话 {current_active_session_id} 静默超时 2.5s，自动归位为空闲")
                     await asyncio.sleep(0.3)
             else:
                 await asyncio.sleep(1)
@@ -480,10 +494,13 @@ async def websocket_handler(request):
         # 3. 历史消息（必定立即推送）
         if current_active_file and os.path.exists(current_active_file):
             history = load_session_history(current_active_file, max_lines=40)
+            file_mtime = os.path.getmtime(current_active_file)
+            real_running = is_current_session_running and (time.time() - file_mtime < 2.5)
             await ws.send_json({
                 "type": "session_history",
                 "session_id": current_active_session_id,
-                "history": history
+                "history": history,
+                "is_running": real_running
             })
 
         # 4. 实时额度初始推送
@@ -695,14 +712,19 @@ async def websocket_handler(request):
                                 file_handle.close()
                             current_active_file = target_file
                             current_active_session_id = target_id
+                            is_current_session_running = False
+                            last_log_active_time = time.time()
                             print(f"[+] 切换会话: {target_id}")
                             file_handle = open(current_active_file, "r", encoding="utf-8", errors="replace")
                             file_handle.seek(0, os.SEEK_END)
                             history = load_session_history(current_active_file, max_lines=40)
+                            file_mtime = os.path.getmtime(current_active_file)
+                            real_running = (time.time() - file_mtime < 2.5)
                             await ws.send_json({
                                 "type": "session_history",
                                 "session_id": current_active_session_id,
-                                "history": history
+                                "history": history,
+                                "is_running": real_running
                             })
 
                     elif action == "browse_files":

@@ -5,7 +5,7 @@
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter)](https://flutter.dev)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-v1.2.1-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
+[![Version](https://img.shields.io/badge/Version-v1.2.2-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-13%2F13%20Passed-success.svg)](test/widget_test.dart)
 
@@ -18,8 +18,10 @@
   - “开启全新会话”弹窗新增“所属项目 / 关联工作区”下拉选单，支持在“🌐 通用任务 (无项目绑定)”与“📁 具体项目”间随时无缝切换；
   - 服务端底座自动将底层 `language_server.exe agentapi new-conversation` 执行工作目录 (`cwd`) 设置为目标工程物理路径，Antigravity 天然将新任务准确归属于该项目。
 - 🌐 **全跨平台免客户端安装**：基于 Flutter 3 编译为高性能 Web 应用，手机 Safari/Chrome、平板、电脑浏览器打开即用，PWA 即刻安装到桌面。
-- 🔄 **会话级执行状态与消息流物理隔离 (v1.2.0 新增)**：
+- 🔄 **会话级执行状态与消息流物理隔离 (v1.2.2 增强)**：
   - 各个 Session 的运行/停止状态完全独立追踪，告别“全局停止按钮”设计缺陷；
+  - **静默超时自动复位 (v1.2.2)**：服务端引入 2.5 秒日志无写入自动归位机制，若会话长时间无新步骤，后端自动向前端同步空闲态，杜绝假死悬挂；
+  - **历史记录倒序校准 (v1.2.2)**：修正前端历史记录升序读取逻辑，严格以权威最新 step 判定运行态，彻底根除“无任务仍显示在运行”的假态问题；
   - 某个后台会话运行时，其他会话底部正常显示发送箭头，互不干扰；
   - 侧边栏抽屉带微型旋转动画与红色的 **`[运行中]`** 动态标签，哪个后台任务在跑一目了然；
   - 消息流精确过滤，绝不发生跨会话实时打字串屏。
