@@ -12,8 +12,11 @@ import 'models/models.dart';
 import 'utils/file_utils.dart';
 import 'widgets/widgets.dart';
 
-// 全局主题监听器
+// 全局明暗主题监听器
 final ValueNotifier<ThemeMode> themeNotifier = ValueNotifier(ThemeMode.dark);
+// 全局强调色主题监听器（默认使用护眼翡翠绿）
+final ValueNotifier<AccentThemeOption> accentThemeNotifier =
+    ValueNotifier(AppColors.accentThemes.first);
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -38,13 +41,18 @@ class _AgyRemoteAppState extends State<AgyRemoteApp> {
     final prefs = await SharedPreferences.getInstance();
     final isDark = prefs.getBool('is_dark_mode') ?? true;
     themeNotifier.value = isDark ? ThemeMode.dark : ThemeMode.light;
+    final accentId = prefs.getString('accent_theme') ?? 'emerald';
+    accentThemeNotifier.value = AppColors.getThemeById(accentId);
   }
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<ThemeMode>(
-      valueListenable: themeNotifier,
-      builder: (ctx, currentThemeMode, _) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([themeNotifier, accentThemeNotifier]),
+      builder: (ctx, _) {
+        final currentThemeMode = themeNotifier.value;
+        final currentAccent = accentThemeNotifier.value;
+
         return MaterialApp(
           title: 'AGY Remote',
           debugShowCheckedModeBanner: false,
@@ -54,19 +62,21 @@ class _AgyRemoteAppState extends State<AgyRemoteApp> {
             useMaterial3: true,
             brightness: Brightness.light,
             scaffoldBackgroundColor: AppColors.lightBg,
-            colorScheme: const ColorScheme.light(
-              primary: AppColors.primaryBlue,
+            colorScheme: ColorScheme.light(
+              primary: currentAccent.primary,
+              secondary: currentAccent.secondary,
               surface: AppColors.lightSurface,
               background: AppColors.lightBg,
             ),
           ),
-          // 深度暗夜模式
+          // 深度暗夜模式（护眼柔和）
           darkTheme: ThemeData(
             useMaterial3: true,
             brightness: Brightness.dark,
             scaffoldBackgroundColor: AppColors.darkBg,
-            colorScheme: const ColorScheme.dark(
-              primary: AppColors.primarySky,
+            colorScheme: ColorScheme.dark(
+              primary: currentAccent.primary,
+              secondary: currentAccent.secondary,
               surface: AppColors.darkSurface,
               background: AppColors.darkBg,
             ),
@@ -93,6 +103,9 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
   final Map<String, List<SessionItem>> _projects = {};
   final List<SessionItem> _generalSessions = [];
   final ScrollController _scrollController = ScrollController();
+  bool _showScrollToBottom = false;
+  Timer? _quotaPollingTimer;
+  late final Map<String, void Function(Map<String, dynamic>)> _messageHandlers;
 
   String _selectedNode = "windows";
   String _selectedMode = "auto";
@@ -132,9 +145,44 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
   @override
   void initState() {
     super.initState();
+    _initMessageHandlers();
+    _scrollController.addListener(_onScrollChanged);
     _inputController.addListener(_onInputChanged);
     _initWebPasteListener();
     _loadSavedIp();
+  }
+
+  void _onScrollChanged() {
+    if (!_scrollController.hasClients) return;
+    final isFar = _scrollController.offset > 120;
+    if (isFar != _showScrollToBottom) {
+      setState(() => _showScrollToBottom = isFar);
+    }
+  }
+
+  void _scrollToBottom() {
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        0,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOutCubic,
+      );
+    }
+  }
+
+  void _updateAccentTheme(AccentThemeOption option) async {
+    accentThemeNotifier.value = option;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('accent_theme', option.id);
+  }
+
+  void _startQuotaPolling() {
+    _quotaPollingTimer?.cancel();
+    _quotaPollingTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      if (_isConnected) {
+        _requestQuota();
+      }
+    });
   }
 
   void _requestQuota() {
@@ -368,6 +416,294 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
     });
   }
 
+
+  void _initMessageHandlers() {
+    _messageHandlers = {
+      'nodes_status': _handleNodesStatus,
+      'node_offline': _handleNodeOffline,
+      'auth_error': _handleAuthError,
+      'connected': _handleConnected,
+      'pong': (_) {},
+      'session_tree': _handleSessionTree,
+      'session_history': _handleSessionHistory,
+      'quota_update': _handleQuotaUpdate,
+      'file_browser_result': _handleFileBrowserResult,
+      'file_content': _handleFileContent,
+      'file_content_error': _handleFileContentError,
+      'git_diff_result': _handleGitDiffResult,
+      'file_uploaded': _handleFileUploaded,
+      'file_upload_error': _handleFileUploadError,
+      'prompt_ack': _handlePromptAck,
+      'status_change': _handleStatusChange,
+      'stopped': _handleStopped,
+      'agent_update': _handleAgentUpdate,
+      'delete_ack': (_) {},
+      'new_session_ack': (_) {},
+    };
+  }
+
+  void _handleNodesStatus(Map<String, dynamic> data) {
+    final rawNodes = data['nodes'] as List<dynamic>?;
+    if (rawNodes != null) {
+      setState(() {
+        _nodes = rawNodes.map((n) => HostNode.fromJson(n)).toList();
+      });
+    }
+  }
+
+  void _handleNodeOffline(Map<String, dynamic> data) {
+    final offlineMsg = data['msg'] ?? '目标电脑当前已离线或未开机';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(offlineMsg),
+        backgroundColor: Colors.redAccent.shade700,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _handleAuthError(Map<String, dynamic> data) {
+    final msg = data['msg'] ?? '访问口令 (Token) 错误';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: Colors.redAccent),
+    );
+    _showSettingsDialog();
+  }
+
+  void _handleConnected(Map<String, dynamic> data) {
+    setState(() {
+      _isConnected = true;
+      _isConnecting = false;
+      _activeSessionId = data['active_session'] ?? "";
+    });
+    _startHeartbeat();
+    _startQuotaPolling();
+    _requestQuota();
+    HapticFeedback.lightImpact();
+  }
+
+  void _handleSessionTree(Map<String, dynamic> data) {
+    final rawProjects = data['projects'] as Map<String, dynamic>? ?? {};
+    final rawGeneral = data['general_sessions'] as List? ?? [];
+
+    setState(() {
+      _projects.clear();
+      rawProjects.forEach((projName, list) {
+        _projects[projName] = (list as List).map((e) => SessionItem.fromJson(e)).toList();
+      });
+
+      _generalSessions.clear();
+      _generalSessions.addAll(rawGeneral.map((e) => SessionItem.fromJson(e)).toList());
+
+      if (data['current'] != null) {
+        _activeSessionId = data['current'];
+        for (var list in _projects.values) {
+          for (var s in list) {
+            if (s.id == _activeSessionId) _activeSessionTitle = s.title;
+          }
+        }
+        for (var s in _generalSessions) {
+          if (s.id == _activeSessionId) _activeSessionTitle = s.title;
+        }
+      }
+    });
+  }
+
+  void _handleSessionHistory(Map<String, dynamic> data) {
+    final hist = (data['history'] as List).map((e) => AgentMessage.fromJson(e)).toList();
+    final sid = data['session_id']?.toString() ?? _activeSessionId;
+
+    if (data['is_running'] != null) {
+      if (data['is_running'] == true) {
+        _runningSessionIds.add(sid);
+      } else {
+        _runningSessionIds.remove(sid);
+      }
+    } else if (hist.isNotEmpty) {
+      final latest = hist.last;
+      if (!latest.isUser && (latest.status == 'DONE' || latest.status == 'ERROR')) {
+        _runningSessionIds.remove(sid);
+      } else {
+        _runningSessionIds.remove(sid);
+      }
+    } else {
+      _runningSessionIds.remove(sid);
+    }
+
+    setState(() {
+      _messages.clear();
+      _messages.addAll(hist.reversed);
+    });
+  }
+
+  void _handleQuotaUpdate(Map<String, dynamic> data) {
+    if (data['quota'] != null && data['quota'] is Map) {
+      setState(() {
+        _quotaData = Map<String, dynamic>.from(data['quota']);
+        _isLoadingQuota = false;
+      });
+    } else {
+      setState(() {
+        _isLoadingQuota = false;
+      });
+    }
+  }
+
+  void _handleFileBrowserResult(Map<String, dynamic> data) {
+    final items = (data['items'] as List).map((e) => FileItem.fromJson(e)).toList();
+    if (_fileModalSetState != null) {
+      _fileModalSetState!(() {
+        _currentFiles = items;
+        _currentSubPath = data['current_path'] ?? "";
+        _baseDirName = data['base_dir_name'] ?? "工程根目录";
+      });
+    }
+  }
+
+  void _handleFileContent(Map<String, dynamic> data) {
+    final path = data['path'] ?? '';
+    final name = data['name'] ?? '文件';
+    final content = data['content'] ?? '';
+    final totalLines = data['total_lines'] ?? 0;
+    final truncated = data['truncated'] ?? false;
+    final size = data['size'] ?? 0;
+    _showFileContentViewer(name, path, content, totalLines, truncated, size);
+  }
+
+  void _handleFileContentError(Map<String, dynamic> data) {
+    final err = data['error'] ?? '读取失败';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('文件读取失败: $err'), backgroundColor: Colors.redAccent),
+    );
+  }
+
+  void _handleGitDiffResult(Map<String, dynamic> data) {
+    final ws = data['workspace'] ?? '';
+    final st = data['status'] ?? '';
+    final df = data['diff'] ?? '';
+    _showGitDiffViewer(ws, st, df);
+  }
+
+  void _handleFileUploaded(Map<String, dynamic> data) {
+    final p = data['path'] ?? '';
+    final fname = data['filename'] ?? '';
+    final sz = data['size'] ?? 0;
+    setState(() {
+      for (var att in _pendingAttachments) {
+        if (att.isUploading) {
+          att.serverPath = p;
+          att.isUploading = false;
+          att.size = sz;
+          break;
+        }
+      }
+    });
+    HapticFeedback.lightImpact();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text("📎 附件已就绪: $fname"),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _handleFileUploadError(Map<String, dynamic> data) {
+    final err = data['error'] ?? '上传失败';
+    setState(() {
+      _pendingAttachments.removeWhere((a) => a.isUploading);
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("附件上传失败: $err"), backgroundColor: Colors.redAccent),
+    );
+  }
+
+  void _handlePromptAck(Map<String, dynamic> data) {
+    final status = data['status'];
+    final sid = data['session_id']?.toString() ?? _activeSessionId;
+    if (status == 'error') {
+      setState(() {
+        _runningSessionIds.remove(sid);
+      });
+      final err = data['error'] ?? '未知错误';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('发送失败: $err'),
+          backgroundColor: Colors.redAccent.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else {
+      HapticFeedback.lightImpact();
+    }
+  }
+
+  void _handleStatusChange(Map<String, dynamic> data) {
+    final sid = data['session_id']?.toString() ?? _activeSessionId;
+    final isRunning = data['is_running'] == true;
+    setState(() {
+      if (isRunning) {
+        _runningSessionIds.add(sid);
+      } else {
+        _runningSessionIds.remove(sid);
+      }
+    });
+  }
+
+  void _handleStopped(Map<String, dynamic> data) {
+    final sid = data['session_id']?.toString() ?? _activeSessionId;
+    setState(() {
+      _runningSessionIds.remove(sid);
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("任务已停止"),
+        behavior: SnackBarBehavior.floating,
+        duration: Duration(seconds: 1),
+      ),
+    );
+  }
+
+  void _handleAgentUpdate(Map<String, dynamic> data) {
+    final sid = data['session_id']?.toString() ?? _activeSessionId;
+    final newMsg = AgentMessage.fromJson(data);
+    if (newMsg.content.isEmpty && newMsg.thinking.isEmpty && newMsg.toolCalls.isEmpty) {
+      return;
+    }
+
+    setState(() {
+      if (newMsg.isUser) {
+        _runningSessionIds.add(sid);
+      } else {
+        final backendRunning = data['is_running'];
+        if (backendRunning != null) {
+          if (backendRunning == true) {
+            _runningSessionIds.add(sid);
+          } else {
+            _runningSessionIds.remove(sid);
+          }
+        } else if (newMsg.status == 'DONE' || newMsg.status == 'ERROR') {
+          _runningSessionIds.remove(sid);
+        } else {
+          _runningSessionIds.add(sid);
+        }
+      }
+
+      if (sid == _activeSessionId || _activeSessionId.isEmpty) {
+        if (newMsg.isUser && _messages.isNotEmpty && _messages.first.isUser && _messages.first.content == newMsg.content) {
+          return;
+        }
+        _messages.insert(0, newMsg);
+      }
+    });
+
+    if (newMsg.status == 'WAITING_APPROVAL' || newMsg.status == 'WAITING_INPUT') {
+      HapticFeedback.mediumImpact();
+    } else if (newMsg.status == 'DONE' && newMsg.content.isNotEmpty) {
+      HapticFeedback.lightImpact();
+    }
+  }
+
   void _connect() {
     if (_isConnected) return;
 
@@ -406,241 +742,12 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
         (message) {
           try {
             final data = jsonDecode(message);
-            final type = data['type'];
-
-            if (type == 'nodes_status') {
-              final rawNodes = data['nodes'] as List<dynamic>?;
-              if (rawNodes != null) {
-                setState(() {
-                  _nodes = rawNodes.map((n) => HostNode.fromJson(n)).toList();
-                });
-              }
-            } else if (type == 'node_offline') {
-              final offlineMsg = data['msg'] ?? '目标电脑当前已离线或未开机';
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(offlineMsg),
-                  backgroundColor: Colors.redAccent.shade700,
-                  behavior: SnackBarBehavior.floating,
-                ),
-              );
-            } else if (type == 'auth_error') {
-              final msg = data['msg'] ?? '访问口令 (Token) 错误';
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(msg), backgroundColor: Colors.redAccent),
-              );
-              _showSettingsDialog();
-              return;
-            } else if (type == 'connected') {
-              setState(() {
-                _isConnected = true;
-                _isConnecting = false;
-                _activeSessionId = data['active_session'] ?? "";
-              });
-              _startHeartbeat();
-              HapticFeedback.lightImpact();
-            } else if (type == 'pong') {
-              // 收到心跳响应，维持长连接活跃
-            } else if (type == 'session_tree') {
-              final rawProjects = data['projects'] as Map<String, dynamic>? ?? {};
-              final rawGeneral = data['general_sessions'] as List? ?? [];
-
-              setState(() {
-                _projects.clear();
-                rawProjects.forEach((projName, list) {
-                  _projects[projName] = (list as List).map((e) => SessionItem.fromJson(e)).toList();
-                });
-
-                _generalSessions.clear();
-                _generalSessions.addAll(rawGeneral.map((e) => SessionItem.fromJson(e)).toList());
-
-                if (data['current'] != null) {
-                  _activeSessionId = data['current'];
-                  for (var list in _projects.values) {
-                    for (var s in list) {
-                      if (s.id == _activeSessionId) _activeSessionTitle = s.title;
-                    }
-                  }
-                  for (var s in _generalSessions) {
-                    if (s.id == _activeSessionId) _activeSessionTitle = s.title;
-                  }
-                }
-              });
-            } else if (type == 'session_history') {
-              final hist = (data['history'] as List).map((e) => AgentMessage.fromJson(e)).toList();
-              final sid = data['session_id']?.toString() ?? _activeSessionId;
-              
-              // 权威判定：优先以服务端下发的真实运行状态为准
-              if (data['is_running'] != null) {
-                if (data['is_running'] == true) {
-                  _runningSessionIds.add(sid);
-                } else {
-                  _runningSessionIds.remove(sid);
-                }
-              } else if (hist.isNotEmpty) {
-                // 回退逻辑：必须检查最新的一条（hist.last 而非 hist.first）
-                final latest = hist.last;
-                if (!latest.isUser && (latest.status == 'DONE' || latest.status == 'ERROR')) {
-                  _runningSessionIds.remove(sid);
-                } else {
-                  // 载入历史记录默认不悬挂运行态，除非明确有未完成标志
-                  _runningSessionIds.remove(sid);
-                }
-              } else {
-                _runningSessionIds.remove(sid);
-              }
-
-              setState(() {
-                _messages.clear();
-                _messages.addAll(hist.reversed);
-              });
-            } else if (type == 'quota_update') {
-              if (data['quota'] != null && data['quota'] is Map) {
-                setState(() {
-                  _quotaData = Map<String, dynamic>.from(data['quota']);
-                  _isLoadingQuota = false;
-                });
-              } else {
-                setState(() {
-                  _isLoadingQuota = false;
-                });
-              }
-            } else if (type == 'file_browser_result') {
-              final items = (data['items'] as List).map((e) => FileItem.fromJson(e)).toList();
-              if (_fileModalSetState != null) {
-                _fileModalSetState!(() {
-                  _currentFiles = items;
-                  _currentSubPath = data['current_path'] ?? "";
-                  _baseDirName = data['base_dir_name'] ?? "工程根目录";
-                });
-              }
-            } else if (type == 'file_content') {
-              final path = data['path'] ?? '';
-              final name = data['name'] ?? '文件';
-              final content = data['content'] ?? '';
-              final totalLines = data['total_lines'] ?? 0;
-              final truncated = data['truncated'] ?? false;
-              final size = data['size'] ?? 0;
-              _showFileContentViewer(name, path, content, totalLines, truncated, size);
-            } else if (type == 'file_content_error') {
-              final err = data['error'] ?? '读取失败';
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('文件读取失败: $err'), backgroundColor: Colors.redAccent),
-              );
-            } else if (type == 'git_diff_result') {
-              final ws = data['workspace'] ?? '';
-              final st = data['status'] ?? '';
-              final df = data['diff'] ?? '';
-              _showGitDiffViewer(ws, st, df);
-            } else if (type == 'file_uploaded') {
-              final p = data['path'] ?? '';
-              final fname = data['filename'] ?? '';
-              final sz = data['size'] ?? 0;
-              setState(() {
-                for (var att in _pendingAttachments) {
-                  if (att.isUploading) {
-                    att.serverPath = p;
-                    att.isUploading = false;
-                    att.size = sz;
-                    break;
-                  }
-                }
-              });
-              HapticFeedback.lightImpact();
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text("📎 附件已就绪: $fname"),
-                  behavior: SnackBarBehavior.floating,
-                  duration: const Duration(seconds: 2),
-                ),
-              );
-            } else if (type == 'file_upload_error') {
-              final err = data['error'] ?? '上传失败';
-              setState(() {
-                _pendingAttachments.removeWhere((a) => a.isUploading);
-              });
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text("附件上传失败: $err"), backgroundColor: Colors.redAccent),
-              );
-            } else if (type == 'prompt_ack') {
-              final status = data['status'];
-              final sid = data['session_id']?.toString() ?? _activeSessionId;
-              if (status == 'error') {
-                setState(() {
-                  _runningSessionIds.remove(sid);
-                });
-                final err = data['error'] ?? '未知错误';
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('发送失败: $err'),
-                    backgroundColor: Colors.redAccent.shade700,
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-              } else {
-                HapticFeedback.lightImpact();
-              }
-            } else if (type == 'status_change') {
-              final sid = data['session_id']?.toString() ?? _activeSessionId;
-              final isRunning = data['is_running'] == true;
-              setState(() {
-                if (isRunning) {
-                  _runningSessionIds.add(sid);
-                } else {
-                  _runningSessionIds.remove(sid);
-                }
-              });
-            } else if (type == 'stopped') {
-              final sid = data['session_id']?.toString() ?? _activeSessionId;
-              setState(() {
-                _runningSessionIds.remove(sid);
-              });
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text("任务已停止"),
-                  behavior: SnackBarBehavior.floating,
-                  duration: Duration(seconds: 1),
-                ),
-              );
-            } else if (type == 'agent_update') {
-              final sid = data['session_id']?.toString() ?? _activeSessionId;
-              final newMsg = AgentMessage.fromJson(data);
-              if (newMsg.content.isEmpty && newMsg.thinking.isEmpty && newMsg.toolCalls.isEmpty) {
-                return;
-              }
-              // 关键：会话精确绑定状态与消息隔离
-              setState(() {
-                if (newMsg.isUser) {
-                  _runningSessionIds.add(sid);
-                } else {
-                  final backendRunning = data['is_running'];
-                  if (backendRunning != null) {
-                    if (backendRunning == true) {
-                      _runningSessionIds.add(sid);
-                    } else {
-                      _runningSessionIds.remove(sid);
-                    }
-                  } else if (newMsg.status == 'DONE' || newMsg.status == 'ERROR') {
-                    _runningSessionIds.remove(sid);
-                  } else {
-                    _runningSessionIds.add(sid);
-                  }
-                }
-
-                // 消息隔离：只有属于当前激活会话的消息才显示在主界面！
-                if (sid == _activeSessionId || _activeSessionId.isEmpty) {
-                  if (newMsg.isUser && _messages.isNotEmpty && _messages.first.isUser && _messages.first.content == newMsg.content) {
-                    return;
-                  }
-                  _messages.insert(0, newMsg);
-                }
-              });
-
-              if (newMsg.status == 'WAITING_APPROVAL' || newMsg.status == 'WAITING_INPUT') {
-                HapticFeedback.mediumImpact();
-              } else if (newMsg.status == 'DONE' && newMsg.content.isNotEmpty) {
-                HapticFeedback.lightImpact();
-              }
+            final type = data['type']?.toString() ?? '';
+            final handler = _messageHandlers[type];
+            if (handler != null) {
+              handler(data);
+            } else {
+              debugPrint("未处理协议: $type");
             }
           } catch (e) {
             debugPrint("Parse error: $e");
@@ -1230,6 +1337,8 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
         onDeleteSession: _deleteSession,
         isDark: isDark,
         onToggleTheme: _toggleTheme,
+        currentAccentThemeId: accentThemeNotifier.value.id,
+        onSelectAccentTheme: _updateAccentTheme,
       ),
       onDrawerChanged: (isOpen) {
         if (isOpen) _requestQuota();
@@ -1286,25 +1395,68 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                       style: TextStyle(color: isDark ? Colors.white38 : Colors.black38, fontSize: 13, height: 1.5),
                     ),
                   )
-                : ListView.builder(
-                    controller: _scrollController,
-                    reverse: true,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                    itemCount: _messages.length + (_isThinking ? 1 : 0),
-                    itemBuilder: (ctx, idx) {
-                      if (_isThinking && idx == 0) {
-                        return _buildThinkingIndicator(isDark);
-                      }
-                      final msgIdx = _isThinking ? idx - 1 : idx;
-                      return MessageCard(
-                        msg: _messages[msgIdx],
-                        isDark: isDark,
-                        authToken: _authToken,
-                        onDownloadFile: (p, {filename}) => _downloadFile(p, filename: filename),
-                        onReadFile: (p) => _requestReadFile(p),
-                        onOpenUrl: (url) => JsBridge.openUrl(url),
-                      );
-                    },
+                : Stack(
+                    children: [
+                      ListView.builder(
+                        controller: _scrollController,
+                        reverse: true,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        itemCount: _messages.length + (_isThinking ? 1 : 0),
+                        itemBuilder: (ctx, idx) {
+                          if (_isThinking && idx == 0) {
+                            return _buildThinkingIndicator(isDark);
+                          }
+                          final msgIdx = _isThinking ? idx - 1 : idx;
+                          return MessageCard(
+                            msg: _messages[msgIdx],
+                            isDark: isDark,
+                            authToken: _authToken,
+                            onDownloadFile: (p, {filename}) => _downloadFile(p, filename: filename),
+                            onReadFile: (p) => _requestReadFile(p),
+                            onOpenUrl: (url) => JsBridge.openUrl(url),
+                          );
+                        },
+                      ),
+                      if (_showScrollToBottom)
+                        Positioned(
+                          bottom: 14,
+                          right: 18,
+                          child: InkWell(
+                            onTap: _scrollToBottom,
+                            borderRadius: BorderRadius.circular(20),
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 200),
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Theme.of(context).colorScheme.primary,
+                                borderRadius: BorderRadius.circular(20),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.3),
+                                    blurRadius: 8,
+                                    offset: const Offset(0, 3),
+                                  ),
+                                ],
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.arrow_downward_rounded, size: 14, color: Colors.white),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    "回到底部",
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
           ),
           BottomInputBar(
@@ -1332,9 +1484,11 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
 
   @override
   void dispose() {
+    _quotaPollingTimer?.cancel();
     _heartbeatTimer?.cancel();
     _reconnectTimer?.cancel();
     _channel?.sink.close();
+    _scrollController.removeListener(_onScrollChanged);
     _inputController.removeListener(_onInputChanged);
     _scrollController.dispose();
     _ipController.dispose();

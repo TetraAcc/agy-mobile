@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/models.dart';
+import '../constants/app_colors.dart';
 
 /// 侧边栏抽屉组件：主机切换、官方底座实时额度、新建会话、项目/历史会话列表、明暗主题切换
 class QuotaDrawer extends StatelessWidget {
@@ -19,6 +20,8 @@ class QuotaDrawer extends StatelessWidget {
   final ValueChanged<String> onDeleteSession;
   final bool isDark;
   final ValueChanged<bool> onToggleTheme;
+  final String currentAccentThemeId;
+  final ValueChanged<AccentThemeOption> onSelectAccentTheme;
 
   const QuotaDrawer({
     super.key,
@@ -38,6 +41,8 @@ class QuotaDrawer extends StatelessWidget {
     required this.onDeleteSession,
     required this.isDark,
     required this.onToggleTheme,
+    this.currentAccentThemeId = 'emerald',
+    required this.onSelectAccentTheme,
   });
 
   @override
@@ -163,6 +168,79 @@ class QuotaDrawer extends StatelessWidget {
                     for (var s in generalSessions)
                       _buildSessionTile(context, s, isIndented: false),
                   ],
+                ],
+              ),
+            ),
+
+            // 强调色主题选择面板
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                border: Border(
+                  top: BorderSide(color: isDark ? Colors.white10 : Colors.black12),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        "护眼强调色",
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: isDark ? Colors.white60 : Colors.black54,
+                        ),
+                      ),
+                      Text(
+                        AppColors.getThemeById(currentAccentThemeId).name.split(' ').first,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: AppColors.accentThemes.map((theme) {
+                      final isSelected = theme.id == currentAccentThemeId;
+                      return InkWell(
+                        onTap: () => onSelectAccentTheme(theme),
+                        borderRadius: BorderRadius.circular(16),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          width: 28,
+                          height: 28,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: theme.previewColor,
+                            border: Border.all(
+                              color: isSelected ? (isDark ? Colors.white : Colors.black87) : Colors.transparent,
+                              width: 2.5,
+                            ),
+                            boxShadow: [
+                              if (isSelected)
+                                BoxShadow(
+                                  color: theme.previewColor.withOpacity(0.4),
+                                  blurRadius: 6,
+                                  spreadRadius: 1,
+                                ),
+                            ],
+                          ),
+                          child: isSelected
+                              ? const Center(
+                                  child: Icon(Icons.check_rounded, size: 14, color: Colors.white),
+                                )
+                              : null,
+                        ),
+                      );
+                    }).toList(),
+                  ),
                 ],
               ),
             ),

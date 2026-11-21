@@ -5,7 +5,7 @@
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter)](https://flutter.dev)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-v1.2.2-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
+[![Version](https://img.shields.io/badge/Version-v1.3.0-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-13%2F13%20Passed-success.svg)](test/widget_test.dart)
 
@@ -13,6 +13,19 @@
 
 ## 🌟 核心特性
 
+- 🎨 **多套护眼强调色主题系统 (v1.3.0 新增)**：
+  - 彻底解决深色模式下亮蓝强调色刺眼对眼睛不友好的问题；
+  - 侧边栏底部提供专属色板选择器，开箱提供 **翡翠绿 (护眼极客)**、**青竹绿 (北欧温润)**、**紫罗兰 (温和沉浸)**、**暖琥珀 (夜间暖光)** 与 **科技蓝 (经典)** 5 大低饱和护眼主题；
+  - 全局色彩平滑联动并自动持久化，无论主按钮、激活指示、边框或图标均柔和护眼。
+- 📋 **代码块语法高亮与一键复制 (v1.3.0 新增)**：
+  - 深度集成 `flutter_highlight`，完美匹配多语言（Python, Dart, Shell, C, JavaScript, JSON 等）语法着色；
+  - 每个代码块顶部配备专属暗色操作栏，标注大写语言标签，并提供**一键复制**功能（附带防抖与绿色 `✓ 已复制` 动效反馈）。
+- ⚓ **智能滚动控制与“↓ 回到底部”悬浮药丸 (v1.3.0 新增)**：
+  - 监听视口行程：当用户向上翻看历史消息时（`offset > 120`），新消息涌入**坚决不强制拉回底部**；
+  - 右下角智能浮现精致的 **`↓ 回到底部`** 悬浮药丸，点击丝滑平滑回弹到底部，自然滑到底部时自动消隐。
+- 🗺️ **WebSocket 消息协议 Map 化路由调度 & 60s 配额自动巡检 (v1.3.0 新增)**：
+  - 废弃长达数百行的 `if-else if` 巨石消息链，下沉为结构清爽的 Handler Map 注册表，扩展极度便利；
+  - 连接时自动巡检配额，并常驻 60 秒定时静默拉取，无需频繁手动点击刷新。
 - 📁 **项目内一键新建会话与智能工作区绑定 (v1.2.1 新增)**：
   - 侧边栏项目列表每一项标题右侧均提供一键 `+` 加号按钮，直接在此项目内开启新会话；
   - “开启全新会话”弹窗新增“所属项目 / 关联工作区”下拉选单，支持在“🌐 通用任务 (无项目绑定)”与“📁 具体项目”间随时无缝切换；

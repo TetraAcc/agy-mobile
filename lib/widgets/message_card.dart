@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'code_block_builder.dart';
 import '../models/models.dart';
 import '../utils/file_utils.dart';
 
@@ -97,6 +98,9 @@ class MessageCard extends StatelessWidget {
             MarkdownBody(
               data: msg.content,
               selectable: true,
+              builders: {
+                'code': CodeElementBuilder(isDark: isDark),
+              },
               onTapLink: (text, href, title) {
                 if (href != null && href.isNotEmpty) {
                   if (href.startsWith("http://") || href.startsWith("https://")) {
