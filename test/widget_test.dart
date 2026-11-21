@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:agy_remote/models/models.dart';
 import 'package:agy_remote/constants/app_colors.dart';
+import 'package:agy_remote/utils/file_utils.dart';
 
 void main() {
   group('官方模型与指令配置测试', () {
@@ -132,6 +133,38 @@ Some internal instructions here.
       expect(AppColors.darkBg.value, 0xFF0B0F19);
       expect(AppColors.primarySky.value, 0xFF38BDF8);
       expect(AppColors.onlineGreen.value, 0xFF10B981);
+    });
+  });
+
+  group('FileUtils 工具类测试', () {
+    test('isBinaryFile 正确识别纯文本与二进制后缀', () {
+      expect(FileUtils.isBinaryFile('test.dart'), false);
+      expect(FileUtils.isBinaryFile('README.md'), false);
+      expect(FileUtils.isBinaryFile('main.py'), false);
+      expect(FileUtils.isBinaryFile('archive.zip'), true);
+      expect(FileUtils.isBinaryFile('doc.pdf'), true);
+      expect(FileUtils.isBinaryFile('binary.wasm'), true);
+      expect(FileUtils.isBinaryFile('photo.png'), true);
+    });
+
+    test('cleanPath 与 cleanCodeString 处理', () {
+      expect(FileUtils.cleanPath('"C:\\test\\path.dart"'), 'C:\\test\\path.dart');
+      expect(FileUtils.cleanCodeString(r'"print(\"hello\nworld\")"'), 'print("hello\nworld")');
+    });
+
+    test('parseToolArgs 解析各种格式', () {
+      expect(FileUtils.parseToolArgs({'a': 1})['a'], 1);
+      expect(FileUtils.parseToolArgs('{"b": 2}')['b'], 2);
+      expect(FileUtils.parseToolArgs('invalid json'), {});
+      expect(FileUtils.parseToolArgs(null), {});
+    });
+
+    test('extractDownloadableFiles 识别正文生成文件', () {
+      const text = '文件已保存到 C:\\Users\\user\\report.pdf 和 /home/deck/output.zip，请查收。';
+      final files = FileUtils.extractDownloadableFiles(text);
+      expect(files.length, 2);
+      expect(files.contains(r'C:\Users\user\report.pdf'), true);
+      expect(files.contains('/home/deck/output.zip'), true);
     });
   });
 }

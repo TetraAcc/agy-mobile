@@ -1,3 +1,10 @@
 export 'new_session_dialog.dart';
 export 'slash_command_menu.dart';
 export 'attachment_preview_bar.dart';
+export 'quota_drawer.dart';
+export 'file_viewer_sheet.dart';
+export 'workspace_file_picker_dialog.dart';
+export 'message_card.dart';
+export 'bottom_input_bar.dart';
+export 'context_menu_sheet.dart';
+export 'git_diff_viewer_sheet.dart';
