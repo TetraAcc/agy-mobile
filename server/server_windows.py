@@ -426,7 +426,7 @@ async def tail_transcript():
             await asyncio.sleep(1)
 
 async def websocket_handler(request):
-    global current_active_file, file_handle, current_active_session_id, current_workspace_dir
+    global current_active_file, file_handle, current_active_session_id, current_workspace_dir, is_current_session_running, last_log_active_time
 
     # 访问口令（Token）安全校验
     client_token = request.query.get("token", "").strip()
