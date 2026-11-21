@@ -35,12 +35,28 @@ class _CodeBlockWidgetState extends State<CodeBlockWidget> {
     });
   }
 
+  /// 获取清洗后的高亮主题，剥离自带的灰底，让代码框整体色调浑然一体
+  Map<String, TextStyle> _buildSeamlessHighlightTheme() {
+    final base = widget.isDark ? atomOneDarkTheme : atomOneLightTheme;
+    final rootStyle = base['root'];
+    return {
+      ...base,
+      'root': TextStyle(
+        color: rootStyle?.color ?? (widget.isDark ? const Color(0xFFE2E8F0) : const Color(0xFF334155)),
+        backgroundColor: Colors.transparent, // 核心：彻底消除自带的灰色，让背景 100% 融入统一卡片
+      ),
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
     final displayLang = widget.language.isEmpty ? "CODE" : widget.language.toUpperCase();
-    final headerBg = widget.isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0);
-    final bodyBg = widget.isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC);
-    final borderColor = widget.isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1);
+
+    // 沉浸式现代终端配色：与 App 全局暗黑/浅色系统完全自洽，告别死灰与割裂感
+    final headerBg = widget.isDark ? const Color(0xFF131B2B) : const Color(0xFFF1F5F9);
+    final bodyBg = widget.isDark ? const Color(0xFF0B101D) : const Color(0xFFF8FAFC);
+    final borderColor = widget.isDark ? const Color(0xFF223049) : const Color(0xFFE2E8F0);
+    final dividerColor = widget.isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0);
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
@@ -48,6 +64,21 @@ class _CodeBlockWidgetState extends State<CodeBlockWidget> {
         color: bodyBg,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: borderColor, width: 1),
+        boxShadow: widget.isDark
+            ? [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.25),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
+                )
+              ]
+            : [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                )
+              ],
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -55,29 +86,34 @@ class _CodeBlockWidgetState extends State<CodeBlockWidget> {
         children: [
           // 顶部代码块操作栏
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            color: headerBg,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+            decoration: BoxDecoration(
+              color: headerBg,
+              border: Border(
+                bottom: BorderSide(color: dividerColor, width: 1),
+              ),
+            ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                // 语言标签
+                // 语言标签与拟物化状态圆点
                 Row(
                   children: [
                     Container(
-                      width: 8,
-                      height: 8,
+                      width: 7,
+                      height: 7,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: widget.isDark ? Colors.white38 : Colors.black38,
+                        color: widget.isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
                       ),
                     ),
-                    const SizedBox(width: 6),
+                    const SizedBox(width: 8),
                     Text(
                       displayLang,
                       style: TextStyle(
                         fontFamily: 'monospace',
                         fontSize: 11,
-                        fontWeight: FontWeight.bold,
+                        fontWeight: FontWeight.w700,
                         letterSpacing: 0.8,
                         color: widget.isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
                       ),
@@ -93,8 +129,8 @@ class _CodeBlockWidgetState extends State<CodeBlockWidget> {
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
                       color: _copied
-                          ? (widget.isDark ? Colors.greenAccent.withOpacity(0.2) : const Color(0xFFDCFCE7))
-                          : (widget.isDark ? Colors.white10 : Colors.black.withOpacity(0.06)),
+                          ? (widget.isDark ? Colors.greenAccent.withOpacity(0.18) : const Color(0xFFDCFCE7))
+                          : (widget.isDark ? Colors.white.withOpacity(0.07) : Colors.black.withOpacity(0.05)),
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: Row(
@@ -125,20 +161,31 @@ class _CodeBlockWidgetState extends State<CodeBlockWidget> {
               ],
             ),
           ),
-          // 代码语法高亮展示区域
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: HighlightView(
-              widget.code,
-              language: widget.language.toLowerCase(),
-              theme: widget.isDark ? atomOneDarkTheme : atomOneLightTheme,
-              padding: const EdgeInsets.all(12),
-              textStyle: const TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 12.5,
-                height: 1.5,
-              ),
-            ),
+          // 代码语法高亮展示区域（支持横向自适应与横向滚动，彻底撑满代码框）
+          LayoutBuilder(
+            builder: (context, constraints) {
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minWidth: constraints.maxWidth, // 关键：确保即使代码很短，背景也横向 100% 撑满整行！
+                  ),
+                  child: HighlightView(
+                    widget.code,
+                    language: widget.language.toLowerCase(),
+                    theme: _buildSeamlessHighlightTheme(),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    textStyle: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontFamilyFallback: ['Consolas', 'Fira Code', 'JetBrains Mono', 'Courier New', 'monospace'],
+                      fontSize: 12.5,
+                      height: 1.55,
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
         ],
       ),
