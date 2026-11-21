@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../constants/app_colors.dart';
 
-/// 侧边栏抽屉组件：主机切换、官方底座实时额度、新建会话、项目/历史会话列表、明暗主题切换
-class QuotaDrawer extends StatelessWidget {
+/// 侧边栏抽屉组件：主机切换、官方底座实时额度、新建会话、会话搜索过滤、项目/历史会话列表、明暗主题切换
+class QuotaDrawer extends StatefulWidget {
   final List<HostNode> nodes;
   final String selectedNode;
   final ValueChanged<String> onSwitchNode;
@@ -46,6 +46,121 @@ class QuotaDrawer extends StatelessWidget {
   });
 
   @override
+  State<QuotaDrawer> createState() => _QuotaDrawerState();
+}
+
+class _QuotaDrawerState extends State<QuotaDrawer> {
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  bool get isDark => widget.isDark;
+  List<HostNode> get nodes => widget.nodes;
+  String get selectedNode => widget.selectedNode;
+  ValueChanged<String> get onSwitchNode => widget.onSwitchNode;
+  Map<String, dynamic>? get quotaData => widget.quotaData;
+  bool get isLoadingQuota => widget.isLoadingQuota;
+  VoidCallback get onRequestQuota => widget.onRequestQuota;
+  VoidCallback get onNewSession => widget.onNewSession;
+  void Function(String, String)? get onNewSessionInProject => widget.onNewSessionInProject;
+  Map<String, List<SessionItem>> get projects => widget.projects;
+  List<SessionItem> get generalSessions => widget.generalSessions;
+  String? get activeSessionId => widget.activeSessionId;
+  Set<String> get runningSessionIds => widget.runningSessionIds;
+  ValueChanged<SessionItem> get onSwitchSession => widget.onSwitchSession;
+  ValueChanged<String> get onDeleteSession => widget.onDeleteSession;
+  ValueChanged<bool> get onToggleTheme => widget.onToggleTheme;
+  String get currentAccentThemeId => widget.currentAccentThemeId;
+  ValueChanged<AccentThemeOption> get onSelectAccentTheme => widget.onSelectAccentTheme;
+
+  Widget _buildSearchResults(BuildContext context) {
+    final query = _searchQuery.toLowerCase();
+    final List<Map<String, dynamic>> results = [];
+
+    // 搜索项目内的会话
+    for (var entry in projects.entries) {
+      final projectName = entry.key;
+      for (var s in entry.value) {
+        if (s.title.toLowerCase().contains(query) ||
+            s.preview.toLowerCase().contains(query) ||
+            projectName.toLowerCase().contains(query)) {
+          results.add({
+            'session': s,
+            'projectName': projectName,
+          });
+        }
+      }
+    }
+
+    // 搜索常规会话
+    for (var s in generalSessions) {
+      if (s.title.toLowerCase().contains(query) ||
+          s.preview.toLowerCase().contains(query)) {
+        results.add({
+          'session': s,
+          'projectName': null,
+        });
+      }
+    }
+
+    if (results.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 36, horizontal: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.search_off_rounded,
+                size: 36,
+                color: isDark ? Colors.white24 : Colors.black26,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                "未找到与「$_searchQuery」相关的会话",
+                style: TextStyle(
+                  fontSize: 12,
+                  color: isDark ? Colors.white38 : Colors.black45,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          child: Text(
+            "搜索结果 (${results.length})",
+            style: TextStyle(
+              color: isDark ? Colors.white38 : Colors.black38,
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        for (var item in results)
+          _buildSessionTile(
+            context,
+            item['session'] as SessionItem,
+            isIndented: false,
+            projectTag: item['projectName'] as String?,
+          ),
+      ],
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Drawer(
       backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
@@ -58,34 +173,91 @@ class QuotaDrawer extends StatelessWidget {
             // 实时模型额度展示卡片（官方底座真实配额）
             _buildQuotaCard(context),
 
-            // 顶部操作栏: + 新建会话
+            // 顶部操作栏: + 新建会话 & 实时搜索输入框
             Container(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
               decoration: BoxDecoration(
                 border: Border(
                   bottom: BorderSide(color: isDark ? Colors.white10 : Colors.black12),
                 ),
               ),
-              child: ElevatedButton.icon(
-                onPressed: () {
-                  Navigator.pop(context);
-                  onNewSession();
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-                  foregroundColor: isDark ? Colors.white : Colors.black87,
-                  elevation: 0,
-                  minimumSize: const Size(double.infinity, 40),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                ),
-                icon: const Icon(Icons.add, size: 18),
-                label: const Text("新建会话", style: TextStyle(fontSize: 13)),
+              child: Column(
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      onNewSession();
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+                      foregroundColor: isDark ? Colors.white : Colors.black87,
+                      elevation: 0,
+                      minimumSize: const Size(double.infinity, 38),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    icon: const Icon(Icons.add, size: 18),
+                    label: const Text("新建会话", style: TextStyle(fontSize: 13)),
+                  ),
+                  const SizedBox(height: 8),
+                  // 会话搜索输入框
+                  Container(
+                    height: 34,
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF161F30) : const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
+                        width: 0.8,
+                      ),
+                    ),
+                    child: TextField(
+                      controller: _searchController,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: "搜索会话标题、所属工程...",
+                        hintStyle: TextStyle(
+                          fontSize: 11.5,
+                          color: isDark ? Colors.white38 : Colors.black38,
+                        ),
+                        prefixIcon: Icon(
+                          Icons.search_rounded,
+                          size: 15,
+                          color: isDark ? Colors.white38 : Colors.black38,
+                        ),
+                        suffixIcon: _searchQuery.isNotEmpty
+                            ? InkWell(
+                                onTap: () {
+                                  _searchController.clear();
+                                  setState(() => _searchQuery = '');
+                                },
+                                child: Icon(
+                                  Icons.clear_rounded,
+                                  size: 15,
+                                  color: isDark ? Colors.white38 : Colors.black38,
+                                ),
+                              )
+                            : null,
+                        border: InputBorder.none,
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                      ),
+                      onChanged: (val) {
+                        setState(() => _searchQuery = val.trim());
+                      },
+                    ),
+                  ),
+                ],
               ),
             ),
 
-            // 项目与会话列表
+            // 项目与会话列表（当输入搜索内容时自动切换为搜索结果视图）
             Expanded(
-              child: ListView(
+              child: _searchQuery.isNotEmpty
+                  ? _buildSearchResults(context)
+                  : ListView(
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 children: [
                   if (projects.isNotEmpty) ...[
@@ -608,7 +780,7 @@ class QuotaDrawer extends StatelessWidget {
     }
   }
 
-  Widget _buildSessionTile(BuildContext context, SessionItem s, {required bool isIndented}) {
+  Widget _buildSessionTile(BuildContext context, SessionItem s, {required bool isIndented, String? projectTag}) {
     final isCurrent = s.id == activeSessionId;
     final isRunning = runningSessionIds.contains(s.id);
 
@@ -637,33 +809,63 @@ class QuotaDrawer extends StatelessWidget {
                 size: 14,
                 color: isCurrent ? Theme.of(context).colorScheme.primary : (isDark ? Colors.white38 : Colors.black38),
               ),
-        title: Row(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Expanded(
-              child: Text(
-                s.title,
-                style: TextStyle(
-                  color: isCurrent ? Theme.of(context).colorScheme.primary : (isDark ? Colors.white70 : Colors.black87),
-                  fontSize: 12,
-                  fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    s.title,
+                    style: TextStyle(
+                      color: isCurrent ? Theme.of(context).colorScheme.primary : (isDark ? Colors.white70 : Colors.black87),
+                      fontSize: 12,
+                      fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
+                if (isRunning) ...[
+                  const SizedBox(width: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(3),
+                      border: Border.all(color: Colors.redAccent.withOpacity(0.4), width: 0.8),
+                    ),
+                    child: const Text(
+                      "运行中",
+                      style: TextStyle(color: Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ],
             ),
-            if (isRunning) ...[
-              const SizedBox(width: 4),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                decoration: BoxDecoration(
-                  color: Colors.redAccent.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(3),
-                  border: Border.all(color: Colors.redAccent.withOpacity(0.4), width: 0.8),
-                ),
-                child: const Text(
-                  "运行中",
-                  style: TextStyle(color: Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold),
-                ),
+            if (projectTag != null && projectTag.isNotEmpty) ...[
+              const SizedBox(height: 2),
+              Row(
+                children: [
+                  Icon(
+                    Icons.folder_outlined,
+                    size: 11,
+                    color: isDark ? Colors.white38 : Colors.black45,
+                  ),
+                  const SizedBox(width: 4),
+                  Flexible(
+                    child: Text(
+                      projectTag,
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: isDark ? Colors.white38 : Colors.black45,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
               ),
             ],
           ],
@@ -691,7 +893,10 @@ class QuotaDrawer extends StatelessWidget {
             ),
           ],
         ),
-        onTap: () => onSwitchSession(s),
+        onTap: () {
+          Navigator.pop(context);
+          onSwitchSession(s);
+        },
       ),
     );
   }

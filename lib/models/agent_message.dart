@@ -7,6 +7,7 @@ class AgentMessage {
   final String thinking;
   final List<dynamic> toolCalls;
   final String timestamp;
+  final bool isLiveStream;
 
   AgentMessage({
     required this.stepIndex,
@@ -17,6 +18,7 @@ class AgentMessage {
     required this.thinking,
     required this.toolCalls,
     required this.timestamp,
+    this.isLiveStream = false,
   });
 
   bool get isUser => source == 'USER_EXPLICIT' || msgType == 'USER_INPUT';
@@ -43,6 +45,7 @@ class AgentMessage {
       thinking: json['thinking'] ?? '',
       toolCalls: json['tool_calls'] ?? [],
       timestamp: json['timestamp'] ?? '',
+      isLiveStream: json['is_live_stream'] == true,
     );
   }
 }

@@ -9,7 +9,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'bridge/js_bridge.dart';
 import 'constants/app_colors.dart';
 import 'models/models.dart';
-import 'utils/file_utils.dart';
 import 'widgets/widgets.dart';
 
 // 全局明暗主题监听器
@@ -666,7 +665,9 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
 
   void _handleAgentUpdate(Map<String, dynamic> data) {
     final sid = data['session_id']?.toString() ?? _activeSessionId;
-    final newMsg = AgentMessage.fromJson(data);
+    final Map<String, dynamic> mutableData = Map<String, dynamic>.from(data);
+    mutableData['is_live_stream'] = true; // 标记为当前实时动态流，触发打字机流式逐字渲染
+    final newMsg = AgentMessage.fromJson(mutableData);
     if (newMsg.content.isEmpty && newMsg.thinking.isEmpty && newMsg.toolCalls.isEmpty) {
       return;
     }
@@ -693,7 +694,13 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
         if (newMsg.isUser && _messages.isNotEmpty && _messages.first.isUser && _messages.first.content == newMsg.content) {
           return;
         }
-        _messages.insert(0, newMsg);
+        // 如果是同一步骤的 Agent 回复增量更新，原地替换以支持无缝打字机追赶
+        if (!newMsg.isUser && _messages.isNotEmpty && !_messages.first.isUser &&
+            newMsg.stepIndex > 0 && newMsg.stepIndex == _messages.first.stepIndex) {
+          _messages[0] = newMsg;
+        } else {
+          _messages.insert(0, newMsg);
+        }
       }
     });
 

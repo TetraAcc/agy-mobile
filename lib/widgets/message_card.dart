@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'code_block_builder.dart';
+import 'streaming_markdown_body.dart';
 import '../models/models.dart';
 import '../utils/file_utils.dart';
 
@@ -93,111 +94,14 @@ class MessageCard extends StatelessWidget {
             const SizedBox(height: 10),
           ],
 
-          // Markdown 回复正文（无任何多余边框）
+          // Markdown 回复正文（支持平滑流式打字机渲染）
           if (msg.content.isNotEmpty)
-            MarkdownBody(
-              data: msg.content,
-              selectable: true,
-              builders: {
-                'code': CodeElementBuilder(isDark: isDark),
-              },
-              onTapLink: (text, href, title) {
-                if (href != null && href.isNotEmpty) {
-                  if (href.startsWith("http://") || href.startsWith("https://")) {
-                    onOpenUrl(href);
-                  } else {
-                    onDownloadFile(href);
-                  }
-                }
-              },
-              styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-                p: TextStyle(
-                  color: isDark ? const Color(0xFFE2E8F0) : const Color(0xFF1E293B),
-                  fontSize: 14,
-                  height: 1.6,
-                ),
-                h1: TextStyle(
-                  color: isDark ? Colors.white : Colors.black87,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-                h2: TextStyle(
-                  color: isDark ? Colors.white : Colors.black87,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
-                h3: TextStyle(
-                  color: Theme.of(context).colorScheme.primary,
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                ),
-                strong: TextStyle(
-                  color: isDark ? Colors.white : Colors.black87,
-                  fontWeight: FontWeight.bold,
-                ),
-                em: TextStyle(
-                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                  fontStyle: FontStyle.italic,
-                ),
-                a: TextStyle(
-                  color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7),
-                  decoration: TextDecoration.underline,
-                ),
-                listBullet: TextStyle(
-                  color: Theme.of(context).colorScheme.primary,
-                  fontSize: 14,
-                ),
-                blockquote: TextStyle(
-                  color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
-                  fontSize: 13.5,
-                  height: 1.6,
-                ),
-                blockquotePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                blockquoteDecoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF161F30) : const Color(0xFFF1F5F9),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border(
-                    left: BorderSide(
-                      color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7),
-                      width: 3.5,
-                    ),
-                  ),
-                ),
-                code: TextStyle(
-                  backgroundColor: isDark ? const Color(0xFF0B0F19) : const Color(0xFFF1F5F9),
-                  color: Theme.of(context).colorScheme.primary,
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                ),
-                codeblockPadding: const EdgeInsets.all(10),
-                codeblockDecoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF0B0F19) : const Color(0xFFF8FAFC),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0)),
-                ),
-                tableHead: TextStyle(
-                  color: isDark ? Colors.white : Colors.black87,
-                  fontWeight: FontWeight.bold,
-                ),
-                tableBody: TextStyle(
-                  color: isDark ? const Color(0xFFE2E8F0) : const Color(0xFF1E293B),
-                ),
-                tableBorder: TableBorder.all(
-                  color: isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0),
-                  width: 1,
-                ),
-                tableCellsDecoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
-                ),
-                horizontalRuleDecoration: BoxDecoration(
-                  border: Border(
-                    top: BorderSide(
-                      color: isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0),
-                      width: 1,
-                    ),
-                  ),
-                ),
-              ),
+            StreamingMarkdownBody(
+              fullText: msg.content,
+              isLiveStream: msg.isLiveStream,
+              isDark: isDark,
+              onOpenUrl: onOpenUrl,
+              onDownloadFile: (p) => onDownloadFile(p),
             ),
 
           // 自动检测正文中提及的可下载文件，生成直观显眼的【下载卡片】

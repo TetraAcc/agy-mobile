@@ -9,3 +9,4 @@ export 'bottom_input_bar.dart';
 export 'context_menu_sheet.dart';
 export 'git_diff_viewer_sheet.dart';
 export 'code_block_builder.dart';
+export 'streaming_markdown_body.dart';
