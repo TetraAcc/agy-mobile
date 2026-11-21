@@ -1105,4 +1105,4 @@ if __name__ == "__main__":
     print(f"  👉 实时通信通道: ws://0.0.0.0:{PORT}/ws")
     print("=" * 60)
     app = init_app()
-    web.run_app(app, host="0.0.0.0", port=PORT, access_log=None)
+    web.run_app(app, host="0.0.0.0", port=PORT, shutdown_timeout=1.0, access_log=None)
