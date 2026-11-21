@@ -4,22 +4,37 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'code_block_builder.dart';
 
 /// 专用于 Agent 回复的流式打字机 Markdown 渲染器
-/// 支持平滑逐字/逐词流式吐字、动态自适应敲击速率、呼吸光标提示，以及智能未闭合 Markdown 容错
+/// 具有永久完结记忆（Finished Cache）与唯一锁定机制，严禁对任何历史旧消息重放打字机
 class StreamingMarkdownBody extends StatefulWidget {
+  final String messageKey;
   final String fullText;
   final bool isLiveStream;
   final bool isDark;
   final void Function(String url) onOpenUrl;
   final void Function(String path) onDownloadFile;
+  final VoidCallback? onComplete;
 
   const StreamingMarkdownBody({
     super.key,
+    required this.messageKey,
     required this.fullText,
     required this.isLiveStream,
     required this.isDark,
     required this.onOpenUrl,
     required this.onDownloadFile,
+    this.onComplete,
   });
+
+  /// 已完成打字机的消息唯一指纹集合，永远不会被二次重放
+  static final Set<String> _globallyFinishedKeys = {};
+
+  static void markFinished(String key) {
+    if (key.isNotEmpty) _globallyFinishedKeys.add(key);
+  }
+
+  static void clearCache() {
+    _globallyFinishedKeys.clear();
+  }
 
   @override
   State<StreamingMarkdownBody> createState() => _StreamingMarkdownBodyState();
@@ -33,9 +48,19 @@ class _StreamingMarkdownBodyState extends State<StreamingMarkdownBody> {
   @override
   void initState() {
     super.initState();
+    // 核心防线 1：如果已经在完结集合中，或者非实时流，或者内容为空，100% 直接展示全文，绝对不启动打字机
+    if (widget.messageKey.isNotEmpty && StreamingMarkdownBody._globallyFinishedKeys.contains(widget.messageKey)) {
+      _displayedLength = widget.fullText.length;
+      _isFinished = true;
+      return;
+    }
+
     if (!widget.isLiveStream || widget.fullText.isEmpty) {
       _displayedLength = widget.fullText.length;
       _isFinished = true;
+      if (widget.messageKey.isNotEmpty) {
+        StreamingMarkdownBody.markFinished(widget.messageKey);
+      }
     } else {
       _startTypewriter();
     }
@@ -44,7 +69,8 @@ class _StreamingMarkdownBodyState extends State<StreamingMarkdownBody> {
   @override
   void didUpdateWidget(covariant StreamingMarkdownBody oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!widget.isLiveStream) {
+    if (!widget.isLiveStream ||
+        (widget.messageKey.isNotEmpty && StreamingMarkdownBody._globallyFinishedKeys.contains(widget.messageKey))) {
       _displayedLength = widget.fullText.length;
       _isFinished = true;
       _typewriterTimer?.cancel();
@@ -71,32 +97,38 @@ class _StreamingMarkdownBodyState extends State<StreamingMarkdownBody> {
       }
       if (_displayedLength >= widget.fullText.length) {
         timer.cancel();
-        setState(() => _isFinished = true);
+        _markCompleted();
         return;
       }
 
-      // 动态步长自适应：当剩余字数较多时自动增大步长，保证在 0.5s~1.2s 内完成吐字
+      // 动态步长自适应：长消息快速推进，短消息细腻敲击
       final remaining = widget.fullText.length - _displayedLength;
-      final step = remaining > 120 ? 6 : (remaining > 40 ? 3 : 1);
+      final step = remaining > 150 ? 8 : (remaining > 50 ? 4 : 2);
       final nextLength = (_displayedLength + step).clamp(0, widget.fullText.length);
 
       setState(() {
         _displayedLength = nextLength;
         if (_displayedLength >= widget.fullText.length) {
-          _isFinished = true;
+          _markCompleted();
           timer.cancel();
         }
       });
     });
   }
 
+  void _markCompleted() {
+    setState(() => _isFinished = true);
+    if (widget.messageKey.isNotEmpty) {
+      StreamingMarkdownBody.markFinished(widget.messageKey);
+    }
+    widget.onComplete?.call();
+  }
+
   void _skipToEnd() {
     if (!_isFinished) {
       _typewriterTimer?.cancel();
-      setState(() {
-        _displayedLength = widget.fullText.length;
-        _isFinished = true;
-      });
+      _displayedLength = widget.fullText.length;
+      _markCompleted();
     }
   }
 

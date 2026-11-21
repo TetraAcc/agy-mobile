@@ -9,6 +9,7 @@ import '../utils/file_utils.dart';
 class MessageCard extends StatelessWidget {
   final AgentMessage msg;
   final bool isDark;
+  final bool isLatest;
   final String authToken;
   final void Function(String path, {String? filename}) onDownloadFile;
   final void Function(String path) onReadFile;
@@ -18,6 +19,7 @@ class MessageCard extends StatelessWidget {
     super.key,
     required this.msg,
     required this.isDark,
+    this.isLatest = false,
     required this.authToken,
     required this.onDownloadFile,
     required this.onReadFile,
@@ -94,14 +96,18 @@ class MessageCard extends StatelessWidget {
             const SizedBox(height: 10),
           ],
 
-          // Markdown 回复正文（支持平滑流式打字机渲染）
+          // Markdown 回复正文（只有当 isLatest 为 true 且该条消息为新流时才允许打字机，历史旧消息绝对静态全量展示）
           if (msg.content.isNotEmpty)
             StreamingMarkdownBody(
+              messageKey: msg.messageKey,
               fullText: msg.content,
-              isLiveStream: msg.isLiveStream,
+              isLiveStream: isLatest && msg.isLiveStream,
               isDark: isDark,
               onOpenUrl: onOpenUrl,
               onDownloadFile: (p) => onDownloadFile(p),
+              onComplete: () {
+                msg.isLiveStream = false;
+              },
             ),
 
           // 自动检测正文中提及的可下载文件，生成直观显眼的【下载卡片】

@@ -509,7 +509,13 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
   }
 
   void _handleSessionHistory(Map<String, dynamic> data) {
-    final hist = (data['history'] as List).map((e) => AgentMessage.fromJson(e)).toList();
+    // 历史消息加载：全部预置为已完成，绝对禁止历史旧消息触发打字机动画
+    final hist = (data['history'] as List).map((e) {
+      final msg = AgentMessage.fromJson(e);
+      msg.isLiveStream = false;
+      StreamingMarkdownBody.markFinished(msg.messageKey);
+      return msg;
+    }).toList();
     final sid = data['session_id']?.toString() ?? _activeSessionId;
 
     if (data['is_running'] != null) {
@@ -694,6 +700,13 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
         if (newMsg.isUser && _messages.isNotEmpty && _messages.first.isUser && _messages.first.content == newMsg.content) {
           return;
         }
+
+        // 核心锁定防线：在推入新消息前，将现有历史消息的打字机状态全部永久锁定
+        for (var m in _messages) {
+          m.isLiveStream = false;
+          StreamingMarkdownBody.markFinished(m.messageKey);
+        }
+
         // 如果是同一步骤的 Agent 回复增量更新，原地替换以支持无缝打字机追赶
         if (!newMsg.isUser && _messages.isNotEmpty && !_messages.first.isUser &&
             newMsg.stepIndex > 0 && newMsg.stepIndex == _messages.first.stepIndex) {
@@ -790,6 +803,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
       _activeSessionId = session.id;
       _activeSessionTitle = session.title;
       _messages.clear();
+      StreamingMarkdownBody.clearCache();
     });
     final payload = jsonEncode({"action": "switch_session", "session_id": session.id});
     _channel?.sink.add(payload);
@@ -1414,8 +1428,11 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                             return _buildThinkingIndicator(isDark);
                           }
                           final msgIdx = _isThinking ? idx - 1 : idx;
+                          final msg = _messages[msgIdx];
                           return MessageCard(
-                            msg: _messages[msgIdx],
+                            key: ValueKey(msg.messageKey),
+                            msg: msg,
+                            isLatest: (msgIdx == 0),
                             isDark: isDark,
                             authToken: _authToken,
                             onDownloadFile: (p, {filename}) => _downloadFile(p, filename: filename),

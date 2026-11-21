@@ -7,7 +7,7 @@ class AgentMessage {
   final String thinking;
   final List<dynamic> toolCalls;
   final String timestamp;
-  final bool isLiveStream;
+  bool isLiveStream;
 
   AgentMessage({
     required this.stepIndex,
@@ -23,6 +23,9 @@ class AgentMessage {
 
   bool get isUser => source == 'USER_EXPLICIT' || msgType == 'USER_INPUT';
   bool get isPureToolStep => content.isEmpty && thinking.isEmpty && toolCalls.isNotEmpty;
+
+  /// 消息的唯一稳定指纹键
+  String get messageKey => '${stepIndex}_${timestamp}_${content.length}';
 
   factory AgentMessage.fromJson(Map<String, dynamic> json) {
     String rawContent = json['content'] ?? '';
