@@ -453,6 +453,19 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                 ],
               ),
             ),
+
+            // 抽屉最底部：版本标识
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                "AGY Remote v1.3.3",
+                style: TextStyle(
+                  fontSize: 10,
+                  color: isDark ? Colors.white24 : Colors.black26,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ),
           ],
         ),
       ),

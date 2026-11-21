@@ -5,7 +5,7 @@
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter)](https://flutter.dev)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-v1.3.1-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
+[![Version](https://img.shields.io/badge/Version-v1.3.3-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-13%2F13%20Passed-success.svg)](test/widget_test.dart)
 
@@ -13,6 +13,18 @@
 
 ## 🌟 核心特性
 
+- 🔍 **侧边栏会话实时搜索过滤 (v1.3.3 新增)**：
+  - 侧边栏“+ 新建会话”正下方集成微型实时搜索栏；
+  - 毫秒级模糊匹配**会话标题、所属工程名称与文本内容**，并附带项目徽标；右侧支持一键清空 `[×]`。
+- ⚡ **消息流式打字机逐字渲染 & 完结记忆锁定 (v1.3.3 新增)**：
+  - Agent 输出时不再是一大段突兀刷新，而是带有类似 ChatGPT/Claude 的自然打字机逐字吐字动效与呼吸光标；
+  - **四重排他锁定**：通过 `isLatest` 物理位置锁定、全局完结指纹记忆库（`_globallyFinishedKeys`）与历史加载全量预置，严格限定**仅当前会话最顶部的第 0 条最新消息**允许打字，彻底杜绝历史旧消息被重复打字重载；支持点击卡片立即跳过。
+- 🖥️ **代码块一体化沉浸终端底色 (v1.3.3 优化)**：
+  - 剥离第三方高亮组件自带的死灰色窄块补丁，通过 `LayoutBuilder` 结合 `ConstrainedBox` 强制 100% 满宽平铺；
+  - 采用现代微冷终端底色（`#0B101D`）与精致微边框，消除任何视觉割裂感。
+- 🛡️ **Windows 本地自愈看门狗 (Watchdog) & WebSocket 防爆沙箱 (v1.3.3 增强)**：
+  - 新增 `watchdog_windows.py`，主服务意外闪退或休眠唤醒后 1.5 秒内自动清理端口并自愈拉起；
+  - WebSocket 握手阶段各子模块（会话树、历史记录、额度、节点探测）全部解耦为独立安全沙箱，单模块偶发异常绝不断联。
 - 🎨 **多套护眼强调色主题系统 (v1.3.0 新增)**：
   - 彻底解决深色模式下亮蓝强调色刺眼对眼睛不友好的问题；
   - 侧边栏底部提供专属色板选择器，开箱提供 **翡翠绿 (护眼极客)**、**青竹绿 (北欧温润)**、**紫罗兰 (温和沉浸)**、**暖琥珀 (夜间暖光)** 与 **科技蓝 (经典)** 5 大低饱和护眼主题；
