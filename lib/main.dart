@@ -105,7 +105,8 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
   WebSocketChannel? _channel;
   bool _isConnected = false;
   bool _isConnecting = false;
-  bool _isThinking = false;
+  final Set<String> _runningSessionIds = {};
+  bool get _isThinking => _runningSessionIds.contains(_activeSessionId);
   String _currentIp = "127.0.0.1";
   String _authToken = "";
   String _activeSessionId = "";
@@ -181,7 +182,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
     if (!_isConnected) return;
     HapticFeedback.heavyImpact();
     setState(() {
-      _isThinking = false;
+      _runningSessionIds.remove(_activeSessionId);
     });
     final payload = jsonEncode({
       "action": "stop",
@@ -467,6 +468,15 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
               });
             } else if (type == 'session_history') {
               final hist = (data['history'] as List).map((e) => AgentMessage.fromJson(e)).toList();
+              final sid = data['session_id']?.toString() ?? _activeSessionId;
+              if (hist.isNotEmpty) {
+                final latest = hist.first;
+                if (latest.isUser || (latest.status != 'DONE' && latest.status != 'ERROR') || latest.toolCalls.isNotEmpty) {
+                  _runningSessionIds.add(sid);
+                } else {
+                  _runningSessionIds.remove(sid);
+                }
+              }
               setState(() {
                 _messages.clear();
                 _messages.addAll(hist.reversed);
@@ -541,9 +551,10 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
               );
             } else if (type == 'prompt_ack') {
               final status = data['status'];
+              final sid = data['session_id']?.toString() ?? _activeSessionId;
               if (status == 'error') {
                 setState(() {
-                  _isThinking = false;
+                  _runningSessionIds.remove(sid);
                 });
                 final err = data['error'] ?? '未知错误';
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -557,13 +568,19 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                 HapticFeedback.lightImpact();
               }
             } else if (type == 'status_change') {
+              final sid = data['session_id']?.toString() ?? _activeSessionId;
               final isRunning = data['is_running'] == true;
               setState(() {
-                _isThinking = isRunning;
+                if (isRunning) {
+                  _runningSessionIds.add(sid);
+                } else {
+                  _runningSessionIds.remove(sid);
+                }
               });
             } else if (type == 'stopped') {
+              final sid = data['session_id']?.toString() ?? _activeSessionId;
               setState(() {
-                _isThinking = false;
+                _runningSessionIds.remove(sid);
               });
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
@@ -573,38 +590,37 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                 ),
               );
             } else if (type == 'agent_update') {
+              final sid = data['session_id']?.toString() ?? _activeSessionId;
               final newMsg = AgentMessage.fromJson(data);
               if (newMsg.content.isEmpty && newMsg.thinking.isEmpty && newMsg.toolCalls.isEmpty) {
                 return;
               }
-              // 关键：电脑端输入或模型仍在执行时，网页端必须保持红色停止按钮
-              if (newMsg.isUser) {
-                setState(() {
-                  _isThinking = true;
-                });
-              } else {
-                final backendRunning = data['is_running'];
-                if (backendRunning != null) {
-                  setState(() {
-                    _isThinking = backendRunning == true;
-                  });
-                } else if (newMsg.status == 'DONE' && newMsg.toolCalls.isEmpty) {
-                  setState(() {
-                    _isThinking = false;
-                  });
-                } else {
-                  setState(() {
-                    _isThinking = true;
-                  });
-                }
-              }
-
-              // 避免乐观插入和广播重复
-              if (newMsg.isUser && _messages.isNotEmpty && _messages.first.isUser && _messages.first.content == newMsg.content) {
-                return;
-              }
+              // 关键：会话精确绑定状态与消息隔离
               setState(() {
-                _messages.insert(0, newMsg);
+                if (newMsg.isUser) {
+                  _runningSessionIds.add(sid);
+                } else {
+                  final backendRunning = data['is_running'];
+                  if (backendRunning != null) {
+                    if (backendRunning == true) {
+                      _runningSessionIds.add(sid);
+                    } else {
+                      _runningSessionIds.remove(sid);
+                    }
+                  } else if (newMsg.status == 'DONE' && newMsg.toolCalls.isEmpty) {
+                    _runningSessionIds.remove(sid);
+                  } else {
+                    _runningSessionIds.add(sid);
+                  }
+                }
+
+                // 消息隔离：只有属于当前激活会话的消息才显示在主界面！
+                if (sid == _activeSessionId || _activeSessionId.isEmpty) {
+                  if (newMsg.isUser && _messages.isNotEmpty && _messages.first.isUser && _messages.first.content == newMsg.content) {
+                    return;
+                  }
+                  _messages.insert(0, newMsg);
+                }
               });
 
               if (newMsg.status == 'WAITING_APPROVAL' || newMsg.status == 'WAITING_INPUT') {
@@ -738,7 +754,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
 
     setState(() {
       _messages.insert(0, optimisticMsg);
-      _isThinking = true;
+      _runningSessionIds.add(_activeSessionId);
     });
 
     if (_scrollController.hasClients) {
@@ -1010,7 +1026,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
     setState(() {
       _messages.clear();
       _activeSessionTitle = "新任务 (启动中...)";
-      _isThinking = true;
+      _runningSessionIds.add(_activeSessionId);
     });
 
     final payload = jsonEncode({
@@ -1177,6 +1193,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
         projects: _projects,
         generalSessions: _generalSessions,
         activeSessionId: _activeSessionId,
+        runningSessionIds: _runningSessionIds,
         onSwitchSession: _switchSession,
         onDeleteSession: _deleteSession,
         isDark: isDark,

@@ -13,6 +13,7 @@ class QuotaDrawer extends StatelessWidget {
   final Map<String, List<SessionItem>> projects;
   final List<SessionItem> generalSessions;
   final String? activeSessionId;
+  final Set<String> runningSessionIds;
   final ValueChanged<SessionItem> onSwitchSession;
   final ValueChanged<String> onDeleteSession;
   final bool isDark;
@@ -30,6 +31,7 @@ class QuotaDrawer extends StatelessWidget {
     required this.projects,
     required this.generalSessions,
     required this.activeSessionId,
+    this.runningSessionIds = const {},
     required this.onSwitchSession,
     required this.onDeleteSession,
     required this.isDark,
@@ -502,6 +504,7 @@ class QuotaDrawer extends StatelessWidget {
 
   Widget _buildSessionTile(BuildContext context, SessionItem s, {required bool isIndented}) {
     final isCurrent = s.id == activeSessionId;
+    final isRunning = runningSessionIds.contains(s.id);
 
     return Container(
       margin: EdgeInsets.only(left: isIndented ? 28 : 10, right: 10, bottom: 2),
@@ -512,25 +515,57 @@ class QuotaDrawer extends StatelessWidget {
       child: ListTile(
         dense: true,
         visualDensity: const VisualDensity(vertical: -3),
-        leading: Icon(
-          Icons.chat_bubble_outline_rounded,
-          size: 14,
-          color: isCurrent ? Theme.of(context).colorScheme.primary : (isDark ? Colors.white38 : Colors.black38),
-        ),
-        title: Text(
-          s.title,
-          style: TextStyle(
-            color: isCurrent ? Theme.of(context).colorScheme.primary : (isDark ? Colors.white70 : Colors.black87),
-            fontSize: 12,
-            fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
-          ),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+        leading: isRunning
+            ? SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7),
+                  ),
+                ),
+              )
+            : Icon(
+                Icons.chat_bubble_outline_rounded,
+                size: 14,
+                color: isCurrent ? Theme.of(context).colorScheme.primary : (isDark ? Colors.white38 : Colors.black38),
+              ),
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                s.title,
+                style: TextStyle(
+                  color: isCurrent ? Theme.of(context).colorScheme.primary : (isDark ? Colors.white70 : Colors.black87),
+                  fontSize: 12,
+                  fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            if (isRunning) ...[
+              const SizedBox(width: 4),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                decoration: BoxDecoration(
+                  color: Colors.redAccent.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(3),
+                  border: Border.all(color: Colors.redAccent.withOpacity(0.4), width: 0.8),
+                ),
+                child: const Text(
+                  "运行中",
+                  style: TextStyle(color: Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ],
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (s.time.isNotEmpty)
+            if (s.time.isNotEmpty && !isRunning)
               Text(
                 s.time,
                 style: TextStyle(color: isDark ? Colors.white24 : Colors.black26, fontSize: 9),
