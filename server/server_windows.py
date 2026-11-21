@@ -614,6 +614,11 @@ async def websocket_handler(request):
                     elif action == "new_session":
                         content = data.get("content", "你好，请开始新会话").strip()
                         raw_model = data.get("model", "gemini-3.8-flash-high").strip().lower()
+                        workspace_path = data.get("workspace_path", "").strip()
+                        target_cwd = None
+                        if workspace_path and os.path.exists(workspace_path) and os.path.isdir(workspace_path):
+                            target_cwd = workspace_path
+                            print(f"[*] 开启新会话绑定工作区目录: {target_cwd}")
                         valid_models = {
                             "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
                             "claude-sonnet-4-6", "claude-opus-4-6-thinking", "claude-3-7-sonnet", "claude-3-7-opus",
@@ -639,7 +644,15 @@ async def websocket_handler(request):
                             cmd = [AGENT_API_PATH, "new-conversation", f"--model={model}", content]
                         if cmd:
                             try:
-                                res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=12)
+                                res = subprocess.run(
+                                    cmd,
+                                    cwd=target_cwd,
+                                    capture_output=True,
+                                    text=True,
+                                    encoding="utf-8",
+                                    errors="replace",
+                                    timeout=12
+                                )
                                 out_text = res.stdout.strip()
                                 new_cid = ""
                                 if res.returncode == 0:

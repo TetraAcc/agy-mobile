@@ -5,7 +5,7 @@
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter)](https://flutter.dev)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-v1.2.0-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
+[![Version](https://img.shields.io/badge/Version-v1.2.1-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-13%2F13%20Passed-success.svg)](test/widget_test.dart)
 
@@ -13,6 +13,10 @@
 
 ## 🌟 核心特性
 
+- 📁 **项目内一键新建会话与智能工作区绑定 (v1.2.1 新增)**：
+  - 侧边栏项目列表每一项标题右侧均提供一键 `+` 加号按钮，直接在此项目内开启新会话；
+  - “开启全新会话”弹窗新增“所属项目 / 关联工作区”下拉选单，支持在“🌐 通用任务 (无项目绑定)”与“📁 具体项目”间随时无缝切换；
+  - 服务端底座自动将底层 `language_server.exe agentapi new-conversation` 执行工作目录 (`cwd`) 设置为目标工程物理路径，Antigravity 天然将新任务准确归属于该项目。
 - 🌐 **全跨平台免客户端安装**：基于 Flutter 3 编译为高性能 Web 应用，手机 Safari/Chrome、平板、电脑浏览器打开即用，PWA 即刻安装到桌面。
 - 🔄 **会话级执行状态与消息流物理隔离 (v1.2.0 新增)**：
   - 各个 Session 的运行/停止状态完全独立追踪，告别“全局停止按钮”设计缺陷；

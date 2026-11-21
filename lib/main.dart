@@ -1003,25 +1003,39 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
     );
   }
 
-  void _showNewSessionDialog() {
+  void _showNewSessionDialog({String? initialProjectName, String? initialWorkspacePath}) {
+    // 收集所有项目的本地工作区路径
+    final projectPaths = <String, String>{};
+    for (var entry in _projects.entries) {
+      final validPath = entry.value.firstWhere(
+        (s) => s.workspacePath.isNotEmpty,
+        orElse: () => entry.value.first,
+      ).workspacePath;
+      if (validPath.isNotEmpty) {
+        projectPaths[entry.key] = validPath;
+      }
+    }
+
     showDialog(
       context: context,
       builder: (ctx) => NewSessionDialog(
         initialMode: _selectedMode,
         initialModel: _selectedModel,
         models: kAllOfficialModels,
-        onStart: (prompt, mode, model) {
+        availableProjects: projectPaths,
+        initialProjectName: initialProjectName,
+        onStart: (prompt, mode, model, workspacePath) {
           setState(() {
             _selectedMode = mode;
             _selectedModel = model;
           });
-          _startNewSession(prompt);
+          _startNewSession(prompt, workspacePath: workspacePath);
         },
       ),
     );
   }
 
-  void _startNewSession(String initialPrompt) {
+  void _startNewSession(String initialPrompt, {String? workspacePath}) {
     if (!_isConnected) return;
     setState(() {
       _messages.clear();
@@ -1034,6 +1048,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
       "content": initialPrompt,
       "model": _selectedModel,
       "mode": _selectedMode,
+      "workspace_path": workspacePath ?? "",
     });
     _channel?.sink.add(payload);
     HapticFeedback.mediumImpact();
@@ -1190,6 +1205,10 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
         isLoadingQuota: _isLoadingQuota,
         onRequestQuota: _requestQuota,
         onNewSession: _showNewSessionDialog,
+        onNewSessionInProject: (projectName, wsPath) => _showNewSessionDialog(
+          initialProjectName: projectName,
+          initialWorkspacePath: wsPath,
+        ),
         projects: _projects,
         generalSessions: _generalSessions,
         activeSessionId: _activeSessionId,

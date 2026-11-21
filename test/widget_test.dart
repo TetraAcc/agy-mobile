@@ -111,10 +111,12 @@ Some internal instructions here.
         'title': 'Agy网页版开发',
         'time': '2026-11-21',
         'is_active': true,
+        'workspace_path': r'C:\Users\User\Projects\demo',
       });
       expect(session.id, 'sess-123');
       expect(session.title, 'Agy网页版开发');
       expect(session.isActive, true);
+      expect(session.workspacePath, r'C:\Users\User\Projects\demo');
     });
 
     test('FileItem 解析', () {

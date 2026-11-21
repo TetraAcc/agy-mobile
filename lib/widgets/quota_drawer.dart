@@ -10,6 +10,7 @@ class QuotaDrawer extends StatelessWidget {
   final bool isLoadingQuota;
   final VoidCallback onRequestQuota;
   final VoidCallback onNewSession;
+  final void Function(String projectName, String workspacePath)? onNewSessionInProject;
   final Map<String, List<SessionItem>> projects;
   final List<SessionItem> generalSessions;
   final String? activeSessionId;
@@ -28,6 +29,7 @@ class QuotaDrawer extends StatelessWidget {
     required this.isLoadingQuota,
     required this.onRequestQuota,
     required this.onNewSession,
+    this.onNewSessionInProject,
     required this.projects,
     required this.generalSessions,
     required this.activeSessionId,
@@ -111,6 +113,32 @@ class QuotaDrawer extends StatelessWidget {
                               fontSize: 13,
                               fontWeight: FontWeight.bold,
                             ),
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.add_circle_outline_rounded, size: 18),
+                                color: Theme.of(context).colorScheme.primary,
+                                tooltip: '在此项目内新建会话',
+                                splashRadius: 16,
+                                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                                padding: EdgeInsets.zero,
+                                onPressed: () {
+                                  final wsPath = entry.value.firstWhere(
+                                    (s) => s.workspacePath.isNotEmpty,
+                                    orElse: () => entry.value.first,
+                                  ).workspacePath;
+                                  onNewSessionInProject?.call(entry.key, wsPath);
+                                },
+                              ),
+                              const SizedBox(width: 2),
+                              Icon(
+                                Icons.expand_more_rounded,
+                                size: 18,
+                                color: isDark ? Colors.white54 : Colors.black45,
+                              ),
+                            ],
                           ),
                           children: entry.value
                               .map((s) => _buildSessionTile(context, s, isIndented: true))
