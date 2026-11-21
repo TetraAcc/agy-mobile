@@ -1435,6 +1435,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                             isLatest: (msgIdx == 0),
                             isDark: isDark,
                             authToken: _authToken,
+                            selectedNode: _selectedNode,
                             onDownloadFile: (p, {filename}) => _downloadFile(p, filename: filename),
                             onReadFile: (p) => _requestReadFile(p),
                             onOpenUrl: (url) => JsBridge.openUrl(url),

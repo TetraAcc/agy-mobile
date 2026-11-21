@@ -487,27 +487,39 @@ async def media_handler(request):
     if not file_path:
         return web.Response(text="Missing path", status=400)
     
-    # Windows 路径反代
+    # 清洗 file:/// 前缀与 url 解码
+    clean_path = urllib.parse.unquote(file_path)
+    if clean_path.startswith("file:///"):
+        clean_path = clean_path[8:]
+    elif clean_path.startswith("file://"):
+        clean_path = clean_path[7:]
+    if clean_path.startswith("/") and len(clean_path) > 2 and clean_path[2] == ":":
+        clean_path = clean_path[1:]
+
     profile = USER_PROFILES[token]
-    target_node = profile["default_node"]
+    req_node = request.query.get("node")
+    target_node = req_node if (req_node and req_node in profile.get("allowed_nodes", [])) else profile["default_node"]
     cfg = NODE_REGISTRY.get(target_node)
 
-    if cfg and not cfg["is_local"] and (file_path.startswith("C:") or file_path.startswith("c:") or "\\" in file_path):
+    # 判断是否为 Windows 路径或目标节点为 Windows 设备
+    is_win_path = clean_path.startswith("C:") or clean_path.startswith("c:") or "\\" in clean_path
+    if cfg and not cfg["is_local"] and (is_win_path or target_node in ["windows", "simeng_pc"]):
         target_host = cfg["host"]
-        win_url = f"http://{target_host}/api/media?path={urllib.parse.quote(file_path)}&token={token}"
+        win_url = f"http://{target_host}/api/media?path={urllib.parse.quote(clean_path)}&token={token}"
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(win_url, timeout=5) as resp:
+                async with session.get(win_url, timeout=10) as resp:
                     if resp.status == 200:
                         content = await resp.read()
                         ct = resp.headers.get("Content-Type", "image/png")
-                        return web.Response(body=content, content_type=ct)
+                        headers = build_cors_headers(request, {"Content-Type": ct, "Cache-Control": "public, max-age=86400"})
+                        return web.Response(body=content, headers=headers)
                     return web.Response(text="Remote host returned error", status=resp.status)
         except Exception as e:
             return web.Response(text=f"Failed to fetch from remote: {e}", status=502)
 
     # 本地路径读取 — 严格白名单与敏感文件阻断
-    safe, result = is_path_safe(file_path)
+    safe, result = is_path_safe(clean_path)
     if not safe:
         return web.Response(text=f"Forbidden: {result}", status=403)
         

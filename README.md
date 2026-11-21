@@ -5,7 +5,7 @@
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter)](https://flutter.dev)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-v1.3.3-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
+[![Version](https://img.shields.io/badge/Version-v1.3.4-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-13%2F13%20Passed-success.svg)](test/widget_test.dart)
 
@@ -13,6 +13,11 @@
 
 ## 🌟 核心特性
 
+- 🖼️ **Agent 回复 Markdown 本地图片双端透明代理与交互式全屏预览 (v1.3.4 新增)**：
+  - **破解 Web 端图片跨域沙箱限制**：在 Web 网页端彻底解决 Agent 回复 Markdown 中 `file:///...` 本地协议图片无法显示、直接破图的顽疾；
+  - **双端智能路径清洗与反代**：`StreamingMarkdownBody` 内置 `imageBuilder` 代理拦截，将本地绝对路径与 `file://` 协议自动转换为网关及 Windows 的 `/api/media?path=...&token=...&node=...` 接口；
+  - **交互式全屏 Lightbox 弹窗**：点击图片即刻唤起全屏半透明模态框，支持 `InteractiveViewer` 无级平移缩放、滚轮缩放、原图独立标签页打开及一键下载查看，方便阅读长图与架构细节；
+  - **加载状态平滑兜底**：配备优雅的加载菊花指示与失败友好的容错卡片。
 - 🔍 **侧边栏会话实时搜索过滤 (v1.3.3 新增)**：
   - 侧边栏“+ 新建会话”正下方集成微型实时搜索栏；
   - 毫秒级模糊匹配**会话标题、所属工程名称与文本内容**，并附带项目徽标；右侧支持一键清空 `[×]`。

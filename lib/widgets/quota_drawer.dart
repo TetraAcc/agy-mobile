@@ -458,7 +458,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Text(
-                "AGY Remote v1.3.3",
+                "AGY Remote v1.3.4",
                 style: TextStyle(
                   fontSize: 10,
                   color: isDark ? Colors.white24 : Colors.black26,

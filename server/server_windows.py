@@ -1002,7 +1002,14 @@ async def media_handler(request):
     if not file_path:
         return web.Response(text="Missing path", status=400)
     
-    clean_path = urllib.parse.unquote(file_path.replace("file:///", "").replace("file://", ""))
+    clean_path = urllib.parse.unquote(file_path)
+    if clean_path.startswith("file:///"):
+        clean_path = clean_path[8:]
+    elif clean_path.startswith("file://"):
+        clean_path = clean_path[7:]
+    if clean_path.startswith("/") and len(clean_path) > 2 and clean_path[2] == ":":
+        clean_path = clean_path[1:]
+    clean_path = clean_path.replace("/", "\\")
     safe, result = is_path_safe(clean_path, current_workspace_dir)
     if not safe:
         return web.Response(text=f"Forbidden: {result}", status=403)
@@ -1023,7 +1030,14 @@ async def download_handler(request):
     if not file_path:
         return web.Response(text="Missing path", status=400)
     
-    clean_path = urllib.parse.unquote(file_path.replace("file:///", "").replace("file://", ""))
+    clean_path = urllib.parse.unquote(file_path)
+    if clean_path.startswith("file:///"):
+        clean_path = clean_path[8:]
+    elif clean_path.startswith("file://"):
+        clean_path = clean_path[7:]
+    if clean_path.startswith("/") and len(clean_path) > 2 and clean_path[2] == ":":
+        clean_path = clean_path[1:]
+    clean_path = clean_path.replace("/", "\\")
     safe, result = is_path_safe(clean_path, current_workspace_dir)
     if not safe:
         return web.Response(text=f"Forbidden: {result}", status=403)

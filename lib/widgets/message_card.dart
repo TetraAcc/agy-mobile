@@ -11,6 +11,7 @@ class MessageCard extends StatelessWidget {
   final bool isDark;
   final bool isLatest;
   final String authToken;
+  final String selectedNode;
   final void Function(String path, {String? filename}) onDownloadFile;
   final void Function(String path) onReadFile;
   final void Function(String url) onOpenUrl;
@@ -21,6 +22,7 @@ class MessageCard extends StatelessWidget {
     required this.isDark,
     this.isLatest = false,
     required this.authToken,
+    this.selectedNode = 'windows',
     required this.onDownloadFile,
     required this.onReadFile,
     required this.onOpenUrl,
@@ -53,7 +55,7 @@ class MessageCard extends StatelessWidget {
                   style: const TextStyle(color: Colors.white, fontSize: 14, height: 1.4),
                 ),
               for (var imgPath in imgPaths)
-                _buildImagePreviewWidget(imgPath),
+                _buildImagePreviewWidget(context, imgPath),
             ],
           ),
         ),
@@ -103,6 +105,8 @@ class MessageCard extends StatelessWidget {
               fullText: msg.content,
               isLiveStream: isLatest && msg.isLiveStream,
               isDark: isDark,
+              authToken: authToken,
+              selectedNode: selectedNode,
               onOpenUrl: onOpenUrl,
               onDownloadFile: (p) => onDownloadFile(p),
               onComplete: () {
@@ -118,38 +122,120 @@ class MessageCard extends StatelessWidget {
     );
   }
 
-  Widget _buildImagePreviewWidget(String path) {
-    final url = "/api/media?path=${Uri.encodeComponent(path)}&token=$authToken";
-    return Container(
-      margin: const EdgeInsets.only(top: 8),
-      constraints: const BoxConstraints(maxHeight: 240, maxWidth: 320),
-      decoration: BoxDecoration(
-        color: Colors.black26,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: isDark ? Colors.white24 : Colors.black12),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Image.network(
-        url,
-        fit: BoxFit.contain,
-        errorBuilder: (ctx, err, stack) => Padding(
-          padding: const EdgeInsets.all(8.0),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.image_outlined, size: 16, color: Colors.white70),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text(
-                  "图片已上传: ${path.split(RegExp(r'[\\/]')).last}",
-                  style: const TextStyle(fontSize: 10, color: Colors.white70),
-                  overflow: TextOverflow.ellipsis,
+  Widget _buildImagePreviewWidget(BuildContext context, String path) {
+    final url = "/api/media?path=${Uri.encodeComponent(path)}&token=$authToken&node=$selectedNode";
+    final filename = path.split(RegExp(r'[\\/]')).last;
+    return InkWell(
+      onTap: () => _openImageDialog(context, url, filename),
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        margin: const EdgeInsets.only(top: 8),
+        constraints: const BoxConstraints(maxHeight: 240, maxWidth: 320),
+        decoration: BoxDecoration(
+          color: Colors.black26,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: isDark ? Colors.white24 : Colors.black12),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Image.network(
+          url,
+          fit: BoxFit.contain,
+          errorBuilder: (ctx, err, stack) => Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.image_outlined, size: 16, color: Colors.white70),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    "图片已上传: $filename",
+                    style: const TextStyle(fontSize: 10, color: Colors.white70),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
+    );
+  }
+
+  void _openImageDialog(BuildContext context, String imageUrl, String filename) {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.all(12),
+          child: Container(
+            constraints: BoxConstraints(
+              maxWidth: MediaQuery.of(ctx).size.width * 0.95,
+              maxHeight: MediaQuery.of(ctx).size.height * 0.85,
+            ),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF0F172A) : Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+              boxShadow: const [
+                BoxShadow(color: Colors.black54, blurRadius: 24, spreadRadius: 4),
+              ],
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+                  child: Row(
+                    children: [
+                      Icon(Icons.image_outlined, size: 16, color: Theme.of(context).colorScheme.primary),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          filename,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: isDark ? Colors.white : Colors.black87,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: "在新标签页打开原图",
+                        icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                        onPressed: () => onOpenUrl(imageUrl),
+                      ),
+                      IconButton(
+                        tooltip: "关闭",
+                        icon: const Icon(Icons.close_rounded, size: 20),
+                        onPressed: () => Navigator.of(ctx).pop(),
+                      ),
+                    ],
+                  ),
+                ),
+                Flexible(
+                  child: InteractiveViewer(
+                    panEnabled: true,
+                    scaleEnabled: true,
+                    minScale: 0.8,
+                    maxScale: 4.0,
+                    child: Center(
+                      child: Image.network(
+                        imageUrl,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
