@@ -1,35 +1,55 @@
 # AGY Mobile & Remote Hub 🚀
 
-> **Google Antigravity 跨平台轻量级远程协同中心 & 双机智能网关**  
-> 一套免客户端安装、单端口同源、支持 URL Token 自动鉴权的 Web / Mobile 伴侣应用，支持在统一公网域名下智能透明反代并实时控制 **Steam Deck (24h低功耗常驻机)** 与 **Windows PC (主力开发机)**。
+> **Google Antigravity 跨平台轻量级远程协同中心 & 多租户双机网关**  
+> 一套免客户端安装、单端口同源、支持多租户设备物理隔离的 Web / Mobile 伴侣应用。支持在统一公网域名下智能透明反代并实时控制 **Steam Deck (24h低功耗常驻网关)**、**Windows PC (主力开发机)** 以及 **专属电脑节点**。
+
+[![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter)](https://flutter.dev)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)](https://python.org)
+[![Version](https://img.shields.io/badge/Version-v1.2.0-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/Tests-13%2F13%20Passed-success.svg)](test/widget_test.dart)
 
 ---
 
 ## 🌟 核心特性
 
-- 🌐 **全跨平台免客户端安装**：基于 Flutter 3 编译为高性能 Web 应用，手机、平板、电脑浏览器打开即用，PWA 即刻安装到桌面。
-- 🔑 **多租户零摩擦鉴权与设备物理隔离**：
-  - 基于 URL Token 自动鉴权（如 `?token=tetra2026` 访问双机，`?token=simeng` 仅访问专属 PC），完全实现不同用户、不同设备间的物理级权限隔离与列表屏蔽；
-  - 自动持久化至 LocalStorage 并完成安全握手，免去重复登录。
+- 🌐 **全跨平台免客户端安装**：基于 Flutter 3 编译为高性能 Web 应用，手机 Safari/Chrome、平板、电脑浏览器打开即用，PWA 即刻安装到桌面。
+- 🔄 **会话级执行状态与消息流物理隔离 (v1.2.0 新增)**：
+  - 各个 Session 的运行/停止状态完全独立追踪，告别“全局停止按钮”设计缺陷；
+  - 某个后台会话运行时，其他会话底部正常显示发送箭头，互不干扰；
+  - 侧边栏抽屉带微型旋转动画与红色的 **`[运行中]`** 动态标签，哪个后台任务在跑一目了然；
+  - 消息流精确过滤，绝不发生跨会话实时打字串屏。
+- 🧱 **全模块化低耦合架构 (v1.2.0 新增)**：
+  - 告别单文件 3700 行巨石代码，下沉为 8 大高内聚独立 UI 组件；
+  - 抽离 `lib/utils/file_utils.dart`、`lib/models/`（7 大数据模型）与 `lib/constants/app_colors.dart`；
+  - 代码清晰直观，开箱即拥有 13 项完整的单元测试矩阵。
+- 🛡️ **生产级安全防御加固**：
+  - **凭据外部化**：口令 Token 与内网机器 IP 完全迁移至本地 `server_config.json`，受 `.gitignore` 严格保护；
+  - **路径遍历防御**：下载与媒体接口全面采用 `os.path.realpath` 规范化校验，结合根目录白名单并坚决阻断 `.ssh`、`id_rsa`、`.env` 等敏感文件，越权返回 403 Forbidden；
+  - **收紧 CORS 跨域**：动态校验 `Origin` 请求头，拒绝全开放通配符 `*`。
+- 🔑 **多租户设备与权限物理隔离**：
+  - 基于 URL Token 自动鉴权（如 `?token=tetra2026` 控制主力机与 Deck，`?token=simeng` 仅看到并控制专属电脑）；
+  - 物理级列表屏蔽与隔离路由，彼此不可见其他节点、项目或会话；
+  - 自动持久化至本地存储，免去繁琐输入。
 - 🎮 **双机/多机智能网关与透明反代**：
   - **Steam Deck** 作为低功耗 24 小时在线网关（通过 `cloudflared` 绑定顶级域名）；
   - 顶栏一键切换控制主机，Deck 边缘根据用户权限透明反向代理目标宿主机（支持 LAN IP 与 Tailscale 虚拟局域网），宿主机无需暴露于公网。
-- 📊 **官方底层 Connect-RPC 配额监控**：
+- 📊 **官方底层 Connect-RPC 真实配额监控**：
   - 直连 Antigravity 后台 `LanguageServerService/RetrieveUserQuotaSummary`；
-  - 抽屉侧边栏实时渲染 Gemini 周/5小时额度及 Claude/GPT 模型的真实消耗进度条。
+  - 抽屉侧边栏实时渲染 Gemini 系列（周额度 + 5 小时滑动窗口）及 Claude / GPT 模型的真实官方消耗进度条。
 - ⚡ **真实模型矩阵与思考分级（Thinking Budget）**：
-  - 废弃伪造模型标签，全面对齐官方真实模型：`Gemini 3.8 Flash (High/Medium/Low)`、`Claude Sonnet 4.6`、`GPT-OSS 120B`、`Gemini 2.5 Pro` 等；
+  - 废弃伪造模型标签，全面对齐官方真实模型：`Gemini 3.8 Flash (High/Medium/Low)`、`Claude Sonnet 4.6`、`Claude Opus 4.6 (Thinking)`、`GPT-OSS 120B`、`Gemini 2.5 Pro` 等；
   - 新建会话弹窗与底部快捷切换均支持官方思考预算级别调整。
 - 🛑 **真全双工底层打断 (Stop) 与斜杠指令**：
   - 运行时实时显示【🛑 停止】按钮，直接通过 RPC `CancelCascadeTask` 发送底层打断信号，支持全速中断输出；
-  - 原生支持 `/clear`、`/status` 等核心控制台指令。
+  - 原生悬浮补全 `/goal`、`/plan`、`/compact`、`/browser` 等官方核心斜杠指令。
 - 📦 **全双工流式下载与防排版死锁保护**：
   - 消息附件与工作区文件浏览器支持 `/api/download` 流式下载通道，浏览器端直接拉起原生下载；
   - 前端扩展名识别 + 后端空字节 `\x00` 嗅探双重防御，彻底杜绝 CanvasKit 渲染二进制文件（`.zip`, `.exe`, `.pdf` 等）时发生的排版引擎假死崩溃。
 - 📋 **多模态与图片秒级粘贴 (`Ctrl + V`)**：
   - 支持直接在输入框按 `Ctrl + V` 粘贴剪贴板截图，或将文件直接拖入页面；
   - 自动存入底层 `.user_uploaded` 会话目录并展示缩略图预览胶囊，发送时随消息提交给 Agent；
-  - 补齐“添加上下文”中的 **【📁 添加本地文件】** 与 **【🖼️ 上传图片】** 菜单。
+  - 包含工作区文件树直接浏览查看、Git 变更全屏 Diff 对比审查等进阶面板。
 
 ---
 
@@ -57,73 +77,99 @@ flowchart TD
 ```text
 agy-mobile/
 ├── lib/
-│   └── main.dart                     # Flutter Web/Mobile 主界面、消息卡片、模式与多模态逻辑
-├── web/
-│   ├── index.html                    # 注入 agyBridge 原生粘贴与文件拖拽监听
-│   └── ...
+│   ├── main.dart                          # 顶层 App 生命周期、WebSocket 分发与 Scaffold 装配
+│   ├── constants/
+│   │   └── app_colors.dart                # 全站十六进制统一调色板
+│   ├── models/                            # 7 大独立核心数据模型
+│   │   ├── agent_message.dart             # 消息结构、标签清洗与纯工具判断
+│   │   ├── session_item.dart              # 会话结构与项目分组
+│   │   ├── host_node.dart                 # 控制主机节点在线状态
+│   │   ├── file_item.dart                 # 工作区文件项
+│   │   ├── models.dart                    # Barrel 统一导出
+│   │   └── ...
+│   ├── utils/
+│   │   └── file_utils.dart                # 二进制识别、路径清洗、图标色彩与工具解析
+│   ├── widgets/                           # 8 大解耦独立 UI 组件
+│   │   ├── quota_drawer.dart              # 侧边栏抽屉与底座配额卡片
+│   │   ├── message_card.dart              # 聊天卡片、思考折叠、Markdown 与下载卡片
+│   │   ├── bottom_input_bar.dart          # 底部输入框与发送/停止切换
+│   │   ├── file_viewer_sheet.dart         # 纯文本全文带行号查看器
+│   │   ├── workspace_file_picker_dialog.dart # 工程目录树浏览与拾取
+│   │   ├── context_menu_sheet.dart        # 添加上下文与快捷操作菜单
+│   │   ├── git_diff_viewer_sheet.dart     # Git 变更 Diff 对比审查器
+│   │   ├── new_session_dialog.dart        # 新建任务弹窗与思考分级
+│   │   ├── slash_command_menu.dart        # 斜杠指令自动补全悬浮卡片
+│   │   ├── attachment_preview_bar.dart    # 待上传附件预览胶囊条
+│   │   └── widgets.dart                   # Barrel 统一导出
+│   └── bridge/                            # 条件编译跨平台桥接 (Web / Non-Web)
 ├── server/
-│   ├── server_windows.py             # Windows 主力机端服务 (文件上传/AgentAPI消息桥接/日志监听)
-│   ├── server_deck.py                # Steam Deck 24h 智能网关服务 (双机代理/媒体反代/会话管理)
-│   ├── agy-remote.service            # Linux/SteamOS systemd 守护进程单元文件
-│   └── start_windows_bridge.vbs      # Windows 开机后台静默自启脚本
-├── pubspec.yaml                      # Flutter 依赖配置
-└── README.md                         # 本文档
+│   ├── server_windows.py                  # Windows 主力机服务端
+│   ├── server_deck.py                     # Steam Deck 多租户边缘网关
+│   ├── server_common.py                   # 共享核心逻辑 (路径安全白名单、CORS头、消息清洗)
+│   ├── server_config.example.json         # 外部化配置模板 (Token、IP、白名单)
+│   └── agy-remote.service                 # SteamOS systemd 守护进程
+├── test/
+│   └── widget_test.dart                   # 13 项全量业务单元测试 (模型矩阵/清洗/安全/工具)
+├── web/
+│   └── index.html                         # 原生粘贴与剪贴板桥接注入
+├── pubspec.yaml                           # Flutter 配置 (v1.2.0)
+└── README.md                              # 项目说明文档
 ```
 
 ---
 
 ## 🚀 快速上手
 
-### 1. 前端编译与部署 (Flutter Web)
+### 1. 本地单元测试验证
+
+```bash
+flutter test
+# 预期输出: All tests passed! (13/13)
+```
+
+### 2. 前端编译与生产构建 (Flutter Web)
 
 ```bash
 # 获取依赖
 flutter pub get
 
-# 生产级构建 (自动树摇与资源优化)
+# 生产级构建 (自动树摇优化)
 flutter build web --release
 
-# 将产物部署至网关机 (例如 Steam Deck)
+# 同步部署至网关机 (例如 Steam Deck)
 scp -r build/web/* deck@<DECK_IP>:/home/deck/agy_remote/web/
 ```
 
-### 2. Steam Deck 网关端部署
+### 3. Steam Deck 网关部署
 
-1. 部署服务端文件：
+1. 配置文件就绪：
    ```bash
-   mkdir -p ~/agy_remote/web
-   cp server/server_deck.py ~/agy_remote/server.py
+   cp server/server_config.example.json ~/agy_remote/server_config.json
+   # 修改 server_config.json 填入真实口令与目标机 IP
    ```
-2. 安装 Systemd 用户级常驻守护进程：
+2. 安装 Systemd 用户级守护进程：
    ```bash
    cp server/agy-remote.service ~/.config/systemd/user/agy-remote.service
    systemctl --user daemon-reload
    systemctl --user enable --now agy-remote.service
-   
-   # 开启用户驻留 (关屏或注销后进程不退出)
    loginctl enable-linger deck
    ```
 
-### 3. Windows 主力机部署
+### 4. Windows 客户端部署
 
-1. 启动 Windows 桥接服务：
+1. 配置文件就绪：
+   ```bash
+   cp server/server_config.example.json server/server_config.json
+   ```
+2. 启动 Windows 桥接服务：
    ```bash
    python server/server_windows.py
    ```
-2. （可选）开机后台自启：
-   将 `server/start_windows_bridge.vbs` 快捷方式放入 Windows 开机启动目录：
-   `shell:startup`
 
-### 4. Cloudflare Tunnel 绑定
+### 5. 公网域名访问
 
-在 Cloudflare Zero Trust 控制台添加公共主机名：
-- **子域名**：`agy`
-- **域**：`your-domain.com`
-- **Service Type**：`HTTP`
-- **Service URL**：`http://localhost:8768`
-
-完成后即可直接通过公网访问：
-👉 `https://agy.your-domain.com/?token=your_auth_token`
+通过 Cloudflare Tunnel 绑定网关机器端口（8768）：
+👉 **`https://agy.your-domain.com/?token=your_auth_token`**
 
 ---
 
