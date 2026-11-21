@@ -5,7 +5,7 @@
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter)](https://flutter.dev)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-v1.3.0-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
+[![Version](https://img.shields.io/badge/Version-v1.3.1-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-13%2F13%20Passed-success.svg)](test/widget_test.dart)
 

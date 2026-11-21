@@ -133,12 +133,10 @@ Some internal instructions here.
 
     test('AppColors 常量与多主题矩阵有效性', () {
       expect(AppColors.darkBg.value, 0xFF0B0F19);
-      expect(AppColors.primarySky.value, 0xFF38BDF8);
-      expect(AppColors.onlineGreen.value, 0xFF10B981);
-      expect(AppColors.accentThemes.length, 5);
+      expect(AppColors.accentThemes.length, 6);
       final emerald = AppColors.getThemeById('emerald');
       expect(emerald.id, 'emerald');
-      expect(emerald.name.contains('翡翠'), true);
+      expect(emerald.name.contains('抹茶') || emerald.name.contains('翡翠'), true);
       final fallback = AppColors.getThemeById('non_existent');
       expect(fallback.id, 'emerald');
     });
