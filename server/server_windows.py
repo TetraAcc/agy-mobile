@@ -447,61 +447,76 @@ async def websocket_handler(request):
 
     try:
         # 0. 保证立即锁定最新会话，避免初次连接时出现空白
-        if not current_active_file or not os.path.exists(current_active_file):
-            latest = get_latest_transcript_path()
-            if latest:
-                current_active_file = latest
-                current_active_session_id = latest.split(os.sep)[-4]
-                if file_handle:
-                    try:
-                        file_handle.close()
-                    except Exception:
-                        pass
-                file_handle = open(current_active_file, "r", encoding="utf-8", errors="replace")
-                file_handle.seek(0, os.SEEK_END)
+        try:
+            if not current_active_file or not os.path.exists(current_active_file):
+                latest = get_latest_transcript_path()
+                if latest:
+                    current_active_file = latest
+                    current_active_session_id = latest.split(os.sep)[-4]
+                    if file_handle:
+                        try:
+                            file_handle.close()
+                        except Exception:
+                            pass
+                    file_handle = open(current_active_file, "r", encoding="utf-8", errors="replace")
+                    file_handle.seek(0, os.SEEK_END)
+        except Exception as e:
+            print(f"[-] 初始化活跃会话失败: {e}")
 
         # 1. 握手确认
-        await ws.send_json({
-            "type": "connected",
-            "active_session": current_active_session_id,
-            "msg": "Connected to AGY Remote Single-Port Hub!"
-        })
+        try:
+            await ws.send_json({
+                "type": "connected",
+                "active_session": current_active_session_id,
+                "msg": "Connected to AGY Remote Single-Port Hub!"
+            })
+        except Exception as e:
+            print(f"[-] 握手推送失败: {e}")
 
         # 1.5 双机节点在线状态推送
-        await ws.send_json({
-            "type": "nodes_status",
-            "nodes": [
-                {"id": "deck", "name": "Steam Deck", "online": True},
-                {"id": "windows", "name": "Windows PC", "online": True}
-            ]
-        })
+        try:
+            await ws.send_json({
+                "type": "nodes_status",
+                "nodes": [
+                    {"id": "deck", "name": "Steam Deck", "online": True},
+                    {"id": "windows", "name": "Windows PC", "online": True}
+                ]
+            })
+        except Exception as e:
+            print(f"[-] 节点状态推送失败: {e}")
 
         # 2. 会话树
-        data_tree = get_grouped_sessions()
-        await ws.send_json({
-            "type": "session_tree",
-            "projects": data_tree["projects"],
-            "general_sessions": data_tree["general_sessions"],
-            "current": current_active_session_id
-        })
+        try:
+            data_tree = get_grouped_sessions()
+            await ws.send_json({
+                "type": "session_tree",
+                "projects": data_tree.get("projects", {}),
+                "general_sessions": data_tree.get("general_sessions", []),
+                "current": current_active_session_id
+            })
 
-        for list_s in data_tree["projects"].values():
-            for s in list_s:
-                if s["id"] == current_active_session_id and s.get("workspace_path"):
-                    current_workspace_dir = s["workspace_path"]
-                    break
+            for list_s in data_tree.get("projects", {}).values():
+                for s in list_s:
+                    if s.get("id") == current_active_session_id and s.get("workspace_path"):
+                        current_workspace_dir = s["workspace_path"]
+                        break
+        except Exception as e:
+            print(f"[-] 会话树推送失败: {e}")
 
         # 3. 历史消息（必定立即推送）
-        if current_active_file and os.path.exists(current_active_file):
-            history = load_session_history(current_active_file, max_lines=40)
-            file_mtime = os.path.getmtime(current_active_file)
-            real_running = is_current_session_running and (time.time() - file_mtime < 2.5)
-            await ws.send_json({
-                "type": "session_history",
-                "session_id": current_active_session_id,
-                "history": history,
-                "is_running": real_running
-            })
+        try:
+            if current_active_file and os.path.exists(current_active_file):
+                history = load_session_history(current_active_file, max_lines=40)
+                file_mtime = os.path.getmtime(current_active_file)
+                real_running = bool(is_current_session_running and (time.time() - file_mtime < 2.5))
+                await ws.send_json({
+                    "type": "session_history",
+                    "session_id": current_active_session_id,
+                    "history": history,
+                    "is_running": real_running
+                })
+        except Exception as e:
+            print(f"[-] 历史记录推送失败: {e}")
 
         # 4. 实时额度初始推送
         try:
@@ -511,7 +526,7 @@ async def websocket_handler(request):
                     "type": "quota_update",
                     "quota": init_quota
                 })
-        except Exception:
+        except Exception as e:
             pass
 
         async for msg in ws:
