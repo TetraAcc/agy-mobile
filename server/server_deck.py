@@ -86,6 +86,8 @@ current_active_session_id = None
 current_active_file = None
 current_workspace_dir = None
 file_handle = None
+is_deck_session_running = False
+last_log_active_time = time.time()
 
 async def is_node_alive(node_id):
     cfg = NODE_REGISTRY.get(node_id)
@@ -211,20 +213,21 @@ def parse_transcript_line(line_str):
     except Exception:
         return None
 
-def load_session_history(file_path, max_lines=40):
+def load_session_history(file_path, max_lines=300):
     if not file_path or not os.path.exists(file_path):
         return []
     history = []
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
-            for line in lines[-max_lines:]:
+            scan_lines = lines[-max_lines:] if len(lines) > max_lines else lines
+            for line in scan_lines:
                 evt = parse_transcript_line(line)
                 if evt:
                     history.append(evt)
     except Exception as e:
         print(f"[-] 读取历史异常: {e}")
-    return history
+    return history[-60:]
 
 def dispatch_agent_message(session_id, content):
     cmd = [AGENT_API_PATH, "send-message", "--title=AGY Remote", session_id, content]
@@ -248,7 +251,7 @@ async def broadcast_message(message_dict):
             pass
 
 async def tail_transcript():
-    global current_active_file, file_handle, current_active_session_id
+    global current_active_file, file_handle, current_active_session_id, is_deck_session_running, last_log_active_time
     print("[*] Steam Deck 本地日志监控协程已启动...")
     while True:
         try:
@@ -266,11 +269,22 @@ async def tail_transcript():
             if file_handle:
                 line = file_handle.readline()
                 if line:
+                    last_log_active_time = time.time()
                     event = parse_transcript_line(line)
                     if event:
                         event["session_id"] = current_active_session_id
+                        event["is_running"] = True
+                        is_deck_session_running = True
                         await broadcast_message(event)
                 else:
+                    # 静默超时自动复位：若超过 2.5 秒没有新的日志产生，自动归位为空闲
+                    if is_deck_session_running and (time.time() - last_log_active_time > 2.5):
+                        is_deck_session_running = False
+                        await broadcast_message({
+                            "type": "status_change",
+                            "session_id": current_active_session_id,
+                            "is_running": False
+                        })
                     await asyncio.sleep(0.3)
             else:
                 await asyncio.sleep(1.0)
@@ -394,7 +408,7 @@ async def websocket_handler(request):
             file_handle = open(current_active_file, "r", encoding="utf-8", errors="replace")
             file_handle.seek(0, os.SEEK_END)
 
-    history = load_session_history(current_active_file, max_lines=40) if current_active_file else []
+    history = load_session_history(current_active_file, max_lines=300) if current_active_file else []
     data_tree = get_grouped_sessions()
     user_nodes = await get_user_nodes_status(token)
 
@@ -425,7 +439,8 @@ async def websocket_handler(request):
         await ws.send_json({
             "type": "session_history",
             "session_id": current_active_session_id,
-            "history": history
+            "history": history,
+            "is_running": bool(is_deck_session_running)
         })
 
     try:
@@ -443,6 +458,12 @@ async def websocket_handler(request):
                         await ws.send_json({
                             "type": "nodes_status",
                             "nodes": nodes
+                        })
+
+                    elif action == "get_quota":
+                        await ws.send_json({
+                            "type": "quota_update",
+                            "quota": {"groups": [], "models": []}
                         })
 
                     elif action == "prompt":
@@ -466,6 +487,46 @@ async def websocket_handler(request):
                             "type": "stop_ack",
                             "status": "ok",
                             "session_id": target_id
+                        })
+
+                    elif action == "get_sessions":
+                        data_tree = get_grouped_sessions()
+                        await ws.send_json({
+                            "type": "session_tree",
+                            "projects": data_tree.get("projects", {}),
+                            "general_sessions": data_tree.get("general_sessions", []),
+                            "current": current_active_session_id or ""
+                        })
+
+                    elif action == "switch_session":
+                        target_id = data.get("session_id")
+                        if target_id:
+                            target_file = os.path.join(BRAIN_DIR, target_id, ".system_generated", "logs", "transcript.jsonl")
+                            if os.path.exists(target_file):
+                                current_active_file = target_file
+                                current_active_session_id = target_id
+                                if file_handle:
+                                    try:
+                                        file_handle.close()
+                                    except Exception:
+                                        pass
+                                file_handle = open(current_active_file, "r", encoding="utf-8", errors="replace")
+                                file_handle.seek(0, os.SEEK_END)
+                                s_history = load_session_history(current_active_file, max_lines=300)
+                                await ws.send_json({
+                                    "type": "session_history",
+                                    "session_id": target_id,
+                                    "history": s_history,
+                                    "is_running": False
+                                })
+
+                    elif action == "new_session":
+                        content = data.get("content", "").strip() or "你好，开启新会话"
+                        ok, err_msg = dispatch_agent_message(None, content)
+                        await ws.send_json({
+                            "type": "new_session_ack",
+                            "status": "ok" if ok else "error",
+                            "error": err_msg if not ok else ""
                         })
                 except Exception as e:
                     print(f"[-] 处理消息异常: {e}")

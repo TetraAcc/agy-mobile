@@ -301,14 +301,15 @@ async def broadcast_message(message_dict):
         except Exception:
             pass
 
-def load_session_history(session_file, max_lines=40):
+def load_session_history(session_file, max_lines=300):
     if not os.path.exists(session_file):
         return []
     history = []
     try:
         with open(session_file, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
-            for line in lines[-max_lines:]:
+            scan_lines = lines[-max_lines:] if len(lines) > max_lines else lines
+            for line in scan_lines:
                 line = line.strip()
                 if not line:
                     continue
@@ -340,7 +341,7 @@ def load_session_history(session_file, max_lines=40):
                     pass
     except Exception as e:
         print(f"[-] 加载历史失败: {e}")
-    return history
+    return history[-60:]
 
 async def tail_transcript():
     global current_active_file, file_handle, current_active_session_id, is_current_session_running, last_log_active_time
@@ -1064,11 +1065,31 @@ async def index_handler(request):
         return web.FileResponse(index_path)
     return web.Response(text="index.html not found", status=404)
 
+async def health_handler(request):
+    headers = build_cors_headers(request, {"Cache-Control": "no-cache"})
+    return web.json_response({
+        "status": "ok",
+        "service": "agy_windows",
+        "active_session": current_active_session_id,
+        "timestamp": int(time.time())
+    }, headers=headers)
+
+async def api_nodes_handler(request):
+    headers = build_cors_headers(request, {"Cache-Control": "no-cache"})
+    return web.json_response({
+        "current": "windows",
+        "nodes": [
+            {"id": "windows", "name": "Windows PC", "desc": "主力开发机", "online": True}
+        ]
+    }, headers=headers)
+
 def init_app():
     app = web.Application(middlewares=[spa_middleware])
     app.router.add_get('/', index_handler)
     app.router.add_get('/ws', websocket_handler)
     app.router.add_get('/test', test_page_handler)
+    app.router.add_get('/api/health', health_handler)
+    app.router.add_get('/api/nodes', api_nodes_handler)
     app.router.add_get('/api/media', media_handler)
     app.router.add_get('/api/download', download_handler)
     if os.path.exists(FLUTTER_WEB_DIR):

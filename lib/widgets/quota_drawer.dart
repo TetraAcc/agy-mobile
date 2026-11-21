@@ -447,7 +447,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                   ),
                   Switch(
                     value: isDark,
-                    activeColor: Theme.of(context).colorScheme.primary,
+                    activeThumbColor: Theme.of(context).colorScheme.primary,
                     onChanged: (val) => onToggleTheme(val),
                   ),
                 ],

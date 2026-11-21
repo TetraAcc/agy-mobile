@@ -64,8 +64,7 @@ class _AgyRemoteAppState extends State<AgyRemoteApp> {
             colorScheme: ColorScheme.light(
               primary: currentAccent.primary,
               secondary: currentAccent.secondary,
-              surface: AppColors.lightSurface,
-              background: AppColors.lightBg,
+              surface: AppColors.lightBg,
             ),
           ),
           // 深度暗夜模式（护眼柔和）
@@ -76,8 +75,7 @@ class _AgyRemoteAppState extends State<AgyRemoteApp> {
             colorScheme: ColorScheme.dark(
               primary: currentAccent.primary,
               secondary: currentAccent.secondary,
-              surface: AppColors.darkSurface,
-              background: AppColors.darkBg,
+              surface: AppColors.darkBg,
             ),
           ),
           home: const MainRemoteScreen(),

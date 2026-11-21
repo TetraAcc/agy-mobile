@@ -6,7 +6,7 @@ import urllib.request
 
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 SERVER_SCRIPT = os.path.join(SERVER_DIR, "server_windows.py")
-HEALTH_URL = "http://127.0.0.1:8765/api/nodes"
+HEALTH_URL = "http://127.0.0.1:8765/api/health"
 LOG_FILE = os.path.join(SERVER_DIR, "watchdog.log")
 
 def log(msg: str):
