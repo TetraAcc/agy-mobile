@@ -12,7 +12,10 @@ LOG_FILE = os.path.join(SERVER_DIR, "watchdog.log")
 def log(msg: str):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     formatted = f"[{timestamp}] [Watchdog] {msg}"
-    print(formatted)
+    try:
+        print(formatted)
+    except Exception:
+        pass
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(formatted + "\n")
@@ -48,11 +51,12 @@ def main():
         log(f"正在拉起主服务进程 (第 {restart_count + 1} 次启动)...")
         clean_port_8765()
         
+        out_file = open(os.path.join(SERVER_DIR, "server_stdout.log"), "a", encoding="utf-8")
         proc = subprocess.Popen(
             [sys.executable, "-u", SERVER_SCRIPT],
             cwd=SERVER_DIR,
-            stdout=sys.stdout,
-            stderr=sys.stderr
+            stdout=out_file,
+            stderr=subprocess.STDOUT
         )
 
         # 启动后等待 2 秒并确认是否成功存活

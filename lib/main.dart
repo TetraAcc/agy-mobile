@@ -1233,15 +1233,19 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
                   height: 7,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: node.isOnline ? Colors.greenAccent : (isDark ? Colors.white24 : Colors.black26),
+                    color: !node.isOnline
+                        ? (isDark ? Colors.white24 : Colors.black26)
+                        : (node.engineAlive ? Colors.greenAccent : Colors.amberAccent),
                   ),
                 ),
                 const SizedBox(width: 4),
                 Text(
-                  node.isOnline ? "在线" : "离线",
+                  !node.isOnline ? "离线" : (node.engineAlive ? "在线" : "未启动"),
                   style: TextStyle(
                     fontSize: 10,
-                    color: node.isOnline ? Colors.greenAccent : (isDark ? Colors.white38 : Colors.black38),
+                    color: !node.isOnline
+                        ? (isDark ? Colors.white38 : Colors.black38)
+                        : (node.engineAlive ? Colors.greenAccent : Colors.amberAccent),
                   ),
                 ),
               ],

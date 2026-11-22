@@ -449,7 +449,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                   Row(
                     children: [
                       Text(
-                        "v1.3.6",
+                        "v1.3.7",
                         style: TextStyle(
                           fontSize: 10,
                           color: isDark ? Colors.white24 : Colors.black26,
@@ -552,7 +552,9 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                           height: 6,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: node.isOnline ? Colors.greenAccent : (isDark ? Colors.white24 : Colors.black26),
+                            color: !node.isOnline
+                                ? (isDark ? Colors.white24 : Colors.black26)
+                                : (node.engineAlive ? Colors.greenAccent : Colors.amberAccent),
                           ),
                         ),
                       ],

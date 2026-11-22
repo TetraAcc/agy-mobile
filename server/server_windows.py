@@ -944,9 +944,27 @@ async def websocket_handler(request):
 
     return ws
 
+def is_antigravity_engine_alive():
+    """两段式探活：检查本地 Antigravity 宿主引擎及 RPC 端口是否存活"""
+    try:
+        daemon_pattern = os.path.join(os.path.expanduser(r"~\.gemini\antigravity\daemon"), "hub_*.json")
+        hub_files = glob.glob(daemon_pattern)
+        if hub_files:
+            hub_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+            with open(hub_files[0], "r", encoding="utf-8") as f:
+                hub = json.load(f)
+            port = hub.get("httpPort")
+            if port:
+                import socket
+                with socket.create_connection(("127.0.0.1", port), timeout=1.0):
+                    return True
+    except Exception:
+        pass
+    return False
+
 @web.middleware
 async def spa_middleware(request, handler):
-    if request.path == "/ws":
+    if request.path == "/ws" or request.path.startswith("/api"):
         return await handler(request)
     try:
         response = await handler(request)
@@ -1067,12 +1085,22 @@ async def index_handler(request):
 
 async def health_handler(request):
     headers = build_cors_headers(request, {"Cache-Control": "no-cache"})
+    engine_alive = is_antigravity_engine_alive()
     return web.json_response({
         "status": "ok",
         "service": "agy_windows",
+        "engine_alive": engine_alive,
         "active_session": current_active_session_id,
         "timestamp": int(time.time())
     }, headers=headers)
+
+async def quota_handler(request):
+    token = request.query.get("token") or request.headers.get("X-Auth-Token")
+    if AUTH_TOKEN and token != AUTH_TOKEN:
+        return web.Response(text="Unauthorized", status=401)
+    quota_data, err = await asyncio.to_thread(get_user_quota_summary)
+    headers = build_cors_headers(request, {"Cache-Control": "no-cache"})
+    return web.json_response({"quota": quota_data, "error": err}, headers=headers)
 
 async def api_nodes_handler(request):
     headers = build_cors_headers(request, {"Cache-Control": "no-cache"})
@@ -1089,6 +1117,7 @@ def init_app():
     app.router.add_get('/ws', websocket_handler)
     app.router.add_get('/test', test_page_handler)
     app.router.add_get('/api/health', health_handler)
+    app.router.add_get('/api/quota', quota_handler)
     app.router.add_get('/api/nodes', api_nodes_handler)
     app.router.add_get('/api/media', media_handler)
     app.router.add_get('/api/download', download_handler)

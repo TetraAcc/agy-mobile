@@ -89,21 +89,57 @@ file_handle = None
 is_deck_session_running = False
 last_log_active_time = time.time()
 
-async def is_node_alive(node_id):
+cached_quota_data = None
+last_quota_sync_time = 0
+
+async def fetch_quota_from_windows():
+    global cached_quota_data, last_quota_sync_time
+    win_cfg = NODE_REGISTRY.get("windows")
+    if not win_cfg:
+        return cached_quota_data
+    win_host = win_cfg["host"]
+    try:
+        timeout = aiohttp.ClientTimeout(total=2.5)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"http://{win_host}/api/quota?token=tetra2026") as resp:
+                if resp.status == 200:
+                    res = await resp.json()
+                    q = res.get("quota")
+                    if q and q.get("groups"):
+                        cached_quota_data = q
+                        last_quota_sync_time = time.time()
+                        return q
+    except Exception as e:
+        logging.debug(f"从 Windows 节点同步额度失败: {e}")
+    return cached_quota_data
+
+async def check_node_health(node_id):
+    """两段式探活：返回 (online, engine_alive)"""
     cfg = NODE_REGISTRY.get(node_id)
     if not cfg:
-        return False
+        return False, False
     if cfg.get("is_local"):
-        return True
+        agy_path = os.path.expanduser("~/.local/bin/agy")
+        engine_ok = os.path.exists(agy_path) and os.access(agy_path, os.X_OK)
+        return True, engine_ok
     host = cfg["host"]
     try:
-        timeout = aiohttp.ClientTimeout(total=1.2)
+        timeout = aiohttp.ClientTimeout(total=2.0)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(f"http://{host}/?token=probe") as resp:
-                return resp.status in (200, 401)
+            async with session.get(f"http://{host}/api/health") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return True, bool(data.get("engine_alive", True))
+                elif resp.status in (401, 404):
+                    return True, False
     except Exception as e:
         logging.debug(f"节点 {node_id} ({host}) 探活失败: {e}")
-        return False
+        return False, False
+    return False, False
+
+async def is_node_alive(node_id):
+    online, _ = await check_node_health(node_id)
+    return online
 
 async def get_user_nodes_status(user_token):
     profile = USER_PROFILES.get(user_token)
@@ -114,11 +150,12 @@ async def get_user_nodes_status(user_token):
         cfg = NODE_REGISTRY.get(nid)
         if not cfg:
             continue
-        online = await is_node_alive(nid)
+        online, engine_alive = await check_node_health(nid)
         nodes.append({
             "id": nid,
             "name": cfg["name"],
-            "online": online
+            "online": online,
+            "engine_alive": engine_alive
         })
     return nodes
 
@@ -494,9 +531,12 @@ async def websocket_handler(request):
                         })
 
                     elif action == "get_quota":
+                        quota = await fetch_quota_from_windows()
+                        if not quota:
+                            quota = {"groups": [], "models": []}
                         await ws.send_json({
                             "type": "quota_update",
-                            "quota": {"groups": [], "models": []}
+                            "quota": quota
                         })
 
                     elif action == "prompt":
