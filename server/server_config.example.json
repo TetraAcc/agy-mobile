@@ -1,9 +1,24 @@
 {
+  "internal_secret": "your_secure_internal_cluster_secret_32chars",
   "windows": {
     "port": 8765,
-    "auth_token": "change_me_to_your_token",
+    "accounts": {
+      "tetra": {
+        "password_hash": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+        "display_name": "Tetra",
+        "allowed_nodes": ["windows", "deck"],
+        "default_node": "windows"
+      },
+      "guest": {
+        "password_hash": "ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f",
+        "display_name": "Guest User",
+        "allowed_nodes": ["guest_pc"],
+        "default_node": "guest_pc"
+      }
+    },
     "allowed_origins": [
       "https://agy.your-domain.com",
+      "http://127.0.0.1:8768",
       "http://localhost:8768"
     ],
     "allowed_roots": [
@@ -16,14 +31,16 @@
     "allowed_origins": [
       "https://agy.your-domain.com"
     ],
-    "user_profiles": {
-      "tetra_token_sample": {
-        "user": "Tetra",
+    "accounts": {
+      "tetra": {
+        "password_hash": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+        "display_name": "Tetra",
         "allowed_nodes": ["windows", "deck"],
         "default_node": "windows"
       },
-      "guest_token_sample": {
-        "user": "Guest",
+      "guest": {
+        "password_hash": "ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f",
+        "display_name": "Guest User",
         "allowed_nodes": ["guest_pc"],
         "default_node": "guest_pc"
       }
@@ -40,14 +57,16 @@
         "is_local": false
       },
       "guest_pc": {
-        "name": "我的电脑",
+        "name": "远程电脑",
         "host": "100.96.49.89:8765",
         "is_local": false
       }
     },
     "allowed_roots": [
       "~/.gemini/antigravity-cli/brain",
-      "~/agy_remote"
+      "~/agy_remote",
+      "~/scripts",
+      "~"
     ]
   }
 }

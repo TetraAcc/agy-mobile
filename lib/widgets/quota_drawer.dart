@@ -22,6 +22,8 @@ class QuotaDrawer extends StatefulWidget {
   final ValueChanged<bool> onToggleTheme;
   final String currentAccentThemeId;
   final ValueChanged<AccentThemeOption> onSelectAccentTheme;
+  final String currentDisplayName;
+  final VoidCallback? onLogout;
 
   const QuotaDrawer({
     super.key,
@@ -43,6 +45,8 @@ class QuotaDrawer extends StatefulWidget {
     required this.onToggleTheme,
     this.currentAccentThemeId = 'emerald',
     required this.onSelectAccentTheme,
+    this.currentDisplayName = '',
+    this.onLogout,
   });
 
   @override
@@ -417,6 +421,49 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                 ],
               ),
             ),
+
+            // 用户身份与退出登录栏
+            if (widget.currentDisplayName.isNotEmpty)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  border: Border(
+                    top: BorderSide(color: isDark ? Colors.white10 : Colors.black12),
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        CircleAvatar(
+                          radius: 12,
+                          backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.2),
+                          child: Icon(Icons.person_rounded, size: 14, color: Theme.of(context).colorScheme.primary),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          widget.currentDisplayName,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: isDark ? Colors.white : Colors.black87,
+                          ),
+                        ),
+                      ],
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.logout_rounded, size: 18),
+                      tooltip: "退出登录",
+                      color: Colors.redAccent.shade200,
+                      splashRadius: 16,
+                      constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                      padding: EdgeInsets.zero,
+                      onPressed: widget.onLogout,
+                    ),
+                  ],
+                ),
+              ),
 
             // 抽屉底部：日间 / 夜间模式一键切换 + 版本号紧凑合一
             Container(

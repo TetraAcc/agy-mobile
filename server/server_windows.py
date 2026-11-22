@@ -72,6 +72,43 @@ file_handle = None
 is_current_session_running = False
 last_log_active_time = time.time()
 
+def extract_session_fallback_title(cid: str) -> Optional[str]:
+    """若 title 为空，尝试从 transcript.jsonl 中提取第一条真实用户提问作为会话展示名"""
+    tpath = os.path.join(BRAIN_DIR, cid, ".system_generated", "logs", "transcript.jsonl")
+    if not os.path.exists(tpath):
+        return None
+    try:
+        user_input = None
+        thinking_question = None
+        with open(tpath, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if obj.get("source") == "USER_EXPLICIT" or obj.get("type") == "USER_INPUT":
+                        content = obj.get("content", "").strip()
+                        m = re.search(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", content, re.DOTALL)
+                        if m:
+                            content = m.group(1).strip()
+                        if content:
+                            user_input = content[:32] + ("..." if len(content) > 32 else "")
+                            break
+                    if not thinking_question and obj.get("type") == "PLANNER_RESPONSE":
+                        thinking = obj.get("thinking", "")
+                        m = re.search(r'The user\'s question,\s*["“]([^"”]+)["”]', thinking)
+                        if m:
+                            thinking_question = m.group(1).strip()
+                except Exception:
+                    continue
+        if user_input:
+            return user_input
+        if thinking_question:
+            return thinking_question[:32] + ("..." if len(thinking_question) > 32 else "")
+    except Exception:
+        pass
+    return None
+
 def get_grouped_sessions():
     if not os.path.exists(DB_PATH):
         return {"projects": {}, "general_sessions": []}
@@ -93,7 +130,18 @@ def get_grouped_sessions():
 
         for r in rows:
             cid, title, preview, mtime, ws_uris, pid = r
-            display_title = title.strip() if title and title.strip() else (preview.strip() if preview else "未命名会话")
+            # 严格孤儿检查：若物理磁盘目录不存在，判定为已被物理删除的孤儿会话，不予返回
+            bpath = os.path.join(BRAIN_DIR, cid)
+            if not os.path.exists(bpath):
+                continue
+
+            clean_title = title.strip() if title and title.strip() else ""
+            if not clean_title:
+                clean_title = preview.strip() if preview and preview.strip() else ""
+            if not clean_title:
+                clean_title = extract_session_fallback_title(cid) or "未命名会话"
+
+            display_title = clean_title
             if len(display_title) > 28:
                 display_title = display_title[:28] + "..."
 
@@ -349,16 +397,29 @@ async def tail_transcript():
     print("[*] 日志监听常驻协程已就绪...")
     while True:
         try:
-            if not current_active_file:
-                latest = get_latest_transcript_path()
-                if latest:
-                    current_active_file = latest
-                    current_active_session_id = latest.split(os.sep)[-4]
-                    print(f"[+] 锁定活跃会话: {current_active_session_id}")
-                    file_handle = open(current_active_file, "r", encoding="utf-8", errors="replace")
-                    file_handle.seek(0, os.SEEK_END)
-                    is_current_session_running = False
-                    last_log_active_time = time.time()
+            latest = get_latest_transcript_path()
+            if latest and latest != current_active_file:
+                current_active_file = latest
+                current_active_session_id = latest.split(os.sep)[-4]
+                print(f"[+] 锁定活跃会话: {current_active_session_id}")
+                if file_handle:
+                    try:
+                        file_handle.close()
+                    except Exception:
+                        pass
+                file_handle = open(current_active_file, "r", encoding="utf-8", errors="replace")
+                file_handle.seek(0, os.SEEK_END)
+                is_current_session_running = False
+                last_log_active_time = time.time()
+
+                # 实时向所有在线客户端广播最新会话树，保证无论在 IDE 还是 Web 新建任务，客户端无需刷新即可秒级出现
+                data_tree = get_grouped_sessions()
+                await broadcast_message({
+                    "type": "session_tree",
+                    "projects": data_tree["projects"],
+                    "general_sessions": data_tree["general_sessions"],
+                    "current": current_active_session_id
+                })
 
             if file_handle:
                 line = file_handle.readline()
@@ -417,6 +478,13 @@ async def tail_transcript():
                             "type": "status_change",
                             "session_id": current_active_session_id,
                             "is_running": False
+                        })
+                        data_tree = get_grouped_sessions()
+                        await broadcast_message({
+                            "type": "session_tree",
+                            "projects": data_tree["projects"],
+                            "general_sessions": data_tree["general_sessions"],
+                            "current": current_active_session_id
                         })
                         print(f"[*] 会话 {current_active_session_id} 静默超时 2.5s，自动归位为空闲")
                     await asyncio.sleep(0.3)

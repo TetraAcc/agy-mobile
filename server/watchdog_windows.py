@@ -5,7 +5,7 @@ import subprocess
 import urllib.request
 
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
-SERVER_SCRIPT = os.path.join(SERVER_DIR, "server_windows.py")
+SERVER_SCRIPT = os.path.join(SERVER_DIR, "server.py")
 HEALTH_URL = "http://127.0.0.1:8765/api/health"
 LOG_FILE = os.path.join(SERVER_DIR, "watchdog.log")
 
@@ -13,12 +13,13 @@ def log(msg: str):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     formatted = f"[{timestamp}] [Watchdog] {msg}"
     try:
-        print(formatted)
+        print(formatted, flush=True)
     except Exception:
         pass
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(formatted + "\n")
+            f.flush()
     except Exception:
         pass
 
@@ -52,11 +53,13 @@ def main():
         clean_port_8765()
         
         out_file = open(os.path.join(SERVER_DIR, "server_stdout.log"), "a", encoding="utf-8")
+        flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         proc = subprocess.Popen(
             [sys.executable, "-u", SERVER_SCRIPT],
             cwd=SERVER_DIR,
             stdout=out_file,
-            stderr=subprocess.STDOUT
+            stderr=subprocess.STDOUT,
+            creationflags=flags
         )
 
         # 启动后等待 2 秒并确认是否成功存活

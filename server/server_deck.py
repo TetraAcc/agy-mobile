@@ -4,6 +4,7 @@ import json
 import time
 import glob
 import re
+import shutil
 import asyncio
 import subprocess
 import sqlite3
@@ -92,26 +93,69 @@ last_log_active_time = time.time()
 cached_quota_data = None
 last_quota_sync_time = 0
 
-async def fetch_quota_from_windows():
+def parse_cli_quota_output(raw_text: str):
+    groups_dict = {}
+    for line in raw_text.splitlines():
+        parts = [p.strip() for p in line.split('\t') if p.strip()]
+        if len(parts) < 3:
+            parts = re.split(r'\s{2,}', line.strip())
+        if len(parts) >= 3:
+            group_name = parts[0]
+            bucket_name = parts[1]
+            percent_str = parts[2]
+            reset_time = parts[3] if len(parts) > 3 else ""
+
+            frac = 0.0
+            disabled = False
+            if "%" in percent_str:
+                try:
+                    frac = float(percent_str.replace("%", "").strip()) / 100.0
+                except Exception:
+                    pass
+            elif "disabled" in percent_str.lower():
+                disabled = True
+                frac = 1.0
+
+            if group_name not in groups_dict:
+                groups_dict[group_name] = {
+                    "displayName": group_name,
+                    "description": f"Models within {group_name}",
+                    "buckets": []
+                }
+
+            is_weekly = "weekly" in bucket_name.lower()
+            groups_dict[group_name]["buckets"].append({
+                "bucketId": "weekly" if is_weekly else "5h",
+                "displayName": bucket_name,
+                "description": f"{group_name} {bucket_name}",
+                "window": "weekly" if is_weekly else "5h",
+                "remainingFraction": frac,
+                "disabled": disabled,
+                "resetTime": reset_time
+            })
+    return list(groups_dict.values())
+
+def get_deck_local_quota():
     global cached_quota_data, last_quota_sync_time
-    win_cfg = NODE_REGISTRY.get("windows")
-    if not win_cfg:
+    # 缓存 300 秒，避免频繁重复调用 CLI
+    if cached_quota_data and (time.time() - last_quota_sync_time < 300):
         return cached_quota_data
-    win_host = win_cfg["host"]
     try:
-        timeout = aiohttp.ClientTimeout(total=2.5)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(f"http://{win_host}/api/quota?token=tetra2026") as resp:
-                if resp.status == 200:
-                    res = await resp.json()
-                    q = res.get("quota")
-                    if q and q.get("groups"):
-                        cached_quota_data = q
-                        last_quota_sync_time = time.time()
-                        return q
+        proc = subprocess.run(
+            ["/home/deck/.local/bin/agy", "-p", "/quota"],
+            capture_output=True,
+            text=True,
+            timeout=15
+        )
+        output = proc.stdout.strip() or proc.stderr.strip()
+        groups = parse_cli_quota_output(output)
+        if groups:
+            cached_quota_data = {"groups": groups, "description": "Steam Deck 本地 CLI 原生配额"}
+            last_quota_sync_time = time.time()
+            return cached_quota_data
     except Exception as e:
-        logging.debug(f"从 Windows 节点同步额度失败: {e}")
-    return cached_quota_data
+        logging.error(f"Deck 原生 /quota 调用异常: {e}")
+    return cached_quota_data or {"groups": [], "description": "未获取到配额"}
 
 async def check_node_health(node_id):
     """两段式探活：返回 (online, engine_alive)"""
@@ -159,6 +203,43 @@ async def get_user_nodes_status(user_token):
         })
     return nodes
 
+def extract_session_fallback_title(cid: str) -> Optional[str]:
+    """若 title 为空，尝试从 transcript.jsonl 中提取第一条真实用户提问作为会话展示名"""
+    tpath = os.path.join(os.path.expanduser("~/.gemini/antigravity-cli/brain"), cid, ".system_generated", "logs", "transcript.jsonl")
+    if not os.path.exists(tpath):
+        return None
+    try:
+        user_input = None
+        thinking_question = None
+        with open(tpath, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if obj.get("source") == "USER_EXPLICIT" or obj.get("type") == "USER_INPUT":
+                        content = obj.get("content", "").strip()
+                        m = re.search(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", content, re.DOTALL)
+                        if m:
+                            content = m.group(1).strip()
+                        if content:
+                            user_input = content[:32] + ("..." if len(content) > 32 else "")
+                            break
+                    if not thinking_question and obj.get("type") == "PLANNER_RESPONSE":
+                        thinking = obj.get("thinking", "")
+                        m = re.search(r'The user\'s question,\s*["“]([^"”]+)["”]', thinking)
+                        if m:
+                            thinking_question = m.group(1).strip()
+                except Exception:
+                    continue
+        if user_input:
+            return user_input
+        if thinking_question:
+            return thinking_question[:32] + ("..." if len(thinking_question) > 32 else "")
+    except Exception:
+        pass
+    return None
+
 def get_grouped_sessions():
     if not os.path.exists(DB_PATH):
         return {"projects": {}, "general_sessions": []}
@@ -169,13 +250,24 @@ def get_grouped_sessions():
         time_col = "last_modified_time" if "last_modified_time" in cols else ("updated_at" if "updated_at" in cols else "rowid")
         cur.execute(f"SELECT conversation_id, title, workspace_uris, {time_col} FROM conversation_summaries ORDER BY {time_col} DESC")
         rows = cur.fetchall()
-        conn.close()
 
         projects = {}
         general_sessions = []
+        brain_dir = os.path.expanduser("~/.gemini/antigravity-cli/brain")
+        orphan_cids = []
 
         for cid, title, ws_uris, updated_at in rows:
-            clean_title = title if (title and title.strip()) else "新任务"
+            bpath = os.path.join(brain_dir, cid)
+            # 若磁盘目录彻底不存在，判定为已删除的孤儿会话，不予返回并加入清理队列
+            if not os.path.exists(bpath):
+                orphan_cids.append(cid)
+                continue
+
+            # 智能解析标题：若数据库 title 为空，则从其历史消息中提取第一条用户提问
+            clean_title = title.strip() if (title and title.strip()) else ""
+            if not clean_title:
+                clean_title = extract_session_fallback_title(cid) or "新会话"
+
             time_str = ""
             if updated_at:
                 try:
@@ -199,6 +291,16 @@ def get_grouped_sessions():
             else:
                 general_sessions.append(item)
 
+        # 异步自动从数据库清理无对应文件的幽灵会话
+        if orphan_cids:
+            try:
+                cur.executemany("DELETE FROM conversation_summaries WHERE conversation_id = ?", [(c,) for c in orphan_cids])
+                conn.commit()
+                logging.info(f"[*] 已自动清理 {len(orphan_cids)} 个磁盘不存在的幽灵孤儿会话")
+            except Exception as e:
+                logging.debug(f"清理孤儿会话异常: {e}")
+
+        conn.close()
         return {"projects": projects, "general_sessions": general_sessions}
     except Exception as e:
         print(f"[-] 读取会话树失败: {e}")
@@ -219,14 +321,20 @@ def parse_transcript_line(line_str):
         data = json.loads(line_str)
         source = data.get("source", "")
         step_type = data.get("type", "")
+
+        # 1. 严格过滤系统内部和底层工具命令行原始执行日志类型
+        if step_type in IGNORED_MSG_TYPES:
+            return None
+
         status = data.get("status", "")
         thinking = data.get("thinking", "")
-        content = data.get("content", "")
+        raw_content = data.get("content", "")
+        clean_content = clean_display_content(raw_content)
         timestamp = data.get("created_at", "")
         step_index = data.get("step_index", 0)
         tool_calls = data.get("tool_calls", [])
 
-        if not content and not thinking and not tool_calls and step_type != "USER_INPUT":
+        if not clean_content and not thinking and not tool_calls and step_type != "USER_INPUT":
             return None
 
         clean_calls = []
@@ -244,7 +352,7 @@ def parse_transcript_line(line_str):
             "source": source,
             "msg_type": step_type,
             "status": status,
-            "content": content,
+            "content": clean_content,
             "thinking": thinking,
             "tool_calls": clean_calls,
             "timestamp": timestamp
@@ -280,15 +388,8 @@ def dispatch_agent_message(session_id, content, model=None, workspace_dir=None):
         cmd.extend([f"--conversation={session_id}"])
     cmd.extend(["-p", content, "--mode=auto", "--dangerously-skip-permissions"])
     if model:
-        # 映射前端模型 ID 到 agy CLI 支持的命名
-        clean_model = model
-        if "flash" in model.lower():
-            clean_model = "flash"
-        elif "pro" in model.lower():
-            clean_model = "pro"
-        elif "flash_lite" in model.lower() or "lite" in model.lower():
-            clean_model = "flash_lite"
-        cmd.append(f"--model={clean_model}")
+        # 直接使用官方原生支持的模型标识符，绝不擅自篡改
+        cmd.append(f"--model={model}")
 
     target_cwd = workspace_dir if (workspace_dir and os.path.exists(workspace_dir)) else os.path.expanduser("~/")
 
@@ -332,6 +433,15 @@ async def tail_transcript():
                 file_handle = open(current_active_file, "r", encoding="utf-8", errors="replace")
                 file_handle.seek(0, os.SEEK_SET)
 
+                # 实时向所有客户端广播最新会话树，保证新创建的会话无需刷新即可在抽屉中瞬间显示
+                data_tree = get_grouped_sessions()
+                await broadcast_message({
+                    "type": "session_tree",
+                    "projects": data_tree.get("projects", {}),
+                    "general_sessions": data_tree.get("general_sessions", []),
+                    "current": current_active_session_id
+                })
+
             if file_handle:
                 line = file_handle.readline()
                 if line:
@@ -350,6 +460,14 @@ async def tail_transcript():
                             "type": "status_change",
                             "session_id": current_active_session_id,
                             "is_running": False
+                        })
+                        # 任务完成复位后，再次广播一次 session_tree，以更新从用户提问提取到的正式会话标题
+                        data_tree = get_grouped_sessions()
+                        await broadcast_message({
+                            "type": "session_tree",
+                            "projects": data_tree.get("projects", {}),
+                            "general_sessions": data_tree.get("general_sessions", []),
+                            "current": current_active_session_id
                         })
                     await asyncio.sleep(0.3)
             else:
@@ -531,7 +649,8 @@ async def websocket_handler(request):
                         })
 
                     elif action == "get_quota":
-                        quota = await fetch_quota_from_windows()
+                        # 直接调用 Deck 本机原生 CLI 获取真实配额
+                        quota = await asyncio.to_thread(get_deck_local_quota)
                         if not quota:
                             quota = {"groups": [], "models": []}
                         await ws.send_json({
@@ -630,6 +749,53 @@ async def websocket_handler(request):
                             "status": "ok" if ok else "error",
                             "error": err_msg if not ok else ""
                         })
+                        if ok:
+                            # 异步延时广播，确保新会话落盘后客户端抽屉立即秒级感知，无需任何手动刷新
+                            async def notify_new_session():
+                                for delay in (1.2, 2.5):
+                                    await asyncio.sleep(delay)
+                                    try:
+                                        data_tree = get_grouped_sessions()
+                                        await broadcast_message({
+                                            "type": "session_tree",
+                                            "projects": data_tree.get("projects", {}),
+                                            "general_sessions": data_tree.get("general_sessions", []),
+                                            "current": current_active_session_id
+                                        })
+                                    except Exception:
+                                        pass
+                            asyncio.create_task(notify_new_session())
+
+                    elif action == "delete_session":
+                        del_cid = data.get("session_id")
+                        if del_cid:
+                            print(f"[*] 收到删除会话请求: {del_cid}")
+                            # 1. 数据库记录彻底删除
+                            if os.path.exists(DB_PATH):
+                                try:
+                                    conn = sqlite3.connect(DB_PATH)
+                                    cur = conn.cursor()
+                                    cur.execute("DELETE FROM conversation_summaries WHERE conversation_id = ?", (del_cid,))
+                                    conn.commit()
+                                    conn.close()
+                                except Exception as e:
+                                    print(f"[-] 数据库删除记录失败: {e}")
+
+                            # 2. 磁盘 brain 目录彻底删除
+                            brain_path = os.path.join(BRAIN_DIR, del_cid)
+                            if os.path.exists(brain_path):
+                                try:
+                                    shutil.rmtree(brain_path, ignore_errors=True)
+                                except Exception as e:
+                                    print(f"[-] 物理删除会话目录失败: {e}")
+
+                            # 3. 广播最新的 session_tree，确保多端和当前端真正实时同步刷新
+                            data_tree = get_grouped_sessions()
+                            await broadcast_message({
+                                "type": "session_tree",
+                                "projects": data_tree.get("projects", {}),
+                                "general_sessions": data_tree.get("general_sessions", [])
+                            })
                 except Exception as e:
                     print(f"[-] 处理消息异常: {e}")
             elif msg.type == WSMsgType.ERROR:

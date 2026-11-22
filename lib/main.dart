@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -93,6 +94,17 @@ class MainRemoteScreen extends StatefulWidget {
 }
 
 class _MainRemoteScreenState extends State<MainRemoteScreen> {
+  // 账号密码认证状态与控制器
+  bool _isLoggedIn = false;
+  bool _isCheckingAuth = true;
+  String _currentUsername = "";
+  String _currentDisplayName = "";
+  final TextEditingController _loginUsernameController = TextEditingController();
+  final TextEditingController _loginPasswordController = TextEditingController();
+  bool _loginObscurePassword = true;
+  bool _isLoggingIn = false;
+  String _loginErrorMessage = "";
+
   final TextEditingController _ipController = TextEditingController();
   final TextEditingController _inputController = TextEditingController();
   final TextEditingController _tokenController = TextEditingController();
@@ -300,30 +312,6 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
   Future<void> _loadSavedIp() async {
     final prefs = await SharedPreferences.getInstance();
     final savedIp = prefs.getString('saved_ip');
-    final savedToken = prefs.getString('auth_token');
-    final savedNode = prefs.getString('selected_node');
-
-    if (savedNode != null && savedNode.isNotEmpty) {
-      _selectedNode = savedNode;
-    }
-
-    if (kIsWeb) {
-      final urlToken = Uri.base.queryParameters['token'];
-      if (urlToken != null && urlToken.isNotEmpty) {
-        _authToken = urlToken;
-        await prefs.setString('auth_token', urlToken);
-      } else if (savedToken != null && savedToken.isNotEmpty) {
-        _authToken = savedToken;
-      }
-      final urlNode = Uri.base.queryParameters['node'];
-      if (urlNode != null && urlNode.isNotEmpty) {
-        _selectedNode = urlNode;
-        await prefs.setString('selected_node', urlNode);
-      }
-    } else if (savedToken != null && savedToken.isNotEmpty) {
-      _authToken = savedToken;
-    }
-    _tokenController.text = _authToken;
 
     if (savedIp != null && savedIp.isNotEmpty) {
       _currentIp = savedIp;
@@ -336,7 +324,186 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
       _currentIp = "127.0.0.1:8765";
     }
     _ipController.text = _currentIp;
-    _connect();
+
+    await _checkAuthAndConnect();
+  }
+
+  Future<void> _checkAuthAndConnect() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedToken = prefs.getString('auth_token') ?? '';
+    final urlToken = kIsWeb ? Uri.base.queryParameters['token'] : null;
+
+    if (urlToken != null && urlToken.isNotEmpty) {
+      _authToken = urlToken;
+      await prefs.setString('auth_token', urlToken);
+    } else if (savedToken.isNotEmpty) {
+      _authToken = savedToken;
+    }
+    _tokenController.text = _authToken;
+
+    // 向 /api/me 探测当前登录状态
+    try {
+      final base = kIsWeb ? Uri.base : Uri.parse('http://${_currentIp.replaceAll('ws://', '').replaceAll('wss://', '').split('/').first}');
+      final portStr = base.hasPort ? ':${base.port}' : '';
+      final meUrl = "${base.scheme}://${base.host}$portStr/api/me";
+
+      final headers = <String, String>{};
+      if (_authToken.isNotEmpty) {
+        headers['X-Auth-Token'] = _authToken;
+      }
+      final resp = await http.get(Uri.parse(meUrl), headers: headers).timeout(const Duration(seconds: 4));
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        if (data['logged_in'] == true) {
+          final defaultNode = data['default_node'] ?? 'windows';
+          final savedNode = prefs.getString('selected_node');
+          final allowedNodes = (data['allowed_nodes'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [];
+
+          String actualNode = savedNode ?? defaultNode;
+          if (allowedNodes.isNotEmpty && !allowedNodes.contains(actualNode)) {
+            actualNode = defaultNode;
+            await prefs.setString('selected_node', actualNode);
+          }
+
+          setState(() {
+            _isLoggedIn = true;
+            _isCheckingAuth = false;
+            _selectedNode = actualNode;
+            _currentUsername = data['username'] ?? '';
+            _currentDisplayName = data['display_name'] ?? data['username'] ?? 'User';
+            if (data['token'] != null && data['token'].toString().isNotEmpty) {
+              _authToken = data['token'];
+              prefs.setString('auth_token', _authToken);
+            }
+          });
+          _connect();
+          return;
+        }
+      }
+    } catch (_) {}
+
+    setState(() {
+      _isLoggedIn = false;
+      _isCheckingAuth = false;
+    });
+  }
+
+  Future<void> _handleLogin() async {
+    final username = _loginUsernameController.text.trim().toLowerCase();
+    final password = _loginPasswordController.text.trim();
+    if (username.isEmpty || password.isEmpty) {
+      setState(() {
+        _loginErrorMessage = "请输入账号和密码";
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoggingIn = true;
+      _loginErrorMessage = "";
+    });
+
+    try {
+      final base = kIsWeb ? Uri.base : Uri.parse('http://${_currentIp.replaceAll('ws://', '').replaceAll('wss://', '').split('/').first}');
+      final portStr = base.hasPort ? ':${base.port}' : '';
+      final loginUrl = "${base.scheme}://${base.host}$portStr/api/login";
+
+      final resp = await http.post(
+        Uri.parse(loginUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'username': username, 'password': password}),
+      ).timeout(const Duration(seconds: 6));
+
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode == 200 && data['success'] == true) {
+        final user = data['user'] ?? {};
+        final token = data['token'] ?? '';
+        final prefs = await SharedPreferences.getInstance();
+        if (token.isNotEmpty) {
+          await prefs.setString('auth_token', token);
+        }
+        final defaultNode = user['default_node'] ?? 'windows';
+        await prefs.setString('selected_node', defaultNode);
+
+        setState(() {
+          _isLoggedIn = true;
+          _isLoggingIn = false;
+          _authToken = token;
+          _selectedNode = defaultNode;
+          _currentUsername = user['username'] ?? username;
+          _currentDisplayName = user['display_name'] ?? username;
+        });
+
+        _connect();
+      } else {
+        setState(() {
+          _isLoggingIn = false;
+          _loginErrorMessage = data['error'] ?? '用户名或密码错误';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _isLoggingIn = false;
+        _loginErrorMessage = "连接认证服务器失败，请检查网络";
+      });
+    }
+  }
+
+  Future<void> _handleLogout() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("退出登录"),
+        content: const Text("确定要退出当前账号吗？"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            child: const Text("退出"),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
+    try {
+      final base = kIsWeb ? Uri.base : Uri.parse('http://${_currentIp.replaceAll('ws://', '').replaceAll('wss://', '').split('/').first}');
+      final portStr = base.hasPort ? ':${base.port}' : '';
+      final logoutUrl = "${base.scheme}://${base.host}$portStr/api/logout";
+      await http.post(
+        Uri.parse(logoutUrl),
+        headers: {
+          'Content-Type': 'application/json',
+          if (_authToken.isNotEmpty) 'X-Auth-Token': _authToken,
+        },
+        body: jsonEncode({'token': _authToken}),
+      );
+    } catch (_) {}
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('auth_token');
+    await prefs.remove('selected_node');
+
+    _manualDisconnect = true;
+    _channel?.sink.close();
+    _heartbeatTimer?.cancel();
+    _quotaPollingTimer?.cancel();
+
+    setState(() {
+      _isLoggedIn = false;
+      _isConnected = false;
+      _isConnecting = false;
+      _authToken = "";
+      _selectedNode = "windows";
+      _currentUsername = "";
+      _currentDisplayName = "";
+      _messages.clear();
+      _projects.clear();
+      _generalSessions.clear();
+      _loginPasswordController.clear();
+      _loginErrorMessage = "";
+    });
   }
 
   void _switchNode(String nodeId) async {
@@ -460,11 +627,12 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
   }
 
   void _handleAuthError(Map<String, dynamic> data) {
-    final msg = data['msg'] ?? '访问口令 (Token) 错误';
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: Colors.redAccent),
-    );
-    _showSettingsDialog();
+    setState(() {
+      _isLoggedIn = false;
+      _isConnected = false;
+      _isConnecting = false;
+      _loginErrorMessage = data['msg'] ?? '访问口令 (Token) 错误或已过期，请重新登录';
+    });
   }
 
   void _handleConnected(Map<String, dynamic> data) {
@@ -528,7 +696,8 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
       if (!latest.isUser && (latest.status == 'DONE' || latest.status == 'ERROR')) {
         _runningSessionIds.remove(sid);
       } else {
-        _runningSessionIds.remove(sid);
+        // 最后一条为用户发出的提问，或 Agent 响应尚未标记为 DONE/ERROR，保持运行中状态
+        _runningSessionIds.add(sid);
       }
     } else {
       _runningSessionIds.remove(sid);
@@ -724,6 +893,7 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
   }
 
   void _connect() {
+    if (!_isLoggedIn) return;
     if (_isConnected) return;
 
     final rawIp = _ipController.text.trim();
@@ -1339,6 +1509,32 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
+    if (_isCheckingAuth) {
+      return Scaffold(
+        backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(color: Theme.of(context).colorScheme.primary),
+              const SizedBox(height: 16),
+              Text(
+                "正在验证连接凭证...",
+                style: TextStyle(
+                  fontSize: 13,
+                  color: isDark ? Colors.white54 : Colors.black54,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (!_isLoggedIn) {
+      return _buildLoginScreen(context, isDark);
+    }
+
     return Scaffold(
       drawer: QuotaDrawer(
         nodes: _nodes,
@@ -1362,6 +1558,8 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
         onToggleTheme: _toggleTheme,
         currentAccentThemeId: accentThemeNotifier.value.id,
         onSelectAccentTheme: _updateAccentTheme,
+        currentDisplayName: _currentDisplayName.isNotEmpty ? _currentDisplayName : (_currentUsername.isNotEmpty ? _currentUsername : "User"),
+        onLogout: _handleLogout,
       ),
       onDrawerChanged: (isOpen) {
         if (isOpen) _requestQuota();
@@ -1509,8 +1707,181 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
     );
   }
 
+  Widget _buildLoginScreen(BuildContext context, bool isDark) {
+    return Scaffold(
+      backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 400),
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.4 : 0.08),
+                  blurRadius: 24,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+              border: Border.all(
+                color: isDark ? Colors.white12 : Colors.black12,
+              ),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Logo & 标题
+                Center(
+                  child: Container(
+                    width: 56,
+                    height: 56,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Theme.of(context).colorScheme.primary, Colors.blueAccent],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: const Icon(Icons.hub_rounded, color: Colors.white, size: 32),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Center(
+                  child: Text(
+                    "AGY Remote Hub",
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: isDark ? Colors.white : Colors.black87,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Center(
+                  child: Text(
+                    "请输入您的账号与密码登录控制台",
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: isDark ? Colors.white54 : Colors.black54,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 28),
+
+                // 错误提示
+                if (_loginErrorMessage.isNotEmpty) ...[
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.redAccent.withValues(alpha: 0.4)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 16),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _loginErrorMessage,
+                            style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+
+                // 账号输入框
+                TextField(
+                  controller: _loginUsernameController,
+                  textInputAction: TextInputAction.next,
+                  style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 14),
+                  decoration: InputDecoration(
+                    labelText: "账号 (Username)",
+                    hintText: "请输入用户名",
+                    prefixIcon: const Icon(Icons.person_outline_rounded, size: 20),
+                    filled: true,
+                    fillColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none,
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // 密码输入框
+                TextField(
+                  controller: _loginPasswordController,
+                  obscureText: _loginObscurePassword,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _handleLogin(),
+                  style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 14),
+                  decoration: InputDecoration(
+                    labelText: "密码 (Password)",
+                    hintText: "请输入密码",
+                    prefixIcon: const Icon(Icons.lock_outline_rounded, size: 20),
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _loginObscurePassword ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                        size: 20,
+                      ),
+                      onPressed: () {
+                        setState(() {
+                          _loginObscurePassword = !_loginObscurePassword;
+                        });
+                      },
+                    ),
+                    filled: true,
+                    fillColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none,
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  ),
+                ),
+                const SizedBox(height: 24),
+
+                // 登录按钮
+                FilledButton(
+                  onPressed: _isLoggingIn ? null : _handleLogin,
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  child: _isLoggingIn
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Text(
+                          "立即登录",
+                          style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   void dispose() {
+    _loginUsernameController.dispose();
+    _loginPasswordController.dispose();
     _quotaPollingTimer?.cancel();
     _heartbeatTimer?.cancel();
     _reconnectTimer?.cancel();

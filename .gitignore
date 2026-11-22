@@ -52,7 +52,12 @@ app.*.map.json
 # Widget Preview related
 .widget_preview/
 
-# Local server configurations and credentials
+# Local server configurations, credentials and session caches
 server/server_config.json
 **/server_config.json
+server/sessions.json
+**/sessions.json
 *.local.json
+*.db
+*.log
+server/*.log

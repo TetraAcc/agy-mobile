@@ -138,13 +138,18 @@ def parse_project_name_and_path(ws_uris: Optional[str]) -> Tuple[Optional[str], 
                     pass
                 else:
                     local_path = decoded.replace("file://", "")
-                folder_name = os.path.basename(local_path.rstrip("\\/"))
+                clean_path = local_path.rstrip("\\/")
+                # 修复 Windows 盘符根目录 (如 Z: 或 Z:\) 解析为项目名
+                if len(clean_path) == 2 and clean_path[1] == ':':
+                    return clean_path, local_path
+                folder_name = os.path.basename(clean_path)
                 if not folder_name:
-                    folder_name = local_path.rstrip("\\/")
+                    folder_name = clean_path
                 return folder_name, local_path
             elif decoded.startswith("file://"):
                 local_path = decoded.replace("file://", "")
-                folder_name = os.path.basename(local_path.rstrip("/"))
+                clean_path = local_path.rstrip("/")
+                folder_name = os.path.basename(clean_path)
                 return folder_name, local_path
     except Exception:
         pass
@@ -182,3 +187,56 @@ def list_workspace_files(base_dir: str, sub_path: str = "") -> Dict[str, Any]:
         print(f"[-] 列出文件失败: {e}")
 
     return {"current_path": sub_path.replace("\\", "/"), "items": items[:80]}
+
+def parse_transcript_line(line_str: str) -> Optional[Dict[str, Any]]:
+    """
+    通用单行 Transcript 日志结构化解析与安全清洗：
+    1. 严格过滤系统内部和底层工具命令行原始执行日志类型（IGNORED_MSG_TYPES）；
+    2. 深度清洗内容文本（去除各种 prompt 元数据与命令行回显大黑框）；
+    3. 安全提取 tool_calls 和 thinking，消除前端空白无用消息。
+    """
+    if not line_str or not line_str.strip():
+        return None
+    try:
+        data = json.loads(line_str)
+        source = data.get("source", "")
+        step_type = data.get("type", "")
+
+        # 1. 严格过滤系统内部和底层工具命令行原始执行日志类型
+        if step_type in IGNORED_MSG_TYPES:
+            return None
+
+        status = data.get("status", "")
+        thinking = data.get("thinking", "")
+        raw_content = data.get("content", "")
+        clean_content = clean_display_content(raw_content)
+        timestamp = data.get("created_at", "")
+        step_index = data.get("step_index", 0)
+        tool_calls = data.get("tool_calls", [])
+
+        # 若清洗后无任何有效显示内容且不是用户输入，直接抛弃
+        if not clean_content and not thinking and not tool_calls and step_type != "USER_INPUT":
+            return None
+
+        clean_calls = []
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                fn = tc.get("function", {})
+                clean_calls.append({
+                    "name": fn.get("name", "tool"),
+                    "arguments": fn.get("arguments", {})
+                })
+
+        return {
+            "step_index": step_index,
+            "source": source,
+            "msg_type": step_type,
+            "status": status,
+            "content": clean_content,
+            "thinking": thinking,
+            "tool_calls": clean_calls,
+            "timestamp": timestamp
+        }
+    except Exception:
+        return None
+
