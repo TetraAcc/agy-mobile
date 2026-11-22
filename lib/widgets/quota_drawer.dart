@@ -52,6 +52,7 @@ class QuotaDrawer extends StatefulWidget {
 class _QuotaDrawerState extends State<QuotaDrawer> {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
+  bool _isQuotaExpanded = false; // 默认收拢折叠，为手机竖屏腾出大面积会话浏览空间
 
   @override
   void dispose() {
@@ -175,7 +176,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
 
             // 顶部操作栏: + 新建会话 & 实时搜索输入框
             Container(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+              padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
               decoration: BoxDecoration(
                 border: Border(
                   bottom: BorderSide(color: isDark ? Colors.white10 : Colors.black12),
@@ -192,16 +193,16 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                       backgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
                       foregroundColor: isDark ? Colors.white : Colors.black87,
                       elevation: 0,
-                      minimumSize: const Size(double.infinity, 38),
+                      minimumSize: const Size(double.infinity, 34),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
-                    icon: const Icon(Icons.add, size: 18),
-                    label: const Text("新建会话", style: TextStyle(fontSize: 13)),
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text("新建会话", style: TextStyle(fontSize: 12.5)),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 6),
                   // 会话搜索输入框
                   Container(
-                    height: 34,
+                    height: 32,
                     decoration: BoxDecoration(
                       color: isDark ? const Color(0xFF161F30) : const Color(0xFFF8FAFC),
                       borderRadius: BorderRadius.circular(8),
@@ -346,7 +347,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
 
             // 强调色主题选择面板
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
               decoration: BoxDecoration(
                 border: Border(
                   top: BorderSide(color: isDark ? Colors.white10 : Colors.black12),
@@ -361,7 +362,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                       Text(
                         "护眼强调色",
                         style: TextStyle(
-                          fontSize: 12,
+                          fontSize: 11,
                           fontWeight: FontWeight.bold,
                           color: isDark ? Colors.white60 : Colors.black54,
                         ),
@@ -369,14 +370,14 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                       Text(
                         AppColors.getThemeById(currentAccentThemeId).name.split(' ').first,
                         style: TextStyle(
-                          fontSize: 11,
+                          fontSize: 10.5,
                           color: Theme.of(context).colorScheme.primary,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 6),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: AppColors.accentThemes.map((theme) {
@@ -386,19 +387,19 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                         borderRadius: BorderRadius.circular(16),
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 200),
-                          width: 28,
-                          height: 28,
+                          width: 25,
+                          height: 25,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             color: theme.previewColor,
                             border: Border.all(
                               color: isSelected ? (isDark ? Colors.white : Colors.black87) : Colors.transparent,
-                              width: 2.5,
+                              width: 2,
                             ),
                             boxShadow: [
                               if (isSelected)
                                 BoxShadow(
-                                  color: theme.previewColor.withOpacity(0.4),
+                                  color: theme.previewColor.withValues(alpha: 0.4),
                                   blurRadius: 6,
                                   spreadRadius: 1,
                                 ),
@@ -406,7 +407,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                           ),
                           child: isSelected
                               ? const Center(
-                                  child: Icon(Icons.check_rounded, size: 14, color: Colors.white),
+                                  child: Icon(Icons.check_rounded, size: 13, color: Colors.white),
                                 )
                               : null,
                         ),
@@ -417,9 +418,9 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
               ),
             ),
 
-            // 抽屉底部：日间 / 夜间模式一键切换
+            // 抽屉底部：日间 / 夜间模式一键切换 + 版本号紧凑合一
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
               decoration: BoxDecoration(
                 border: Border(
                   top: BorderSide(color: isDark ? Colors.white10 : Colors.black12),
@@ -432,38 +433,41 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                     children: [
                       Icon(
                         isDark ? Icons.dark_mode_outlined : Icons.light_mode_outlined,
-                        size: 18,
+                        size: 16,
                         color: Theme.of(context).colorScheme.primary,
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: 6),
                       Text(
                         isDark ? "夜间模式" : "日间模式",
                         style: TextStyle(
-                          fontSize: 13,
+                          fontSize: 12,
                           color: isDark ? Colors.white70 : Colors.black87,
                         ),
                       ),
                     ],
                   ),
-                  Switch(
-                    value: isDark,
-                    activeThumbColor: Theme.of(context).colorScheme.primary,
-                    onChanged: (val) => onToggleTheme(val),
+                  Row(
+                    children: [
+                      Text(
+                        "v1.3.5",
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: isDark ? Colors.white24 : Colors.black26,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Transform.scale(
+                        scale: 0.8,
+                        child: Switch(
+                          value: isDark,
+                          activeThumbColor: Theme.of(context).colorScheme.primary,
+                          onChanged: (val) => onToggleTheme(val),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
-              ),
-            ),
-
-            // 抽屉最底部：版本标识
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text(
-                "AGY Remote v1.3.4",
-                style: TextStyle(
-                  fontSize: 10,
-                  color: isDark ? Colors.white24 : Colors.black26,
-                  letterSpacing: 0.5,
-                ),
               ),
             ),
           ],
@@ -474,8 +478,8 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
 
   Widget _buildNodeSelector(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      padding: const EdgeInsets.all(8),
+      margin: const EdgeInsets.fromLTRB(12, 6, 12, 3),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
       decoration: BoxDecoration(
         color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
         borderRadius: BorderRadius.circular(10),
@@ -486,19 +490,19 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
         children: [
           Row(
             children: [
-              Icon(Icons.hub_rounded, size: 14, color: isDark ? Colors.white54 : Colors.black45),
-              const SizedBox(width: 6),
+              Icon(Icons.hub_rounded, size: 13, color: isDark ? Colors.white54 : Colors.black45),
+              const SizedBox(width: 5),
               Text(
                 "目标控制主机",
                 style: TextStyle(
-                  fontSize: 11,
+                  fontSize: 10.5,
                   fontWeight: FontWeight.bold,
                   color: isDark ? Colors.white54 : Colors.black45,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 4),
           Row(
             children: nodes.map((node) {
               final isSelected = node.id == selectedNode;
@@ -508,11 +512,11 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                   onTap: () => onSwitchNode(node.id),
                   borderRadius: BorderRadius.circular(8),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                    padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 4),
                     margin: const EdgeInsets.symmetric(horizontal: 2),
                     decoration: BoxDecoration(
                       color: isSelected
-                          ? (isDark ? const Color(0xFF0284C7).withOpacity(0.3) : const Color(0xFFE0F2FE))
+                          ? (isDark ? const Color(0xFF0284C7).withValues(alpha: 0.3) : const Color(0xFFE0F2FE))
                           : Colors.transparent,
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
@@ -569,8 +573,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
         : [];
 
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      padding: const EdgeInsets.all(10),
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
       decoration: BoxDecoration(
         color: isDark ? const Color(0xFF161F30) : const Color(0xFFF8FAFC),
         borderRadius: BorderRadius.circular(10),
@@ -579,10 +582,20 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
+          // 头部可点击折叠/展开栏
+          InkWell(
+            onTap: () {
+              setState(() {
+                _isQuotaExpanded = !_isQuotaExpanded;
+              });
+            },
+            borderRadius: BorderRadius.circular(10),
+            child: Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: _isQuotaExpanded ? 8 : 6,
+              ),
+              child: Row(
                 children: [
                   Icon(
                     Icons.speed_rounded,
@@ -591,74 +604,200 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                   ),
                   const SizedBox(width: 5),
                   Text(
-                    "模型实时额度",
+                    _isQuotaExpanded ? "模型实时额度" : "额度",
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
                       color: isDark ? Colors.white70 : Colors.black87,
                     ),
                   ),
+                  const SizedBox(width: 6),
+
+                  // 折叠模式下的紧凑摘要胶囊（Gemini 76.9% · Claude 100%）
+                  if (!_isQuotaExpanded)
+                    Expanded(
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        physics: const BouncingScrollPhysics(),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: _buildCompactQuotaBadges(groups),
+                        ),
+                      ),
+                    )
+                  else
+                    const Spacer(),
+
+                  // 独立刷新按钮（点击只触发拉取，不触发折叠）
+                  InkWell(
+                    onTap: isLoadingQuota ? null : onRequestQuota,
+                    borderRadius: BorderRadius.circular(12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(2.5),
+                      child: isLoadingQuota
+                          ? SizedBox(
+                              width: 11,
+                              height: 11,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 1.5,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                            )
+                          : Icon(
+                              Icons.refresh_rounded,
+                              size: 13,
+                              color: isDark ? Colors.white54 : Colors.black45,
+                            ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+
+                  // 展开/收拢指示箭头
+                  Icon(
+                    _isQuotaExpanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
+                    size: 16,
+                    color: isDark ? Colors.white38 : Colors.black38,
+                  ),
                 ],
               ),
-              InkWell(
-                onTap: isLoadingQuota ? null : onRequestQuota,
-                borderRadius: BorderRadius.circular(12),
-                child: Padding(
-                  padding: const EdgeInsets.all(2),
-                  child: isLoadingQuota
-                      ? SizedBox(
-                          width: 11,
-                          height: 11,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 1.5,
-                            color: Theme.of(context).colorScheme.primary,
+            ),
+          ),
+
+          // 展开状态下的详细配额条
+          AnimatedCrossFade(
+            firstChild: const SizedBox.shrink(),
+            secondChild: Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+              child: groups.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: InkWell(
+                          onTap: onRequestQuota,
+                          child: Text(
+                            isLoadingQuota ? "正在拉取配额..." : "点击同步官方实时配额",
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: isDark ? Colors.white38 : Colors.black38,
+                            ),
                           ),
-                        )
-                      : Icon(
-                          Icons.refresh_rounded,
-                          size: 14,
-                          color: isDark ? Colors.white54 : Colors.black45,
                         ),
+                      ),
+                    )
+                  : Column(
+                      children: [
+                        for (int i = 0; i < groups.length; i++) ...[
+                          if (i > 0)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Divider(
+                                color: isDark ? Colors.white10 : Colors.black12,
+                                height: 1,
+                              ),
+                            ),
+                          _buildQuotaGroup(groups[i]),
+                        ],
+                      ],
+                    ),
+            ),
+            crossFadeState: _isQuotaExpanded
+                ? CrossFadeState.showSecond
+                : CrossFadeState.showFirst,
+            duration: const Duration(milliseconds: 200),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _buildCompactQuotaBadges(List groups) {
+    if (groups.isEmpty) {
+      return [
+        Text(
+          isLoadingQuota ? "拉取中..." : "点击展开/同步",
+          style: TextStyle(
+            fontSize: 10,
+            color: isDark ? Colors.white38 : Colors.black38,
+          ),
+        ),
+      ];
+    }
+
+    final List<Widget> badges = [];
+    for (var groupData in groups) {
+      if (groupData is! Map) continue;
+      final group = Map<String, dynamic>.from(groupData);
+      final rawName = group['displayName']?.toString() ?? "";
+      String name = rawName;
+      if (rawName.toLowerCase().contains("gemini")) {
+        name = "Gemini";
+      } else if (rawName.toLowerCase().contains("claude")) {
+        name = "Claude";
+      }
+
+      final buckets = (group['buckets'] is List) ? (group['buckets'] as List) : [];
+      double minFraction = 1.0;
+      bool foundBucket = false;
+      for (var b in buckets) {
+        if (b is Map) {
+          foundBucket = true;
+          final f = ((b['remainingFraction'] as num?)?.toDouble() ?? 1.0).clamp(0.0, 1.0);
+          if (f < minFraction) {
+            minFraction = f;
+          }
+        }
+      }
+
+      final pctText = foundBucket ? "${(minFraction * 100).toStringAsFixed(1)}%" : "--";
+      Color badgeColor;
+      if (minFraction >= 0.5) {
+        badgeColor = isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7);
+      } else if (minFraction >= 0.2) {
+        badgeColor = const Color(0xFFFBBF24);
+      } else {
+        badgeColor = const Color(0xFFF87171);
+      }
+
+      badges.add(
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+          margin: const EdgeInsets.only(right: 5),
+          decoration: BoxDecoration(
+            color: badgeColor.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(
+              color: badgeColor.withValues(alpha: 0.3),
+              width: 0.8,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                name,
+                style: TextStyle(
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.bold,
+                  color: isDark ? Colors.white70 : Colors.black87,
+                ),
+              ),
+              const SizedBox(width: 3),
+              Text(
+                pctText,
+                style: TextStyle(
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.bold,
+                  color: badgeColor,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 6),
-          if (groups.isEmpty)
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: InkWell(
-                  onTap: onRequestQuota,
-                  child: Text(
-                    isLoadingQuota ? "正在拉取配额..." : "点击同步官方实时配额",
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: isDark ? Colors.white38 : Colors.black38,
-                    ),
-                  ),
-                ),
-              ),
-            )
-          else
-            Column(
-              children: [
-                for (int i = 0; i < groups.length; i++) ...[
-                  if (i > 0)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 5),
-                      child: Divider(
-                        color: isDark ? Colors.white10 : Colors.black12,
-                        height: 1,
-                      ),
-                    ),
-                  _buildQuotaGroup(groups[i]),
-                ],
-              ],
-            ),
-        ],
-      ),
-    );
+        ),
+      );
+    }
+    return badges;
   }
 
   Widget _buildQuotaGroup(dynamic groupData) {

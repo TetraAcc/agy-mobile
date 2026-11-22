@@ -5,7 +5,7 @@
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter)](https://flutter.dev)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-v1.3.4-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
+[![Version](https://img.shields.io/badge/Version-v1.3.5-brightgreen.svg)](https://github.com/TetraAcc/agy-mobile)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-13%2F13%20Passed-success.svg)](test/widget_test.dart)
 
@@ -13,6 +13,11 @@
 
 ## 🌟 核心特性
 
+- 📱 **侧边栏配额卡片智能折叠与会话列表大视口释放 (v1.3.5 新增)**：
+  - **手机端竖屏挤压痛点彻底根治**：将原本占用 ~200px 纵向高度的静态固定配额面板改造为**轻量折叠手风琴卡片**，默认在移动端紧凑折叠；
+  - **极简胶囊摘要栏（Compact Capsule Bar）**：折叠时高度仅 ~32px，一行自适应展示 `⚡ 额度: Gemini 76.9% · Claude 100%` 关键剩余百分比徽章与独立刷新按钮；
+  - **平滑手风琴动效**：轻触即可展开完整的周额度与 5 小时滑动进度条及重置倒计时，再次轻触即可收起；
+  - **抽屉全局垂直布局精简**：优化主机选择器、操作按钮和搜索栏内边距，并将夜间模式与版本号整合为一行，为中央会话列表累计释放超 200px 垂直浏览视口，手机翻看和切换会话极度从容。
 - 🖼️ **Agent 回复 Markdown 本地图片双端透明代理与交互式全屏预览 (v1.3.4 新增)**：
   - **破解 Web 端图片跨域沙箱限制**：在 Web 网页端彻底解决 Agent 回复 Markdown 中 `file:///...` 本地协议图片无法显示、直接破图的顽疾；
   - **双端智能路径清洗与反代**：`StreamingMarkdownBody` 内置 `imageBuilder` 代理拦截，将本地绝对路径与 `file://` 协议自动转换为网关及 Windows 的 `/api/media?path=...&token=...&node=...` 接口；
