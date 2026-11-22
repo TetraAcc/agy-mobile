@@ -349,7 +349,11 @@ async def proxy_remote_ws(request, ws_client, target_node, user_token):
                         elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
                             break
 
-                await asyncio.gather(client_to_remote(), remote_to_client(), return_exceptions=True)
+                t_c2r = asyncio.create_task(client_to_remote())
+                t_r2c = asyncio.create_task(remote_to_client())
+                done, pending = await asyncio.wait([t_c2r, t_r2c], return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
 
     except Exception as e:
         print(f"[-] 代理至 [{node_name}] 失败: {e}")
