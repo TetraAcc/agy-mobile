@@ -449,7 +449,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                   Row(
                     children: [
                       Text(
-                        "v1.3.5",
+                        "v1.3.6",
                         style: TextStyle(
                           fontSize: 10,
                           color: isDark ? Colors.white24 : Colors.black26,

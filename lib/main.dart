@@ -508,7 +508,8 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
 
   void _handleSessionHistory(Map<String, dynamic> data) {
     // 历史消息加载：全部预置为已完成，绝对禁止历史旧消息触发打字机动画
-    final hist = (data['history'] as List).map((e) {
+    final rawList = data['history'] as List? ?? data['messages'] as List? ?? [];
+    final hist = rawList.map((e) {
       final msg = AgentMessage.fromJson(e);
       msg.isLiveStream = false;
       StreamingMarkdownBody.markFinished(msg.messageKey);
@@ -805,7 +806,6 @@ class _MainRemoteScreenState extends State<MainRemoteScreen> {
     });
     final payload = jsonEncode({"action": "switch_session", "session_id": session.id});
     _channel?.sink.add(payload);
-    Navigator.pop(context);
     HapticFeedback.selectionClick();
   }
 
