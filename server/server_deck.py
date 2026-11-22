@@ -128,7 +128,9 @@ def get_grouped_sessions():
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
-        cur.execute("SELECT conversation_id, title, workspace_uris, updated_at FROM conversation_summaries ORDER BY updated_at DESC")
+        cols = [c[1] for c in cur.execute("PRAGMA table_info(conversation_summaries)").fetchall()]
+        time_col = "last_modified_time" if "last_modified_time" in cols else ("updated_at" if "updated_at" in cols else "rowid")
+        cur.execute(f"SELECT conversation_id, title, workspace_uris, {time_col} FROM conversation_summaries ORDER BY {time_col} DESC")
         rows = cur.fetchall()
         conn.close()
 
@@ -229,15 +231,42 @@ def load_session_history(file_path, max_lines=300):
         print(f"[-] 读取历史异常: {e}")
     return history[-60:]
 
-def dispatch_agent_message(session_id, content):
-    cmd = [AGENT_API_PATH, "send-message", "--title=AGY Remote", session_id, content]
+def dispatch_agent_message(session_id, content, model=None, workspace_dir=None):
+    agy_bin = "/home/deck/.local/bin/agy"
+    if not os.path.exists(agy_bin):
+        agy_bin = shutil.which("agy") or os.path.expanduser("~/.local/bin/agy")
+    if not os.path.exists(agy_bin):
+        return False, f"未找到 agy CLI 路径: {agy_bin}"
+
+    cmd = [agy_bin]
+    if session_id:
+        cmd.extend([f"--conversation={session_id}"])
+    cmd.extend(["-p", content, "--mode=auto", "--dangerously-skip-permissions"])
+    if model:
+        # 映射前端模型 ID 到 agy CLI 支持的命名
+        clean_model = model
+        if "flash" in model.lower():
+            clean_model = "flash"
+        elif "pro" in model.lower():
+            clean_model = "pro"
+        elif "flash_lite" in model.lower() or "lite" in model.lower():
+            clean_model = "flash_lite"
+        cmd.append(f"--model={clean_model}")
+
+    target_cwd = workspace_dir if (workspace_dir and os.path.exists(workspace_dir)) else os.path.expanduser("~/")
+
+    print(f"[*] Steam Deck 异步启动 Agent 任务: cmd={' '.join(cmd)}, cwd={target_cwd}")
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=8)
-        if res.returncode == 0:
-            return True, "ok"
-        else:
-            return False, res.stderr.strip() or f"exit code {res.returncode}"
+        subprocess.Popen(
+            cmd,
+            cwd=target_cwd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True
+        )
+        return True, "ok"
     except Exception as e:
+        print(f"[-] 启动 agy 进程失败: {e}")
         return False, str(e)
 
 async def broadcast_message(message_dict):
@@ -264,7 +293,7 @@ async def tail_transcript():
                 if file_handle:
                     file_handle.close()
                 file_handle = open(current_active_file, "r", encoding="utf-8", errors="replace")
-                file_handle.seek(0, os.SEEK_END)
+                file_handle.seek(0, os.SEEK_SET)
 
             if file_handle:
                 line = file_handle.readline()
@@ -473,8 +502,22 @@ async def websocket_handler(request):
                     elif action == "prompt":
                         content = data.get("content", "").strip()
                         session_id = data.get("session_id") or current_active_session_id
+                        model = data.get("model")
                         if content:
-                            ok, err_msg = dispatch_agent_message(session_id, content)
+                            user_event = {
+                                "type": "agent_update",
+                                "session_id": session_id or "current",
+                                "step_index": -1,
+                                "source": "USER_EXPLICIT",
+                                "msg_type": "USER_INPUT",
+                                "status": "SENT",
+                                "content": content,
+                                "thinking": "",
+                                "tool_calls": [],
+                                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")
+                            }
+                            await broadcast_message(user_event)
+                            ok, err_msg = dispatch_agent_message(session_id, content, model=model, workspace_dir=current_workspace_dir)
                             await ws.send_json({
                                 "type": "prompt_ack",
                                 "status": "ok" if ok else "error",
@@ -526,7 +569,22 @@ async def websocket_handler(request):
 
                     elif action == "new_session":
                         content = data.get("content", "").strip() or "你好，开启新会话"
-                        ok, err_msg = dispatch_agent_message(None, content)
+                        model = data.get("model")
+                        ws_path = data.get("workspace_path")
+                        user_event = {
+                            "type": "agent_update",
+                            "session_id": "new",
+                            "step_index": -1,
+                            "source": "USER_EXPLICIT",
+                            "msg_type": "USER_INPUT",
+                            "status": "SENT",
+                            "content": content,
+                            "thinking": "",
+                            "tool_calls": [],
+                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")
+                        }
+                        await broadcast_message(user_event)
+                        ok, err_msg = dispatch_agent_message(None, content, model=model, workspace_dir=ws_path)
                         await ws.send_json({
                             "type": "new_session_ack",
                             "status": "ok" if ok else "error",
