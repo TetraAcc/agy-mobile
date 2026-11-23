@@ -1,0 +1,136 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_universal:
+        description: "Also build universal APK alongside split-per-abi APKs"
+        required: false
+        type: boolean
+        default: true
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          cache: true
+
+      - name: Install Dart dependencies
+        run: flutter pub get
+
+      - name: Static analysis
+        run: flutter analyze --no-fatal-infos
+
+      - name: Run Flutter tests
+        run: flutter test
+
+      - name: Extract app version
+        id: version
+        shell: bash
+        run: |
+          raw_version=$(grep -E '^version:' pubspec.yaml | head -n1 | awk '{print $2}')
+          app_version="${raw_version%%+*}"
+          if [ -z "$app_version" ]; then
+            app_version="dev"
+          fi
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Android release signing
+        id: signing
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
+            cat > android/key.properties <<EOF
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyPassword=$ANDROID_KEY_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          storeFile=upload-keystore.jks
+          EOF
+            echo "signed=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Release signing secrets not configured; falling back to debug signing."
+            echo "signed=debug" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Android APKs
+        shell: bash
+        env:
+          DEFAULT_GATEWAY_URL: ${{ secrets.DEFAULT_GATEWAY_URL || vars.DEFAULT_GATEWAY_URL }}
+        run: |
+          DART_DEFINES=()
+          if [ -n "$DEFAULT_GATEWAY_URL" ]; then
+            DART_DEFINES+=("--dart-define=DEFAULT_GATEWAY_URL=${DEFAULT_GATEWAY_URL}")
+          fi
+
+          flutter build apk --release --split-per-abi "${DART_DEFINES[@]}"
+
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.build_universal }}" = "true" ]; then
+            flutter build apk --release "${DART_DEFINES[@]}"
+          fi
+
+      - name: Package APKs and generate checksums
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.app_version }}"
+          mkdir -p dist/android
+
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            src="build/app/outputs/flutter-apk/app-${abi}-release.apk"
+            if [ -f "$src" ]; then
+              cp "$src" "dist/android/agy-remote-v${VERSION}-${abi}.apk"
+            fi
+          done
+
+          universal_src="build/app/outputs/flutter-apk/app-release.apk"
+          if [ -f "$universal_src" ]; then
+            cp "$universal_src" "dist/android/agy-remote-v${VERSION}-universal.apk"
+          fi
+
+          cd dist/android
+          sha256sum *.apk > SHA256SUMS.txt
+          ls -lh
+
+      - name: Clean up signing files
+        if: always()
+        shell: bash
+        run: rm -f android/key.properties android/app/upload-keystore.jks
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agy-remote-android-v${{ steps.version.outputs.app_version }}
+          path: dist/android/**
+          retention-days: 30
+
+      - name: Publish GitHub Release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/android/*
+          generate_release_notes: true

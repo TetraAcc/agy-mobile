@@ -1,11 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:agy_remote/core/config/server_config.dart';
 import 'package:agy_remote/core/network/api_client.dart';
 import 'package:agy_remote/core/network/token_store.dart';
+import 'package:agy_remote/core/realtime/node_event_socket.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 typedef MockHandler = Future<ResponseBody> Function(RequestOptions options);
 
@@ -39,6 +42,7 @@ ResponseBody _jsonResp(int status, Object body) {
 
 void main() {
   test('ServerConfig 规范化 URL 与推导 WebSocket 地址', () {
+    expect(ServerConfig.defaultBaseUrl(), ServerConfig.defaultNativeUrl);
     expect(ServerConfig.normalizeBaseUrl('agy.example.com/'), 'https://agy.example.com');
     expect(ServerConfig.normalizeBaseUrl('127.0.0.1:8768/'), 'http://127.0.0.1:8768');
     expect(const ServerConfig('https://agy.example.com').wsBaseUrl, 'wss://agy.example.com');
@@ -145,4 +149,89 @@ void main() {
       throwsA(isA<BinaryFileApiException>()),
     );
   });
+
+  test('NodeEventSocket 在令牌失效重连时刷新 Token 并携带新 Authorization 头', () async {
+    final store = MemoryTokenStore(initialAccess: 'expired_tok', initialRefresh: 'rt_1');
+    final recordedHeaders = <Map<String, dynamic>?>[];
+    var refreshCalls = 0;
+
+    final socket = NodeEventSocket(
+      serverConfig: const ServerConfig('https://agy.example.com'),
+      nodeId: 'win',
+      tokenStore: store,
+      isWebOverride: false,
+      onRefreshAuth: () async {
+        refreshCalls += 1;
+        await store.saveTokens(
+          accessToken: 'fresh_tok_$refreshCalls',
+          refreshToken: 'rt_${refreshCalls + 1}',
+        );
+        return true;
+      },
+      connector: (uri, {headers}) {
+        recordedHeaders.add(headers == null ? null : Map<String, dynamic>.from(headers));
+        return _FakeWsChannel();
+      },
+    );
+    addTearDown(socket.dispose);
+
+    await socket.connect();
+    expect(recordedHeaders.last?['Authorization'], 'Bearer expired_tok');
+
+    await socket.reconnectNow(refreshToken: true);
+    expect(refreshCalls, 1);
+    expect(recordedHeaders.last?['Authorization'], 'Bearer fresh_tok_1');
+  });
+}
+
+class _FakeWsSink implements WebSocketSink {
+  final List<dynamic> sent = [];
+  bool closed = false;
+
+  @override
+  void add(dynamic data) => sent.add(data);
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) {}
+
+  @override
+  Future addStream(Stream stream) async {
+    await for (final item in stream) {
+      sent.add(item);
+    }
+  }
+
+  @override
+  Future close([int? closeCode, String? closeReason]) async {
+    closed = true;
+  }
+
+  @override
+  Future get done => Future.value();
+}
+
+class _FakeWsChannel implements WebSocketChannel {
+  final StreamController<dynamic> _incoming = StreamController<dynamic>.broadcast();
+  final _FakeWsSink _sink = _FakeWsSink();
+
+  @override
+  int? get closeCode => null;
+
+  @override
+  String? get closeReason => null;
+
+  @override
+  String? get protocol => null;
+
+  @override
+  Future<void> get ready => Future.value();
+
+  @override
+  WebSocketSink get sink => _sink;
+
+  @override
+  Stream<dynamic> get stream => _incoming.stream;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

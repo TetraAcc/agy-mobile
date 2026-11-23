@@ -1,7 +1,9 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/config/composer_prefs.dart';
+import '../../core/platform/platform_bridge.dart';
 import '../../models/models.dart';
 import 'attachment_preview_bar.dart';
 
@@ -20,6 +22,7 @@ class BottomInputBar extends StatefulWidget {
   final VoidCallback onShowAddContext;
   final VoidCallback onSendMessage;
   final VoidCallback onStopTask;
+  final ValueChanged<PickedLocalFile>? onInsertRichContent;
 
   const BottomInputBar({
     super.key,
@@ -37,6 +40,7 @@ class BottomInputBar extends StatefulWidget {
     required this.onShowAddContext,
     required this.onSendMessage,
     required this.onStopTask,
+    this.onInsertRichContent,
   });
 
   @override
@@ -62,6 +66,19 @@ class _BottomInputBarState extends State<BottomInputBar> {
       widget.inputController.text.trim().isNotEmpty || widget.pendingAttachments.isNotEmpty;
 
   bool get _isCtrlEnter => widget.sendKey == ComposerPrefs.sendKeyCtrlEnter;
+
+  bool get _isTouchMobile =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
+
+  String _extFromMime(String mimeType) {
+    final lower = mimeType.toLowerCase();
+    if (lower.contains('jpeg') || lower.contains('jpg')) return 'jpg';
+    if (lower.contains('webp')) return 'webp';
+    if (lower.contains('gif')) return 'gif';
+    return 'png';
+  }
 
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
     if (!widget.isConnected || !widget.canWrite) return KeyEventResult.ignored;
@@ -100,7 +117,7 @@ class _BottomInputBarState extends State<BottomInputBar> {
       hintText = '当前节点为只读权限';
     } else if (widget.isThinking) {
       hintText = isQueueMode ? '执行中，输入后将排队入列...' : '执行中，输入后将立即发送...';
-    } else if (_isCtrlEnter) {
+    } else if (_isCtrlEnter && !_isTouchMobile) {
       hintText = '向 Agent 发送指令... (Ctrl+Enter 发送)';
     } else {
       hintText = '向 Agent 发送指令...';
@@ -110,6 +127,7 @@ class _BottomInputBarState extends State<BottomInputBar> {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       color: isDark ? const Color(0xFF161F30) : Colors.white,
       child: SafeArea(
+        top: false,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -157,7 +175,33 @@ class _BottomInputBarState extends State<BottomInputBar> {
                     minLines: 1,
                     maxLines: 5,
                     keyboardType: TextInputType.multiline,
-                    textInputAction: _isCtrlEnter ? TextInputAction.newline : TextInputAction.send,
+                    textInputAction: (_isTouchMobile || _isCtrlEnter)
+                        ? TextInputAction.newline
+                        : TextInputAction.send,
+                    contentInsertionConfiguration:
+                        (widget.onInsertRichContent != null && inputEnabled)
+                            ? ContentInsertionConfiguration(
+                                allowedMimeTypes: const <String>[
+                                  'image/png',
+                                  'image/jpeg',
+                                  'image/webp',
+                                  'image/gif',
+                                ],
+                                onContentInserted: (KeyboardInsertedContent content) {
+                                  final data = content.data;
+                                  if (data == null || data.isEmpty) return;
+                                  final ext = _extFromMime(content.mimeType);
+                                  widget.onInsertRichContent!(
+                                    PickedLocalFile(
+                                      filename:
+                                          'ime_image_${DateTime.now().millisecondsSinceEpoch}.$ext',
+                                      bytes: data,
+                                      isImage: true,
+                                    ),
+                                  );
+                                },
+                              )
+                            : null,
                     style: TextStyle(color: isDark ? Colors.white : Colors.black87),
                     decoration: InputDecoration(
                       hintText: hintText,
@@ -174,7 +218,7 @@ class _BottomInputBarState extends State<BottomInputBar> {
                       ),
                     ),
                     onSubmitted: (_) {
-                      if (inputEnabled && !_isCtrlEnter && _hasDraft) {
+                      if (!_isTouchMobile && inputEnabled && !_isCtrlEnter && _hasDraft) {
                         widget.onSendMessage();
                       }
                     },

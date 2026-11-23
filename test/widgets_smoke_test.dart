@@ -1,5 +1,6 @@
 import 'package:agy_remote/core/config/composer_prefs.dart';
 import 'package:agy_remote/core/config/server_config.dart';
+import 'package:agy_remote/core/platform/platform_bridge.dart';
 import 'package:agy_remote/features/auth/auth_controller.dart';
 import 'package:agy_remote/features/auth/login_screen.dart';
 import 'package:agy_remote/features/chat/bottom_input_bar.dart';
@@ -13,6 +14,7 @@ import 'package:agy_remote/features/workspace/file_viewer_sheet.dart';
 import 'package:agy_remote/features/workspace/session_changes_bar.dart';
 import 'package:agy_remote/features/workspace/workspace_file_picker_dialog.dart';
 import 'package:agy_remote/models/models.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -692,5 +694,51 @@ void main() {
     await tester.tap(find.byIcon(Icons.delete_outline_rounded));
     await tester.pump();
     expect(deletedId, 'q1');
+  });
+
+  testWidgets('Android 端 BottomInputBar 键盘回车保持换行且支持输入法贴图', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    final ctrl = TextEditingController();
+    addTearDown(ctrl.dispose);
+    var sendCount = 0;
+    PickedLocalFile? insertedFile;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: BottomInputBar(
+            inputController: ctrl,
+            isConnected: true,
+            isThinking: false,
+            isDark: true,
+            sendKey: ComposerPrefs.sendKeyEnter,
+            pendingAttachments: const [],
+            onRemoveAttachment: (_) {},
+            onShowAddContext: () {},
+            onSendMessage: () => sendCount += 1,
+            onStopTask: () {},
+            onInsertRichContent: (file) => insertedFile = file,
+          ),
+        ),
+      ),
+    );
+
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.textInputAction, TextInputAction.newline);
+    expect(field.contentInsertionConfiguration, isNotNull);
+
+    field.contentInsertionConfiguration!.onContentInserted(
+      KeyboardInsertedContent(
+        mimeType: 'image/png',
+        uri: 'content://ime/clipboard_1.png',
+        data: Uint8List.fromList([0x89, 0x50, 0x4E, 0x47]),
+      ),
+    );
+    expect(insertedFile, isNotNull);
+    expect(insertedFile!.isImage, true);
+    expect(insertedFile!.filename.endsWith('.png'), true);
+    expect(sendCount, 0);
   });
 }

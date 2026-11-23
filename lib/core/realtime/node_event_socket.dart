@@ -65,6 +65,7 @@ abstract class EventSocketClient {
   WsConnState get currentState;
 
   Future<void> connect();
+  Future<void> reconnectNow({bool refreshToken = false});
   void subscribe(String sessionId, {int? sinceStep});
   void unsubscribe(String sessionId);
   Future<void> dispose();
@@ -75,6 +76,7 @@ class NodeEventSocket implements EventSocketClient {
   final String nodeId;
   final TokenStore tokenStore;
   final WebSocketConnectFn _connector;
+  final Future<bool> Function()? onRefreshAuth;
   final bool isWebPlatform;
 
   final StreamController<WsServerEvent> _eventController = StreamController<WsServerEvent>.broadcast();
@@ -89,6 +91,8 @@ class NodeEventSocket implements EventSocketClient {
   int _reconnectAttempts = 0;
   bool _disposed = false;
   bool _manualClose = false;
+  bool _isConnectingNow = false;
+  bool _needsTokenRefreshOnNextConnect = false;
 
   String? _subscribedSessionId;
   final Map<String, int> _lastStepBySession = {};
@@ -98,6 +102,7 @@ class NodeEventSocket implements EventSocketClient {
     required this.nodeId,
     required this.tokenStore,
     WebSocketConnectFn? connector,
+    this.onRefreshAuth,
     bool? isWebOverride,
   })  : _connector = connector ?? connectWebSocket,
         isWebPlatform = isWebOverride ?? kIsWeb;
@@ -120,21 +125,32 @@ class NodeEventSocket implements EventSocketClient {
 
   @override
   Future<void> connect() async {
-    if (_disposed) return;
+    if (_disposed || _isConnectingNow) return;
+    _isConnectingNow = true;
     _manualClose = false;
     _reconnectTimer?.cancel();
     _setState(WsConnState.connecting);
 
-    final uri = Uri.parse('${serverConfig.wsBaseUrl}/ws/v2/nodes/$nodeId/events');
-    Map<String, dynamic>? headers;
-    if (!isWebPlatform) {
-      final tok = tokenStore.accessToken;
-      if (tok != null && tok.isNotEmpty) {
-        headers = {'Authorization': 'Bearer $tok'};
-      }
-    }
-
     try {
+      if (!isWebPlatform &&
+          onRefreshAuth != null &&
+          (_needsTokenRefreshOnNextConnect || (tokenStore.accessToken?.isEmpty ?? true))) {
+        _needsTokenRefreshOnNextConnect = false;
+        try {
+          await onRefreshAuth!();
+        } catch (_) {}
+      }
+      if (_disposed || _manualClose) return;
+
+      final uri = Uri.parse('${serverConfig.wsBaseUrl}/ws/v2/nodes/$nodeId/events');
+      Map<String, dynamic>? headers;
+      if (!isWebPlatform) {
+        final tok = tokenStore.accessToken;
+        if (tok != null && tok.isNotEmpty) {
+          headers = {'Authorization': 'Bearer $tok'};
+        }
+      }
+
       final ch = _connector(uri, headers: headers);
       _channel = ch;
       await ch.ready;
@@ -144,6 +160,7 @@ class NodeEventSocket implements EventSocketClient {
       }
 
       _reconnectAttempts = 0;
+      _needsTokenRefreshOnNextConnect = false;
       _setState(WsConnState.connected);
       _startHeartbeat();
 
@@ -163,8 +180,36 @@ class NodeEventSocket implements EventSocketClient {
         });
       }
     } catch (_) {
+      if (!isWebPlatform) {
+        _needsTokenRefreshOnNextConnect = true;
+      }
       _handleDisconnect();
+    } finally {
+      _isConnectingNow = false;
     }
+  }
+
+  @override
+  Future<void> reconnectNow({bool refreshToken = false}) async {
+    if (_disposed) return;
+    _manualClose = true;
+    _reconnectTimer?.cancel();
+    _heartbeatTimer?.cancel();
+    _reconnectAttempts = 0;
+    if (refreshToken && !isWebPlatform) {
+      _needsTokenRefreshOnNextConnect = true;
+    }
+    final oldSub = _channelSub;
+    _channelSub = null;
+    final oldCh = _channel;
+    _channel = null;
+    _isConnectingNow = false;
+    await oldSub?.cancel();
+    try {
+      await oldCh?.sink.close();
+    } catch (_) {}
+    if (_disposed) return;
+    await connect();
   }
 
   void _onRawMessage(dynamic raw) {
@@ -213,12 +258,17 @@ class NodeEventSocket implements EventSocketClient {
           _eventController.add(const WsPongEvent());
           break;
         case 'error':
+          final errCode = data['code']?.toString() ?? 'unknown';
           _eventController.add(
             WsErrorEvent(
-              code: data['code']?.toString() ?? 'unknown',
+              code: errCode,
               message: data['message']?.toString() ?? '',
             ),
           );
+          if (errCode == 'unauthorized' || errCode == 'token_expired' || errCode == '401') {
+            _needsTokenRefreshOnNextConnect = true;
+            unawaited(reconnectNow(refreshToken: true));
+          }
           break;
       }
     } catch (_) {}

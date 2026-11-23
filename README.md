@@ -124,3 +124,13 @@ server/.venv/Scripts/pytest.exe server/tests -v
 # 构建 Web 生产产物（Gateway 自动优先挂载 ../build/web）
 flutter build web --release
 ```
+
+### 4. Android APK 云端构建（GitHub Actions）
+
+- 工作流位置：[build-android.yml](.github/workflows/build-android.yml)，支持在 GitHub Actions 页面手动触发（`workflow_dispatch`）或在推送 `v*` 标签时自动构建并发布 Release 附件（含分 ABI APK、通用 APK 与 `SHA256SUMS.txt`）。
+- 首次零配置即可直接运行（未配置正式签名时自动回退为 debug 签名方便自测安装）；如需固定正式签名覆盖安装并预填默认网关地址，可在仓库 `Settings -> Secrets and variables -> Actions` 中配置以下可选 Secrets：
+  - `ANDROID_KEYSTORE_BASE64`：`.jks` / `.keystore` 文件的 Base64 编码字符串
+  - `ANDROID_KEYSTORE_PASSWORD`：Keystore 密码
+  - `ANDROID_KEY_ALIAS`：密钥别名
+  - `ANDROID_KEY_PASSWORD`：密钥密码
+  - `DEFAULT_GATEWAY_URL`：可选，预设原生端默认网关 URL（通过 `--dart-define=DEFAULT_GATEWAY_URL=...` 编译注入）

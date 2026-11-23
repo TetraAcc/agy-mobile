@@ -34,7 +34,8 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
+class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final TextEditingController _inputController = TextEditingController();
   final TextEditingController _chatSearchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
@@ -45,6 +46,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   VoidCallback? _disposeWebPaste;
   String _commentSessionId = '';
   List<ReviewCommentItem> _draftComments = const [];
+  DateTime? _lastBackPressAt;
 
   List<ReviewCommentItem> _commentsForSession(String sessionId) {
     if (sessionId.isEmpty || sessionId != _commentSessionId) return const [];
@@ -54,6 +56,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_onScrollChanged);
     _disposeWebPaste = PlatformBridge.registerWebDropAndPaste(_onPickedLocalFile);
     Future.microtask(() {
@@ -62,7 +65,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final notifier = ref.read(hubControllerProvider.notifier);
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
+      notifier.handleAppPaused();
+    } else if (state == AppLifecycleState.resumed) {
+      notifier.handleAppResumed();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _disposeWebPaste?.call();
     _scrollController.removeListener(_onScrollChanged);
     _scrollController.dispose();
@@ -576,12 +590,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               color: isWin ? const Color(0xFF38BDF8) : (isDark ? Colors.white70 : Colors.black87),
             ),
             const SizedBox(width: 5),
-            Text(
-              currentNode.name,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: isDark ? Colors.white : Colors.black87,
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 88),
+              child: Text(
+                currentNode.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: isDark ? Colors.white : Colors.black87,
+                ),
               ),
             ),
             const SizedBox(width: 3),
@@ -668,9 +687,43 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final hasThinking = hubState.isActiveSessionRunning && !(_isChatSearching && query.isNotEmpty);
     final hasLoadMore = hubState.hasMoreMessages && !(_isChatSearching && query.isNotEmpty);
     final totalItems = messages.length + (hasThinking ? 1 : 0) + (hasLoadMore ? 1 : 0);
+    final rawBaseUrl = authState.serverConfig.baseUrl;
+    final parsedHost = Uri.tryParse(rawBaseUrl)?.host;
+    final displayServerLabel = (parsedHost != null && parsedHost.isNotEmpty) ? parsedHost : rawBaseUrl;
 
-    return Scaffold(
-      drawer: QuotaDrawer(
+    return PopScope(
+      canPop: kIsWeb,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (_scaffoldKey.currentState?.isDrawerOpen == true) {
+          Navigator.of(context).pop();
+          return;
+        }
+        if (_isChatSearching) {
+          setState(() {
+            _isChatSearching = false;
+            _chatSearchQuery = '';
+            _chatSearchController.clear();
+          });
+          return;
+        }
+        final primaryFocus = FocusManager.instance.primaryFocus;
+        if (primaryFocus != null && primaryFocus.hasPrimaryFocus) {
+          primaryFocus.unfocus();
+          return;
+        }
+        final now = DateTime.now();
+        if (_lastBackPressAt == null ||
+            now.difference(_lastBackPressAt!) > const Duration(seconds: 2)) {
+          _lastBackPressAt = now;
+          _showSnack('再按一次返回键退出应用');
+          return;
+        }
+        SystemNavigator.pop();
+      },
+      child: Scaffold(
+        key: _scaffoldKey,
+        drawer: QuotaDrawer(
         nodes: hubState.nodes,
         selectedNode: hubState.selectedNodeId,
         onSwitchNode: _handleSwitchNode,
@@ -736,7 +789,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 Flexible(
                   child: Text(
                     hubState.isConnected
-                        ? '已连接 (${authState.serverConfig.baseUrl})'
+                        ? '已连接 ($displayServerLabel)'
                         : (hubState.isConnecting ? '事件流连接中...' : '未连接'),
                     style: TextStyle(fontSize: 10, color: isDark ? Colors.white54 : Colors.black45),
                     overflow: TextOverflow.ellipsis,
@@ -750,6 +803,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           _buildNodeSwitchButton(context, hubState, isDark),
           if (hubState.activeSessionId.isNotEmpty) ...[
             IconButton(
+              visualDensity: VisualDensity.compact,
               icon: Icon(_isChatSearching ? Icons.search_off_rounded : Icons.search_rounded, size: 20),
               tooltip: '搜索对话内容',
               onPressed: () {
@@ -763,12 +817,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               },
             ),
             IconButton(
+              visualDensity: VisualDensity.compact,
               icon: const Icon(Icons.auto_awesome_mosaic_outlined, size: 20),
               tooltip: '会话文档 (Artifacts)',
               onPressed: _openSessionArtifacts,
             ),
           ],
           IconButton(
+            visualDensity: VisualDensity.compact,
             icon: Icon(isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded, size: 20),
             tooltip: isDark ? '切换为日间模式' : '切换为夜间模式',
             onPressed: () {
@@ -777,6 +833,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             },
           ),
           IconButton(
+            visualDensity: VisualDensity.compact,
             icon: const Icon(Icons.settings_outlined),
             tooltip: '通用设置',
             onPressed: _showSettingsDialog,
@@ -837,32 +894,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           else if (planSteps.isNotEmpty)
             SessionStepsBar(steps: planSteps, isDark: isDark),
           Expanded(
-            child: hubState.isLoadingMessages
-                ? const Center(child: CircularProgressIndicator())
-                : messages.isEmpty
-                    ? Center(
-                        child: Text(
-                          (_isChatSearching && query.isNotEmpty)
-                              ? '未找到包含「$_chatSearchQuery」的消息'
-                              : hubState.selectedNodeId.isEmpty
-                                  ? '尚未配置可用控制节点'
-                                  : (hubState.activeSessionId.isEmpty
-                                      ? '点击左上角 [≡] 选择会话或新建任务'
-                                      : '暂无消息记录，请在下方发送第一条指令'),
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: isDark ? Colors.white38 : Colors.black38,
-                            fontSize: 13,
-                            height: 1.5,
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: () => FocusScope.of(context).unfocus(),
+              child: hubState.isLoadingMessages
+                  ? const Center(child: CircularProgressIndicator())
+                  : messages.isEmpty
+                      ? Center(
+                          child: Text(
+                            (_isChatSearching && query.isNotEmpty)
+                                ? '未找到包含「$_chatSearchQuery」的消息'
+                                : hubState.selectedNodeId.isEmpty
+                                    ? '尚未配置可用控制节点'
+                                    : (hubState.activeSessionId.isEmpty
+                                        ? '点击左上角 [≡] 选择会话或新建任务'
+                                        : '暂无消息记录，请在下方发送第一条指令'),
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: isDark ? Colors.white38 : Colors.black38,
+                              fontSize: 13,
+                              height: 1.5,
+                            ),
                           ),
-                        ),
-                      )
-                    : Stack(
-                        children: [
-                          ListView.builder(
-                            controller: _scrollController,
-                            reverse: true,
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        )
+                      : Stack(
+                          children: [
+                            ListView.builder(
+                              controller: _scrollController,
+                              reverse: true,
+                              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                             itemCount: totalItems,
                             itemBuilder: (ctx, idx) {
                               if (hasThinking && idx == 0) {
@@ -952,6 +1013,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             ),
                         ],
                       ),
+            ),
           ),
           BottomInputBar(
             inputController: _inputController,
@@ -1016,8 +1078,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             },
             onSendMessage: _handleSendMessage,
             onStopTask: _handleStopTask,
+            onInsertRichContent: _onPickedLocalFile,
           ),
         ],
+      ),
       ),
     );
   }

@@ -112,6 +112,8 @@ class ApiClient {
     );
   }
 
+  Future<bool> refreshSessionLocked() => _tryRefreshLocked();
+
   Future<bool> _tryRefreshLocked() async {
     if (_refreshCompleter != null) {
       return _refreshCompleter!.future;

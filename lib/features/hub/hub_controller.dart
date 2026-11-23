@@ -16,6 +16,7 @@ typedef EventSocketFactory = EventSocketClient Function({
   required ServerConfig serverConfig,
   required String nodeId,
   required TokenStore tokenStore,
+  Future<bool> Function()? onRefreshAuth,
 });
 
 final eventSocketFactoryProvider = Provider<EventSocketFactory>((ref) {
@@ -23,11 +24,13 @@ final eventSocketFactoryProvider = Provider<EventSocketFactory>((ref) {
     required ServerConfig serverConfig,
     required String nodeId,
     required TokenStore tokenStore,
+    Future<bool> Function()? onRefreshAuth,
   }) {
     return NodeEventSocket(
       serverConfig: serverConfig,
       nodeId: nodeId,
       tokenStore: tokenStore,
+      onRefreshAuth: onRefreshAuth,
     );
   };
 });
@@ -162,6 +165,8 @@ class HubController extends Notifier<HubState> {
   StreamSubscription<WsConnState>? _wsStateSub;
   Timer? _quotaTimer;
   bool _disposed = false;
+  DateTime? _pausedAt;
+  DateTime? _lastResumedAt;
 
   @override
   HubState build() {
@@ -266,6 +271,7 @@ class HubController extends Notifier<HubState> {
       serverConfig: _api.serverConfig,
       nodeId: nodeId,
       tokenStore: _api.tokenStore,
+      onRefreshAuth: _api.refreshSessionLocked,
     );
     _socket = socket;
 
@@ -288,6 +294,70 @@ class HubController extends Notifier<HubState> {
       fetchQuota(),
       refreshFileRoots(),
     ]);
+  }
+
+  void handleAppPaused() {
+    _pausedAt = DateTime.now();
+  }
+
+  Future<void> handleAppResumed() async {
+    if (_disposed || state.selectedNodeId.isEmpty) return;
+    final now = DateTime.now();
+    if (_lastResumedAt != null && now.difference(_lastResumedAt!) < const Duration(seconds: 2)) {
+      return;
+    }
+    final pausedSeconds = _pausedAt == null ? 0 : now.difference(_pausedAt!).inSeconds;
+    _pausedAt = null;
+    _lastResumedAt = now;
+
+    final socket = _socket;
+    if (socket != null && (socket.currentState != WsConnState.connected || pausedSeconds >= 5)) {
+      unawaited(socket.reconnectNow(refreshToken: pausedSeconds >= 60));
+    }
+    unawaited(refreshSessionTree());
+    if (state.activeSessionId.isNotEmpty) {
+      await _syncActiveSessionSilent();
+    }
+  }
+
+  Future<void> _syncActiveSessionSilent() async {
+    final nodeId = state.selectedNodeId;
+    final sid = state.activeSessionId;
+    if (_disposed || nodeId.isEmpty || sid.isEmpty) return;
+    try {
+      final page = await _api.getSessionMessages(nodeId, sid);
+      if (_disposed || state.selectedNodeId != nodeId || state.activeSessionId != sid) {
+        return;
+      }
+      final byKey = <String, AgentMessage>{};
+      for (final m in state.messages) {
+        if (m.stepIndex >= 0) {
+          byKey['${m.stepIndex}_${m.msgType}'] = m;
+        }
+      }
+      final serverUserTexts = page.messages.where((m) => m.isUser).map((m) => m.content).toSet();
+      for (final m in page.messages) {
+        byKey['${m.stepIndex}_${m.msgType}'] = m;
+      }
+      final merged = byKey.values.toList()..sort((a, b) => a.stepIndex.compareTo(b.stepIndex));
+      for (final m in state.messages) {
+        if (m.stepIndex < 0 && !(m.isUser && serverUserTexts.contains(m.content))) {
+          merged.add(m);
+        }
+      }
+      final nextRunning = Set<String>.from(state.runningSessionIds);
+      if (page.isRunning) {
+        nextRunning.add(sid);
+      } else {
+        nextRunning.remove(sid);
+      }
+      state = state.copyWith(
+        messages: merged,
+        runningSessionIds: nextRunning,
+      );
+    } catch (_) {}
+    unawaited(refreshSessionQueue());
+    unawaited(refreshSessionChanges());
   }
 
   Future<void> refreshSessionTree({bool autoSelectFirst = false}) async {

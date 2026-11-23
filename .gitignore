@@ -76,3 +76,9 @@ server/hub.db-shm
 server/hub.db-wal
 **/hub.db*
 server/logs/
+
+# Android signing keys & secrets
+android/key.properties
+**/key.properties
+*.jks
+*.keystore

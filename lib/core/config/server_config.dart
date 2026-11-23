@@ -4,6 +4,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 class ServerConfig {
   static const String _prefKey = 'v2_server_base_url';
   static const String defaultNativeUrl = 'http://127.0.0.1:8768';
+  static const String _envDefaultGatewayUrl =
+      String.fromEnvironment('DEFAULT_GATEWAY_URL');
 
   final String baseUrl;
 
@@ -25,6 +27,9 @@ class ServerConfig {
       if (origin.startsWith('http://') || origin.startsWith('https://')) {
         return normalizeBaseUrl(origin);
       }
+    }
+    if (_envDefaultGatewayUrl.trim().isNotEmpty) {
+      return normalizeBaseUrl(_envDefaultGatewayUrl);
     }
     return defaultNativeUrl;
   }

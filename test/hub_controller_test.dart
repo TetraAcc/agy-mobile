@@ -18,6 +18,8 @@ class FakeEventSocket implements EventSocketClient {
   WsConnState _current = WsConnState.disconnected;
   final List<String> subscribedIds = [];
   final List<String> unsubscribedIds = [];
+  int reconnectCount = 0;
+  bool lastReconnectRefreshed = false;
   bool disposed = false;
 
   FakeEventSocket(this.nodeId);
@@ -35,6 +37,18 @@ class FakeEventSocket implements EventSocketClient {
   Future<void> connect() async {
     _current = WsConnState.connected;
     _states.add(_current);
+  }
+
+  void simulateDisconnect() {
+    _current = WsConnState.disconnected;
+    _states.add(_current);
+  }
+
+  @override
+  Future<void> reconnectNow({bool refreshToken = false}) async {
+    reconnectCount += 1;
+    lastReconnectRefreshed = refreshToken;
+    await connect();
   }
 
   @override
@@ -63,6 +77,7 @@ class FakeApiClient extends ApiClient {
   final List<String> stoppedSessions = [];
   final List<String> sentMessages = [];
   bool returnCreatedSessionId = true;
+  bool appendResumeReply = false;
 
   FakeApiClient()
       : super(
@@ -128,8 +143,8 @@ class FakeApiClient extends ApiClient {
     }
     return SessionMessagesPage(
       sessionId: sessionId,
-      messages: const [
-        AgentMessage(
+      messages: [
+        const AgentMessage(
           stepIndex: 10,
           source: 'USER_EXPLICIT',
           msgType: 'USER_INPUT',
@@ -139,6 +154,17 @@ class FakeApiClient extends ApiClient {
           toolCalls: [],
           timestamp: '',
         ),
+        if (appendResumeReply)
+          const AgentMessage(
+            stepIndex: 12,
+            source: 'MODEL',
+            msgType: 'PLANNER_RESPONSE',
+            status: 'DONE',
+            content: '后台期间新增回复',
+            thinking: '',
+            toolCalls: [],
+            timestamp: '',
+          ),
       ],
       hasMore: sessionId == 's1',
       nextBeforeStep: sessionId == 's1' ? 10 : null,
@@ -234,6 +260,7 @@ void main() {
           required ServerConfig serverConfig,
           required String nodeId,
           required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
         }) {
           final sock = FakeEventSocket(nodeId);
           createdSockets[nodeId] = sock;
@@ -342,5 +369,15 @@ void main() {
     expect(createdSockets['win']!.disposed, true);
     expect(state.selectedNodeId, 'deck');
     expect(state.activeSessionId, 'deck-s1');
+
+    // 模拟切后台断线后恢复前台：立即重连 WS 并静默合入新消息
+    fakeApi.appendResumeReply = true;
+    createdSockets['deck']!.simulateDisconnect();
+    hub.handleAppPaused();
+    await hub.handleAppResumed();
+    state = container.read(hubControllerProvider);
+    expect(createdSockets['deck']!.reconnectCount, 1);
+    expect(createdSockets['deck']!.currentState, WsConnState.connected);
+    expect(state.messages.any((m) => m.content == '后台期间新增回复'), true);
   });
 }
