@@ -480,50 +480,59 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
       padding: const EdgeInsets.only(bottom: 8),
       child: Row(
         children: [
-          Text(
-            '范围:',
-            style: TextStyle(
-              fontSize: 11.5,
-              color: isDark ? Colors.white54 : Colors.black54,
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '范围:',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: isDark ? Colors.white54 : Colors.black54,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  if (hasStep) ...[
+                    _buildScopeChip(
+                      label: '单步 #${widget.initialStepIndex}',
+                      scopeValue: 'step',
+                      isDark: isDark,
+                      primary: primary,
+                      borderColor: borderColor,
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  if (hasTurn) ...[
+                    _buildScopeChip(
+                      label: '本轮修改',
+                      scopeValue: 'turn',
+                      isDark: isDark,
+                      primary: primary,
+                      borderColor: borderColor,
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  _buildScopeChip(
+                    label: '最新修改',
+                    scopeValue: 'latest_turn',
+                    isDark: isDark,
+                    primary: primary,
+                    borderColor: borderColor,
+                  ),
+                  const SizedBox(width: 6),
+                  _buildScopeChip(
+                    label: '全部修改',
+                    scopeValue: 'all',
+                    isDark: isDark,
+                    primary: primary,
+                    borderColor: borderColor,
+                  ),
+                ],
+              ),
             ),
           ),
-          const SizedBox(width: 6),
-          if (hasStep) ...[
-            _buildScopeChip(
-              label: '单步 #${widget.initialStepIndex}',
-              scopeValue: 'step',
-              isDark: isDark,
-              primary: primary,
-              borderColor: borderColor,
-            ),
-            const SizedBox(width: 6),
-          ],
-          if (hasTurn) ...[
-            _buildScopeChip(
-              label: '本轮修改',
-              scopeValue: 'turn',
-              isDark: isDark,
-              primary: primary,
-              borderColor: borderColor,
-            ),
-            const SizedBox(width: 6),
-          ],
-          _buildScopeChip(
-            label: '最新修改',
-            scopeValue: 'latest_turn',
-            isDark: isDark,
-            primary: primary,
-            borderColor: borderColor,
-          ),
-          const SizedBox(width: 6),
-          _buildScopeChip(
-            label: '全部修改',
-            scopeValue: 'all',
-            isDark: isDark,
-            primary: primary,
-            borderColor: borderColor,
-          ),
-          const Spacer(),
           if (hasLoader)
             IconButton(
               tooltip: '刷新修改记录',

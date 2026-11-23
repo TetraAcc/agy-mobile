@@ -77,12 +77,16 @@ class _SessionChangesBarState extends State<SessionChangesBar> {
                     ),
                   ),
                   const SizedBox(width: 7),
-                  Text(
-                    '${changes.totalFiles} $fileNoun',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white70 : Colors.black87,
+                  Flexible(
+                    child: Text(
+                      '${changes.totalFiles} $fileNoun',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? Colors.white70 : Colors.black87,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 8),

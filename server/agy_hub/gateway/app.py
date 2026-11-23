@@ -41,6 +41,8 @@ _NO_CACHE_FILES = {
     "FontManifest.json",
     "AssetManifest.bin.json",
     "AssetManifest.bin",
+    "favicon.png",
+    "apple-touch-icon.png",
 }
 _NO_CACHE_CONTROL = "no-cache, no-store, must-revalidate, max-age=0"
 _VERSIONED_FONT_RE = re.compile(r"^assets/fonts/v_[0-9a-f]{12}/MaterialIcons-Regular\.otf$")

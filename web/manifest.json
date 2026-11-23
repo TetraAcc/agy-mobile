@@ -3,12 +3,17 @@
     "short_name": "AGY Remote",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0B0F19",
-    "theme_color": "#0B0F19",
+    "background_color": "#111113",
+    "theme_color": "#111113",
     "description": "Cross-platform remote hub for Google Antigravity",
-    "orientation": "portrait-primary",
+    "orientation": "any",
     "prefer_related_applications": false,
     "icons": [
+        {
+            "src": "icons/apple-touch-icon.png",
+            "sizes": "180x180",
+            "type": "image/png"
+        },
         {
             "src": "icons/Icon-192.png",
             "sizes": "192x192",

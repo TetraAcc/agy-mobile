@@ -2,7 +2,6 @@ import 'dart:js_interop';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:web/web.dart' as web;
 
 import 'platform_bridge.dart';
@@ -24,10 +23,14 @@ Future<PickedLocalFile?> implPickFile({required bool imagesOnly}) async {
 Future<void> implOpenExternalUrl(String url) async {
   final uri = Uri.tryParse(url);
   if (uri == null) return;
-  final opened = web.window.open(url, '_blank', 'noopener');
-  if (opened == null) {
-    await launchUrl(uri, webOnlyWindowName: '_blank');
-  }
+  final anchor = web.document.createElement('a') as web.HTMLAnchorElement;
+  anchor.href = url;
+  anchor.target = '_blank';
+  anchor.rel = 'noopener noreferrer';
+  anchor.style.display = 'none';
+  web.document.body?.append(anchor);
+  anchor.click();
+  anchor.remove();
 }
 
 Future<void> implTriggerDownload(String url, String filename) async {

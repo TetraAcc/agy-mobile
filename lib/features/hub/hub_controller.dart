@@ -1327,6 +1327,18 @@ class HubController extends Notifier<HubState> {
     try {
       final nodeId = state.selectedNodeId;
       if (nodeId.isEmpty) return '未选中节点';
+      if (_api.isWebPlatform) {
+        final syncResolved = resolveRootAndRelPath(rawPath, rootId: rootId);
+        if (syncResolved != null && syncResolved.relPath.isNotEmpty) {
+          final directUrl = _api.buildMediaUrl(
+            nodeId,
+            syncResolved.relPath,
+            rootId: syncResolved.rootId,
+          );
+          await PlatformBridge.openExternalUrl(directUrl);
+          return null;
+        }
+      }
       final resolved = await _resolveFileTargetWithRefresh(rawPath, rootId: rootId);
       if (resolved == null || resolved.relPath.isEmpty) {
         return '无法为该路径签发外链票据';
