@@ -2,12 +2,6 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
-    inputs:
-      build_universal:
-        description: "Also build universal APK alongside split-per-abi APKs"
-        required: false
-        type: boolean
-        default: false
   push:
     tags:
       - "v*"
@@ -100,36 +94,20 @@ jobs:
             DART_DEFINES+=("--dart-define=DEFAULT_GATEWAY_URL=${DEFAULT_GATEWAY_URL}")
           fi
 
-          flutter build apk --release --split-per-abi \
+          flutter build apk --release --target-platform android-arm64 \
             --build-name="${VERSION}" \
             --build-number="${BUILD_NUMBER}" \
             "${DART_DEFINES[@]}"
 
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.build_universal }}" = "true" ]; then
-            flutter build apk --release \
-              --build-name="${VERSION}" \
-              --build-number="${BUILD_NUMBER}" \
-              "${DART_DEFINES[@]}"
-          fi
-
-      - name: Package APKs and generate checksums
+      - name: Package APK and generate checksum
         shell: bash
         run: |
           VERSION="${{ steps.version.outputs.app_version }}"
           BUILD_NUMBER="${{ steps.version.outputs.build_number }}"
           mkdir -p dist/android
 
-          for abi in arm64-v8a armeabi-v7a x86_64; do
-            src="build/app/outputs/flutter-apk/app-${abi}-release.apk"
-            if [ -f "$src" ]; then
-              cp "$src" "dist/android/agy-remote-v${VERSION}-b${BUILD_NUMBER}-${abi}.apk"
-            fi
-          done
-
-          universal_src="build/app/outputs/flutter-apk/app-release.apk"
-          if [ -f "$universal_src" ]; then
-            cp "$universal_src" "dist/android/agy-remote-v${VERSION}-b${BUILD_NUMBER}-universal.apk"
-          fi
+          cp "build/app/outputs/flutter-apk/app-release.apk" \
+            "dist/android/agy-remote-v${VERSION}-b${BUILD_NUMBER}.apk"
 
           cd dist/android
           sha256sum *.apk > SHA256SUMS.txt
