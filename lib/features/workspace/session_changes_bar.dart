@@ -7,6 +7,7 @@ class SessionChangesBar extends StatefulWidget {
   final SessionChangesData changes;
   final int pendingCommentCount;
   final bool isDark;
+  final String badgeText;
   final VoidCallback onOpenReview;
   final ValueChanged<SessionFileChange> onOpenFile;
 
@@ -15,6 +16,7 @@ class SessionChangesBar extends StatefulWidget {
     required this.changes,
     this.pendingCommentCount = 0,
     required this.isDark,
+    this.badgeText = '最新修改',
     required this.onOpenReview,
     required this.onOpenFile,
   });
@@ -66,7 +68,7 @@ class _SessionChangesBarState extends State<SessionChangesBar> {
                       borderRadius: BorderRadius.circular(5),
                     ),
                     child: Text(
-                      '最新修改',
+                      widget.badgeText,
                       style: TextStyle(
                         fontSize: 10.5,
                         fontWeight: FontWeight.w700,

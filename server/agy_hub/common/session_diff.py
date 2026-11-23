@@ -15,6 +15,7 @@ from agy_hub.common.schemas import (
     SessionChangesResponse,
     SessionEditHunk,
     SessionFileChangeSummary,
+    SessionTurnChangeSummary,
 )
 
 _EDIT_TOOLS = {"edit_file", "write_file", "replace_file_content", "multi_replace_file_content"}
@@ -212,6 +213,7 @@ def extract_session_changes(
     file_path_filter: str | None = None,
     scope: Literal["all", "latest_turn"] = "all",
     step_index_filter: int | None = None,
+    turn_id_filter: int | None = None,
 ) -> SessionChangesResponse:
     """Parse transcript_full.jsonl (fallback transcript.jsonl) into per-file diff summaries."""
     logs_dir = brain_dir / session_id / ".system_generated" / "logs"
@@ -447,8 +449,68 @@ def extract_session_changes(
     if not raw_edits:
         return SessionChangesResponse(session_id=session_id)
 
+    turn_order: list[int] = []
+    turn_edits_map: dict[int, list[dict[str, Any]]] = {}
+    for e in raw_edits:
+        tid = int(e["turn_id"])
+        if tid not in turn_edits_map:
+            turn_order.append(tid)
+            turn_edits_map[tid] = []
+        turn_edits_map[tid].append(e)
+
+    turn_summaries: list[SessionTurnChangeSummary] = []
+    for turn_num, tid in enumerate(turn_order, start=1):
+        t_edits = turn_edits_map[tid]
+        t_files: dict[str, dict[str, Any]] = {}
+        first_step = min(int(e["step_index"]) for e in t_edits)
+        last_step = max(int(e["step_index"]) for e in t_edits)
+        for e in t_edits:
+            disp_path = _normalize_display_path(e["raw_file_path"])
+            if not disp_path or is_sensitive_path(Path(disp_path)):
+                continue
+            n_key = os.path.normcase(disp_path)
+            add_cnt, rem_cnt = _count_line_delta(e["before_text"], e["after_text"])
+            f_rec = t_files.get(n_key)
+            if f_rec is None:
+                f_name, f_dir = _split_name_dir(disp_path)
+                f_rec = {
+                    "file_path": disp_path,
+                    "file_name": f_name,
+                    "directory": f_dir,
+                    "added_lines": 0,
+                    "removed_lines": 0,
+                    "edit_count": 0,
+                    "last_step_index": int(e["step_index"]),
+                    "is_new_file": bool(e["is_new"]),
+                    "hunks": [],
+                }
+                t_files[n_key] = f_rec
+            f_rec["added_lines"] += add_cnt
+            f_rec["removed_lines"] += rem_cnt
+            f_rec["edit_count"] += 1
+            f_rec["last_step_index"] = max(f_rec["last_step_index"], int(e["step_index"]))
+        sorted_t_files = sorted(
+            t_files.values(),
+            key=lambda r: (-r["last_step_index"], r["file_name"].lower()),
+        )
+        t_file_summaries = [SessionFileChangeSummary(**rec) for rec in sorted_t_files]
+        turn_summaries.append(
+            SessionTurnChangeSummary(
+                turn_id=tid,
+                turn_number=turn_num,
+                first_step_index=first_step,
+                last_step_index=last_step,
+                total_files=len(t_file_summaries),
+                total_added=sum(f.added_lines for f in t_file_summaries),
+                total_removed=sum(f.removed_lines for f in t_file_summaries),
+                files=t_file_summaries,
+            )
+        )
+
     if step_index_filter is not None:
         selected_edits = [e for e in raw_edits if e["step_index"] == step_index_filter]
+    elif turn_id_filter is not None:
+        selected_edits = [e for e in raw_edits if e["turn_id"] == turn_id_filter]
     elif scope == "latest_turn":
         latest_turn_id = raw_edits[-1]["turn_id"]
         selected_edits = [e for e in raw_edits if e["turn_id"] == latest_turn_id]
@@ -476,4 +538,5 @@ def extract_session_changes(
         total_added=sum(f.added_lines for f in summaries),
         total_removed=sum(f.removed_lines for f in summaries),
         files=summaries,
+        turns=turn_summaries,
     )

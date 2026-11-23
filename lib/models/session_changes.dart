@@ -116,12 +116,62 @@ class SessionFileChange {
   }
 }
 
+class SessionTurnChange {
+  final int turnId;
+  final int turnNumber;
+  final int firstStepIndex;
+  final int lastStepIndex;
+  final int totalFiles;
+  final int totalAdded;
+  final int totalRemoved;
+  final List<SessionFileChange> files;
+
+  const SessionTurnChange({
+    required this.turnId,
+    this.turnNumber = 1,
+    this.firstStepIndex = 0,
+    this.lastStepIndex = 0,
+    this.totalFiles = 0,
+    this.totalAdded = 0,
+    this.totalRemoved = 0,
+    this.files = const [],
+  });
+
+  SessionChangesData toChangesData({String sessionId = ''}) {
+    return SessionChangesData(
+      sessionId: sessionId,
+      totalFiles: totalFiles,
+      totalAdded: totalAdded,
+      totalRemoved: totalRemoved,
+      files: files,
+    );
+  }
+
+  factory SessionTurnChange.fromJson(Map<String, dynamic> json) {
+    final rawFiles = json['files'] as List<dynamic>? ?? const [];
+    return SessionTurnChange(
+      turnId: (json['turn_id'] as num?)?.toInt() ?? 0,
+      turnNumber: (json['turn_number'] as num?)?.toInt() ?? 1,
+      firstStepIndex: (json['first_step_index'] as num?)?.toInt() ?? 0,
+      lastStepIndex: (json['last_step_index'] as num?)?.toInt() ?? 0,
+      totalFiles: (json['total_files'] as num?)?.toInt() ?? 0,
+      totalAdded: (json['total_added'] as num?)?.toInt() ?? 0,
+      totalRemoved: (json['total_removed'] as num?)?.toInt() ?? 0,
+      files: rawFiles
+          .whereType<Map>()
+          .map((e) => SessionFileChange.fromJson(Map<String, dynamic>.from(e)))
+          .toList(),
+    );
+  }
+}
+
 class SessionChangesData {
   final String sessionId;
   final int totalFiles;
   final int totalAdded;
   final int totalRemoved;
   final List<SessionFileChange> files;
+  final List<SessionTurnChange> turns;
 
   const SessionChangesData({
     this.sessionId = '',
@@ -129,10 +179,12 @@ class SessionChangesData {
     this.totalAdded = 0,
     this.totalRemoved = 0,
     this.files = const [],
+    this.turns = const [],
   });
 
   factory SessionChangesData.fromJson(Map<String, dynamic> json) {
     final rawFiles = json['files'] as List<dynamic>? ?? const [];
+    final rawTurns = json['turns'] as List<dynamic>? ?? const [];
     return SessionChangesData(
       sessionId: json['session_id']?.toString() ?? '',
       totalFiles: (json['total_files'] as num?)?.toInt() ?? 0,
@@ -141,6 +193,10 @@ class SessionChangesData {
       files: rawFiles
           .whereType<Map>()
           .map((e) => SessionFileChange.fromJson(Map<String, dynamic>.from(e)))
+          .toList(),
+      turns: rawTurns
+          .whereType<Map>()
+          .map((e) => SessionTurnChange.fromJson(Map<String, dynamic>.from(e)))
           .toList(),
     );
   }

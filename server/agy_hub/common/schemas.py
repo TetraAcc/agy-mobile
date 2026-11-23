@@ -320,12 +320,24 @@ class SessionFileChangeSummary(BaseModel):
     hunks: list[SessionEditHunk] = Field(default_factory=list)
 
 
+class SessionTurnChangeSummary(BaseModel):
+    turn_id: int
+    turn_number: int = 1
+    first_step_index: int = 0
+    last_step_index: int = 0
+    total_files: int = 0
+    total_added: int = 0
+    total_removed: int = 0
+    files: list[SessionFileChangeSummary] = Field(default_factory=list)
+
+
 class SessionChangesResponse(BaseModel):
     session_id: str
     total_files: int = 0
     total_added: int = 0
     total_removed: int = 0
     files: list[SessionFileChangeSummary] = Field(default_factory=list)
+    turns: list[SessionTurnChangeSummary] = Field(default_factory=list)
 
 
 class GitRepoItem(BaseModel):

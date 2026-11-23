@@ -145,6 +145,7 @@ def create_agent_app(
         file_path: str | None = Query(default=None),
         scope: Literal["all", "latest_turn"] = Query(default="all"),
         step_index: int | None = Query(default=None),
+        turn_id: int | None = Query(default=None),
         _caller: GatewayCaller = Depends(require_gateway_signature),
     ) -> SessionChangesResponse:
         try:
@@ -159,6 +160,7 @@ def create_agent_app(
             file_path_filter=file_path,
             scope=scope,
             step_index_filter=step_index,
+            turn_id_filter=turn_id,
         )
 
     @app.get("/agent/sessions/{sid}/steps/{step_index}/tool-output", response_model=ToolCallOutputResponse)

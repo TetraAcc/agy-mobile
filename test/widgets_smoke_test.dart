@@ -240,6 +240,70 @@ void main() {
     expect(openedStep, 7);
   });
 
+  testWidgets('MessageCard 支持在每轮对话末尾内嵌展示本轮修改 Diff 卡片', (tester) async {
+    var turnReviewTapped = false;
+    String? turnFileTapped;
+    const msg = AgentMessage(
+      stepIndex: 4,
+      source: 'MODEL',
+      msgType: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      content: '已完成第一轮改写',
+      thinking: '',
+      toolCalls: [],
+      timestamp: '',
+    );
+    const turn = SessionTurnChange(
+      turnId: 1,
+      turnNumber: 1,
+      firstStepIndex: 2,
+      lastStepIndex: 2,
+      totalFiles: 1,
+      totalAdded: 6,
+      totalRemoved: 2,
+      files: [
+        SessionFileChange(
+          filePath: 'C:/novel/ch01.md',
+          fileName: 'ch01.md',
+          directory: 'C:/novel',
+          addedLines: 6,
+          removedLines: 2,
+          editCount: 1,
+          lastStepIndex: 2,
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MessageCard(
+            msg: msg,
+            isDark: true,
+            resolveMediaUrl: (p) => p,
+            onDownloadFile: (_, {filename}) {},
+            onOpenUrl: (_) {},
+            turnChanges: turn,
+            onOpenTurnReview: () => turnReviewTapped = true,
+            onOpenTurnFile: (f) => turnFileTapped = f.fileName,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('本轮修改'), findsOneWidget);
+    expect(find.text('1 file changed'), findsOneWidget);
+    await tester.tap(find.text('评审'));
+    await tester.pump();
+    expect(turnReviewTapped, true);
+
+    await tester.tap(find.text('1 file changed'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ch01.md'));
+    await tester.pump();
+    expect(turnFileTapped, 'ch01.md');
+  });
+
   testWidgets('SessionChangesBar 展示统计、展开文件清单并响应评审和文件点击', (tester) async {
     var reviewTapped = false;
     SessionFileChange? openedFile;
@@ -1077,9 +1141,10 @@ void main() {
                   initialSessionChanges: multiStepChanges,
                   initialFilePath: 'C:/novel/ch01.md',
                   initialStepIndex: 8,
+                  initialTurnId: 4,
                   initialScope: 'step',
-                  onLoadSessionChangesScoped: ({String scope = 'all', int? stepIndex}) async {
-                    requestedScopes.add('$scope:${stepIndex ?? "none"}');
+                  onLoadSessionChangesScoped: ({String scope = 'all', int? stepIndex, int? turnId}) async {
+                    requestedScopes.add('$scope:${stepIndex ?? "none"}:${turnId ?? "none"}');
                     return multiStepChanges;
                   },
                   onFillPrompt: (_) {},
@@ -1097,14 +1162,20 @@ void main() {
     expect(find.text('最新修改'), findsWidgets);
     // 默认单步模式下只展示 Step 8 的 hunk，不混入 Step 3 的 hunk
     expect(find.text('单步 #8'), findsOneWidget);
+    expect(find.text('本轮修改'), findsOneWidget);
     expect(find.textContaining('新段落B'), findsOneWidget);
     expect(find.textContaining('新段落A'), findsNothing);
-    expect(requestedScopes.first, 'all:8');
+    expect(requestedScopes.first, 'all:8:none');
+
+    // 点击「本轮修改」后按 turnId=4 请求
+    await tester.tap(find.text('本轮修改'));
+    await tester.pumpAndSettle();
+    expect(requestedScopes.last, 'all:none:4');
 
     // 点击「全部修改」后展示全部两个步骤的 hunk
     await tester.tap(find.text('全部修改'));
     await tester.pumpAndSettle();
-    expect(requestedScopes.last, 'all:none');
+    expect(requestedScopes.last, 'all:none:none');
     expect(find.textContaining('新段落A'), findsOneWidget);
     expect(find.textContaining('新段落B'), findsOneWidget);
   });

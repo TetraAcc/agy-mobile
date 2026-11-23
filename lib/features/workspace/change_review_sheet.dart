@@ -11,6 +11,7 @@ class ChangeReviewSheet extends StatefulWidget {
   final SessionChangesData? initialSessionChanges;
   final String? initialFilePath;
   final int? initialStepIndex;
+  final int? initialTurnId;
   final int initialTabIndex;
   final String initialScope;
   final String? preferredRootId;
@@ -18,7 +19,7 @@ class ChangeReviewSheet extends StatefulWidget {
   final List<ReviewCommentItem> initialComments;
   final ValueChanged<List<ReviewCommentItem>>? onCommentsChanged;
   final Future<SessionChangesData> Function()? onLoadSessionChanges;
-  final Future<SessionChangesData> Function({String scope, int? stepIndex})? onLoadSessionChangesScoped;
+  final Future<SessionChangesData> Function({String scope, int? stepIndex, int? turnId})? onLoadSessionChangesScoped;
   final Future<List<GitRepoItem>> Function()? onLoadGitRepos;
   final Future<GitDiffData> Function(String rootId, String subPath, String scope)? onLoadGitDiff;
   final ValueChanged<String> onFillPrompt;
@@ -29,6 +30,7 @@ class ChangeReviewSheet extends StatefulWidget {
     this.initialSessionChanges,
     this.initialFilePath,
     this.initialStepIndex,
+    this.initialTurnId,
     this.initialTabIndex = 0,
     this.initialScope = 'all',
     this.preferredRootId,
@@ -48,6 +50,7 @@ class ChangeReviewSheet extends StatefulWidget {
     SessionChangesData? initialSessionChanges,
     String? initialFilePath,
     int? initialStepIndex,
+    int? initialTurnId,
     int initialTabIndex = 0,
     String initialScope = 'all',
     String? preferredRootId,
@@ -55,7 +58,7 @@ class ChangeReviewSheet extends StatefulWidget {
     List<ReviewCommentItem> initialComments = const [],
     ValueChanged<List<ReviewCommentItem>>? onCommentsChanged,
     Future<SessionChangesData> Function()? onLoadSessionChanges,
-    Future<SessionChangesData> Function({String scope, int? stepIndex})? onLoadSessionChangesScoped,
+    Future<SessionChangesData> Function({String scope, int? stepIndex, int? turnId})? onLoadSessionChangesScoped,
     Future<List<GitRepoItem>> Function()? onLoadGitRepos,
     Future<GitDiffData> Function(String rootId, String subPath, String scope)? onLoadGitDiff,
     required ValueChanged<String> onFillPrompt,
@@ -74,6 +77,7 @@ class ChangeReviewSheet extends StatefulWidget {
         initialSessionChanges: initialSessionChanges,
         initialFilePath: initialFilePath,
         initialStepIndex: initialStepIndex,
+        initialTurnId: initialTurnId,
         initialTabIndex: initialTabIndex,
         initialScope: initialScope,
         preferredRootId: preferredRootId,
@@ -173,6 +177,8 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
       if (scopedLoader != null) {
         if (_activeScope == 'step' && widget.initialStepIndex != null) {
           data = await scopedLoader(scope: 'all', stepIndex: widget.initialStepIndex);
+        } else if (_activeScope == 'turn' && widget.initialTurnId != null) {
+          data = await scopedLoader(scope: 'all', turnId: widget.initialTurnId);
         } else if (_activeScope == 'latest_turn') {
           data = await scopedLoader(scope: 'latest_turn');
         } else {
@@ -466,7 +472,8 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
   Widget _buildScopeSelectorRow(bool isDark, Color primary, Color borderColor) {
     final hasLoader = widget.onLoadSessionChangesScoped != null || widget.onLoadSessionChanges != null;
     final hasStep = widget.initialStepIndex != null;
-    if (!hasLoader && !hasStep && widget.initialScope == 'all') {
+    final hasTurn = widget.initialTurnId != null;
+    if (!hasLoader && !hasStep && !hasTurn && widget.initialScope == 'all') {
       return const SizedBox.shrink();
     }
     return Padding(
@@ -485,6 +492,16 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
             _buildScopeChip(
               label: '单步 #${widget.initialStepIndex}',
               scopeValue: 'step',
+              isDark: isDark,
+              primary: primary,
+              borderColor: borderColor,
+            ),
+            const SizedBox(width: 6),
+          ],
+          if (hasTurn) ...[
+            _buildScopeChip(
+              label: '本轮修改',
+              scopeValue: 'turn',
               isDark: isDark,
               primary: primary,
               borderColor: borderColor,

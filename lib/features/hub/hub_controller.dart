@@ -1160,6 +1160,7 @@ class HubController extends Notifier<HubState> {
     String? filePath,
     String scope = 'all',
     int? stepIndex,
+    int? turnId,
   }) async {
     final nodeId = state.selectedNodeId;
     final sid = state.activeSessionId;
@@ -1173,6 +1174,7 @@ class HubController extends Notifier<HubState> {
       filePath: filePath,
       scope: scope,
       stepIndex: stepIndex,
+      turnId: turnId,
     );
   }
 

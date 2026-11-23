@@ -243,6 +243,7 @@ class FakeApiClient extends ApiClient {
     String? filePath,
     String scope = 'all',
     int? stepIndex,
+    int? turnId,
   }) async {
     if (nodeId == 'win' && sessionId == 's1') {
       return const SessionChangesData(

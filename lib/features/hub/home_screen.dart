@@ -483,6 +483,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   void _openChangeReview({
     String? initialFilePath,
     int? initialStepIndex,
+    int? initialTurnId,
+    SessionChangesData? initialSessionChangesOverride,
     int initialTabIndex = 0,
     String initialScope = 'all',
   }) {
@@ -492,9 +494,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
     ChangeReviewSheet.show(
       context,
-      initialSessionChanges: initialScope == 'latest_turn' ? hubState.sessionChanges : null,
+      initialSessionChanges: initialSessionChangesOverride ??
+          (initialScope == 'latest_turn' ? hubState.sessionChanges : null),
       initialFilePath: initialFilePath,
       initialStepIndex: initialStepIndex,
+      initialTurnId: initialTurnId,
       initialTabIndex: initialTabIndex,
       initialScope: initialScope,
       preferredRootId: hubState.activeRootId,
@@ -509,9 +513,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       },
       onLoadSessionChangesScoped: sid.isEmpty
           ? null
-          : ({String scope = 'all', int? stepIndex}) => hubNotifier.fetchSessionChangesDetail(
+          : ({String scope = 'all', int? stepIndex, int? turnId}) =>
+              hubNotifier.fetchSessionChangesDetail(
                 scope: scope,
                 stepIndex: stepIndex,
+                turnId: turnId,
               ),
       onLoadGitRepos: () => hubNotifier.fetchGitRepos(),
       onLoadGitDiff: (rid, sub, scope) => hubNotifier.fetchGitDiff(rootId: rid, subPath: sub, scope: scope),
@@ -524,6 +530,83 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         return err;
       },
     );
+  }
+
+  Map<int, SessionTurnChange> _buildTurnChangesByMessageIndex(
+    List<AgentMessage> messages,
+    List<SessionTurnChange> turns,
+  ) {
+    if (messages.isEmpty || turns.isEmpty) {
+      return const <int, SessionTurnChange>{};
+    }
+
+    bool isStandaloneVisibleAi(AgentMessage m) {
+      if (m.content.trim().isNotEmpty) return true;
+      if (m.status == 'WAITING_APPROVAL' || m.status == 'WAITING_INPUT') return true;
+      return m.toolCalls.any((t) => t.name == 'ask_question');
+    }
+
+    final result = <int, SessionTurnChange>{};
+    final usedTurnIds = <int>{};
+    var i = 0;
+    while (i < messages.length) {
+      if (messages[i].isUser) {
+        i++;
+        continue;
+      }
+      final startIdx = i;
+      while (i + 1 < messages.length && !messages[i + 1].isUser) {
+        i++;
+      }
+      final endIdx = i;
+
+      var targetMsgIdx = endIdx;
+      for (var k = endIdx; k >= startIdx; k--) {
+        if (isStandaloneVisibleAi(messages[k])) {
+          targetMsgIdx = k;
+          break;
+        }
+      }
+
+      final prevUserStep = (startIdx > 0 && messages[startIdx - 1].isUser && messages[startIdx - 1].stepIndex > 0)
+          ? messages[startIdx - 1].stepIndex
+          : null;
+      final nextUserStep = (endIdx + 1 < messages.length && messages[endIdx + 1].isUser && messages[endIdx + 1].stepIndex > 0)
+          ? messages[endIdx + 1].stepIndex
+          : null;
+
+      SessionTurnChange? matched;
+      if (prevUserStep != null) {
+        for (final t in turns) {
+          if (t.turnId == prevUserStep && !usedTurnIds.contains(t.turnId)) {
+            matched = t;
+            break;
+          }
+        }
+      }
+      if (matched == null) {
+        final firstAiStep = messages[startIdx].stepIndex;
+        final lastAiStep = messages[endIdx].stepIndex;
+        for (final t in turns) {
+          if (usedTurnIds.contains(t.turnId)) continue;
+          final afterPrev = prevUserStep == null || t.firstStepIndex > prevUserStep;
+          final beforeNext = nextUserStep == null
+              ? t.firstStepIndex <= lastAiStep
+              : t.lastStepIndex < nextUserStep;
+          if (afterPrev && beforeNext && t.lastStepIndex >= firstAiStep) {
+            matched = t;
+            break;
+          }
+        }
+      }
+
+      if (matched != null && matched.totalFiles > 0 && matched.files.isNotEmpty) {
+        usedTurnIds.add(matched.turnId);
+        result[targetMsgIdx] = matched;
+      }
+      i++;
+    }
+    return result;
   }
 
   String _formatBytes(int bytes) {
@@ -978,8 +1061,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         : allMessages;
     final planSteps = hubState.activePlanSteps;
     final activeFocus = hubState.activeFocusText;
-    final hasThinking = hubState.isActiveSessionRunning && !(_isChatSearching && query.isNotEmpty);
-    final hasLoadMore = hubState.hasMoreMessages && !(_isChatSearching && query.isNotEmpty);
+    final isFilteringMessages = _isChatSearching && query.isNotEmpty;
+    final turnChangesByMsgIdx = isFilteringMessages
+        ? const <int, SessionTurnChange>{}
+        : _buildTurnChangesByMessageIndex(
+            messages,
+            hubState.sessionChanges.turns,
+          );
+    final hasThinking = hubState.isActiveSessionRunning && !isFilteringMessages;
+    final hasLoadMore = hubState.hasMoreMessages && !isFilteringMessages;
     final totalItems = messages.length + (hasThinking ? 1 : 0) + (hasLoadMore ? 1 : 0);
 
     return PopScope(
@@ -1252,7 +1342,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                 } else {
                                   final shiftedIdx = hasThinking ? idx - 1 : idx;
                                   if (shiftedIdx < messages.length) {
-                                    final msg = messages[messages.length - 1 - shiftedIdx];
+                                    final msgIdx = messages.length - 1 - shiftedIdx;
+                                    final msg = messages[msgIdx];
+                                    final msgTurnChanges = turnChangesByMsgIdx[msgIdx];
                                     rowChild = MessageCard(
                                       key: ValueKey(msg.messageKey),
                                       msg: msg,
@@ -1269,6 +1361,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                       ),
                                       onOpenToolDetail: _openToolDetail,
                                       onSubmitQuickReply: _sendPromptDirect,
+                                      turnChanges: msgTurnChanges,
+                                      onOpenTurnReview: msgTurnChanges == null
+                                          ? null
+                                          : () => _openChangeReview(
+                                                initialTurnId: msgTurnChanges.turnId,
+                                                initialSessionChangesOverride: msgTurnChanges.toChangesData(
+                                                  sessionId: hubState.activeSessionId,
+                                                ),
+                                                initialScope: 'turn',
+                                              ),
+                                      onOpenTurnFile: msgTurnChanges == null
+                                          ? null
+                                          : (f) => _openChangeReview(
+                                                initialFilePath: f.filePath,
+                                                initialTurnId: msgTurnChanges.turnId,
+                                                initialSessionChangesOverride: msgTurnChanges.toChangesData(
+                                                  sessionId: hubState.activeSessionId,
+                                                ),
+                                                initialScope: 'turn',
+                                              ),
                                     );
                                   } else {
                                     rowChild = Padding(

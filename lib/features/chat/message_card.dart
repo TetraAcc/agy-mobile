@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../core/utils/file_utils.dart';
 import '../../models/models.dart';
+import '../workspace/session_changes_bar.dart';
 import 'markdown_message_body.dart';
 
 class MessageCard extends StatelessWidget {
@@ -16,6 +17,9 @@ class MessageCard extends StatelessWidget {
   final void Function(String filePath, int stepIndex)? onOpenEditDiff;
   final void Function(int stepIndex, ToolCallItem tool)? onOpenToolDetail;
   final Future<String?> Function(String replyText)? onSubmitQuickReply;
+  final SessionTurnChange? turnChanges;
+  final VoidCallback? onOpenTurnReview;
+  final ValueChanged<SessionFileChange>? onOpenTurnFile;
 
   const MessageCard({
     super.key,
@@ -29,6 +33,9 @@ class MessageCard extends StatelessWidget {
     this.onOpenEditDiff,
     this.onOpenToolDetail,
     this.onSubmitQuickReply,
+    this.turnChanges,
+    this.onOpenTurnReview,
+    this.onOpenTurnFile,
   });
 
   List<AskQuestionItem> get _askQuestions {
@@ -90,8 +97,10 @@ class MessageCard extends StatelessWidget {
     }
 
     final askQuestions = _askQuestions;
+    final hasTurnChanges = turnChanges != null && turnChanges!.totalFiles > 0 && turnChanges!.files.isNotEmpty;
     if (msg.content.trim().isEmpty &&
         askQuestions.isEmpty &&
+        !hasTurnChanges &&
         msg.status != 'WAITING_APPROVAL' &&
         msg.status != 'WAITING_INPUT') {
       return const SizedBox.shrink();
@@ -124,6 +133,17 @@ class MessageCard extends StatelessWidget {
               questions: askQuestions,
               isDark: isDark,
               onSubmit: onSubmitQuickReply,
+            ),
+          if (hasTurnChanges)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: SessionChangesBar(
+                changes: turnChanges!.toChangesData(),
+                isDark: isDark,
+                badgeText: '本轮修改',
+                onOpenReview: () => onOpenTurnReview?.call(),
+                onOpenFile: (f) => onOpenTurnFile?.call(f),
+              ),
             ),
           if (msg.content.trim().isNotEmpty)
             Padding(

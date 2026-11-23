@@ -585,6 +585,7 @@ class ApiClient {
     String? filePath,
     String scope = 'all',
     int? stepIndex,
+    int? turnId,
   }) async {
     return _exec(
       () => _dio.get<dynamic>(
@@ -594,6 +595,7 @@ class ApiClient {
           if (filePath != null && filePath.isNotEmpty) 'file_path': filePath,
           if (scope != 'all') 'scope': scope,
           if (stepIndex != null) 'step_index': stepIndex,
+          if (turnId != null) 'turn_id': turnId,
         },
       ),
       (data) => SessionChangesData.fromJson(Map<String, dynamic>.from(data as Map)),

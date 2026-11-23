@@ -204,6 +204,17 @@ def test_agent_changes_and_git_repos_and_head_diff_endpoints(tmp_agent_env: dict
         ch_all = client.get(f"{ch_path}?include_hunks=true&scope=all", headers=_signed_headers("GET", ch_path))
         assert ch_all.status_code == 200
         assert ch_all.json()["total_files"] == 2
+        turns = ch_all.json()["turns"]
+        assert len(turns) == 2
+        assert turns[0]["turn_id"] == 1
+        assert turns[0]["files"][0]["file_name"] == "ch02.md"
+        assert turns[1]["turn_id"] == 4
+        assert turns[1]["files"][0]["file_name"] == "notes.md"
+
+        ch_turn1 = client.get(f"{ch_path}?include_hunks=true&turn_id=1", headers=_signed_headers("GET", ch_path))
+        assert ch_turn1.status_code == 200
+        assert ch_turn1.json()["total_files"] == 1
+        assert ch_turn1.json()["files"][0]["file_name"] == "ch02.md"
 
         ch_latest = client.get(f"{ch_path}?include_hunks=true&scope=latest_turn", headers=_signed_headers("GET", ch_path))
         assert ch_latest.status_code == 200
