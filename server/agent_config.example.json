@@ -1,0 +1,11 @@
+{
+  "platform": "auto",
+  "host": "127.0.0.1",
+  "port": 8765,
+  "internal_secret": "REPLACE_WITH_32_PLUS_CHAR_INTERNAL_SECRET",
+  "roots": {
+    "scratch": "~/.gemini/antigravity/scratch"
+  },
+  "deck_permission_mode": "auto",
+  "max_upload_bytes": 52428800
+}

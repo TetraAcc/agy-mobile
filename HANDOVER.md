@@ -1,144 +1,112 @@
-# AGY Remote Hub (v1.3.7+12) 技术架构与交接开发手册
+# AGY Remote Hub (v2.0.0+20) 技术架构与交接开发手册
 
-> **版本标识**：`v1.3.7+12`  
+> **版本标识**：`v2.0.0+20`  
 > **交接日期**：2026-11-23  
-> **适用对象**：接手本项目维护、新功能演进的前端与后端研发人员  
+> **适用对象**：接手本项目维护、扩展客户端或新增受控节点的研发人员
 
 ---
 
-## 1. 项目概述与定位
+## 1. 架构总览（v2.0 重构核心变更）
 
-`AGY Remote Hub` 是为 **Google Antigravity (AGY)** 量身打造的跨平台多节点远程协同控制中心。它打破了桌面端 IDE 的物理限制，支持在手机浏览器、平板、Steam Deck 及任意 Web 终端上实时查看和控制分布在不同主机（Windows 工作站、Steam Deck 便携节点等）上的 AGY AI 编程会话。
+v2.0 彻底废弃了 v1.x 的单文件混合服务端（`server_core.py`）、URL 静态明文 Token、全局单会话单例广播、VBS/Watchdog 脚本及 Flutter 伪跨端桥接，拆分为三层正交架构：
 
-### 核心功能指标：
-- **双端多节点统一路由**：支持 Steam Deck 与 Windows PC 节点自由热切换，一键穿透内网。
-- **动态账号密码鉴权**：支持基于 SHA256 哈希认证、高熵动态会话（Session Token）及多租户节点权限隔离。
-- **官方会话树像素级对齐**：直连 AGY 核心 SQLite 库与 `transcript.jsonl`，项目分组、盘符解析及排序 100% 还原官方 GUI。
-- **精准运行态（Running State）保持**：权威判定会话思考/执行状态，页面刷新（F5）与节点重连状态持久不丢失。
-- **全流程额度与模型监控**：集成官方 CLI 实时监控 Gemini / Claude 等模型配额。
-
----
-
-## 2. 系统拓扑与网络架构
-
-```mermaid
-graph TD
-    Client["客户端 (Web / Mobile / Tablet)<br/>HTTPS / WSS"] -->|通过 Cloudflare Tunnel| DeckGW["Steam Deck 网关 (Linux/Edge)<br/>Port: 8768 (aiohttp)"]
-    
-    subgraph "集群内部通信 (高熵 Internal Secret 签名)"
-        DeckGW -->|反代 / 路由| LocalDeck["Deck 本地引擎 (Port: 8768)<br/>~/.gemini/antigravity-cli"]
-        DeckGW -->|内网 / Tailscale 直连 (192.168.0.22 / 100.x)| WinNode["Windows PC 节点 (Port: 8765)<br/>~/.gemini/antigravity"]
-    end
-
-    WinNode --> WinDB[("Antigravity 核心底座<br/>state.vscdb / transcript.jsonl")]
-    LocalDeck --> DeckDB[("AGY CLI 状态底座<br/>state.vscdb / transcript.jsonl")]
-```
-
-- **统一访问入口**：客户端无论访问公网（如 `https://agy.tetraacc.me`）还是局域网，统一经由 Steam Deck 边缘网关汇聚。
-- **内部转发机制**：网关依据当前连接请求携带的 `node=windows` 或 `node=deck` 查询参数，自动代理双向 WebSocket 消息流与文件/图片媒体资源。
-
----
-
-## 3. 核心机制实现详解
-
-### 3.1 账号密码认证与多租户权限隔离
-- **废除静态 Token**：系统已全面移除 URL 明文静态 token。采用 `/api/login` 接口进行账号密码登录，成功后颁发 32 字节高熵 Session Token。
-- **凭据存储规范**：密码在 `server/server_config.json` 中以 SHA256 加盐哈希存储，活跃 Session 缓存于 `server/sessions.json`，均被 `.gitignore` 严格保护。
-- **多租户隔离**：
-  - 用户配置中的 `allowed_nodes` 严格限制当前租户可见并可操作的物理节点。
-  - 前端未登录时不展示敏感账号名；登录态过期或未鉴权请求一律重定向至登录卡片。
-
-### 3.2 官方会话树（Session Tree）精准对齐算法
-- **源码位置**：`server/server_core.py` 中的 `get_grouped_sessions()` 与 `server/server_common.py` 中的 `parse_project_name_and_path()`。
-- **Windows 盘符根目录保护**：对于 `Z:\` 等独立挂载盘符，算法自动识别避免被 `basename` 截断为空，单独作为根节点 `Z:` 展示。
-- **数据库映射（`conversations_fts`）**：针对历史无工作区绑定但实际属于特定工程的会话，从底座 SQLite `conversations_fts` 与 `project_id` 构建映射字典精确回溯，确保“课件翻译”等工程分类与桌面端官方 GUI 100% 保持一致。
-- **时间排序机制**：各分组工程按内部最新会话的更新时间降序排列；会话列表按最新修改时间降序排列。
-
-### 3.3 运行态（Running State）权威判定与刷新持久化
-- **判定原理**：后端 `is_session_running(sid)` 方法结合双重数据源权威判断：
-  1. 查询底层 SQLite 中的全局标记 `CASCADE_RUN_STATUS_RUNNING` 与 `not_fully_idle`；
-  2. 读取目标 `transcript.jsonl` 文件尾部最新 Step 是否为非完成态。
-  - **避坑提示**：彻底废弃了“日志超过 3 秒无更新即判停”的脆弱逻辑，彻底解决长思考模型或网络波动时的状态闪退。
-- **前端状态持久化**：
-  - `lib/main.dart` 在 `_handleSessionHistory` 中，当收到后端推送或最后一条消息处于未完成状态时，严格将会话追加至 `_runningSessionIds` 集合。
-  - 无论用户如何 F5 刷新网页或重启浏览器，抽屉中的红色 `[运行中]` 徽章与思考状态指示器均能准确还原。
-
----
-
-## 4. 项目源码结构
-
-```
-agy_mobile_app/
-├── lib/                             # Flutter 前端核心源码
-│   ├── main.dart                    # 全局状态管理、双节点网关 WebSocket 通信、鉴权状态机
-│   ├── widgets/
-│   │   ├── quota_drawer.dart        # 侧边栏抽屉：项目树/会话树分组、多节点切换、额度与主题
-│   │   └── chat_message_widget.dart # 聊天消息体（Markdown、思维链折叠、工具调用预览）
-│   └── models/                      # 数据模型定义
-├── server/                          # 后端核心服务（Python 异步单真实源）
-│   ├── server.py                    # 统一多平台入口启动脚本（自动探测平台）
-│   ├── server_core.py               # 单真实源服务核心（网关反代、动态鉴权、会话树聚合）
-│   ├── platform_adapter.py          # 平台适配抽象（WindowsAdapter / DeckAdapter）
-│   ├── server_common.py             # 共享工具类（盘符解析、Transcript清洗、路径校验）
-│   ├── server_config.example.json   # 平台节点与用户账号配置示例模板
-│   ├── watchdog_windows.py          # Windows 端进程看门狗守护
-│   ├── start_windows_bridge.vbs     # Windows 静默后台自启脚本
-│   └── stop_windows_bridge.bat      # Windows 优雅停止脚本
-├── web/                             # Flutter Web 构建产物部署目录
-├── pubspec.yaml                     # 项目依赖与版本配置（保持 v1.3.7+12）
-└── HANDOVER.md                      # 本技术架构与交接手册
+```text
+Flutter 三端客户端 (Web / Android / iOS)
+   │  HTTPS REST (CRUD / 上传 / 下载 / 文件 / Diff / 配额)
+   │  WSS /ws/v2/nodes/{node_id}/events (仅会话级实时增量事件流)
+   ▼
+Edge Gateway (server/agy_hub/gateway/, 默认端口 8768)
+   ├── hub.db (SQLite WAL): scrypt 多用户、Refresh 轮换会话、登录防爆破、节点 RBAC
+   ├── NodeRegistryManager: 异步 /internal/health 探活，按租户过滤节点视图
+   ├── 统一路由反代器: /api/v2/nodes/{node_id}/* 与 /ws/v2/nodes/{node_id}/events
+   │   (校验权限后注入 HMAC-SHA256 签名头转发，剥离客户端 Cookie/Authorization；内置高延迟超时/GET 重试与 Content-Length 透传)
+   └── 静态前端托管: 自动定位 ../build/web，HTML/bootstrap/FontManifest 禁缓存，MaterialIcons 路径版本化防陈旧，wasm/js 强缓存
+   │
+   ├──► Node Agent: Deck 本地 (127.0.0.1:8769)
+   └──► Node Agent: Windows / 远程主机 (内网 / Tailscale, 默认 8765)
+            ├── SessionEventHub: Per-Connection 订阅制 + 无持久化句柄字节偏移追踪
+            ├── RootRegistry: 受控 root_id 路径沙箱 + 敏感黑名单 + 二进制 415 嗅探
+            └── EngineProvider:
+                  • 官方 conversation_summaries.db 严格只读 (?mode=ro)
+                  • WindowsEngineProvider: 异步 Connect-RPC 发消息/打断/配额
+                  • DeckEngineProvider: 托管子进程组 (PGID) + systemd-run Keyring 配额
 ```
 
 ---
 
-## 5. 部署与运维指南
+## 2. 关键安全与数据机制
 
-### 5.1 Windows PC 节点
-1. **环境依赖**：Python 3.10+，安装依赖 `aiohttp`, `websockets`。
-2. **配置文件**：
-   ```bash
-   cp server/server_config.example.json server/server_config.json
-   # 修改 windows 部分的端口、允许的域名及账号密码哈希
-   ```
-3. **日常启动与停止**：
-   - 调试启动：`python -u server/server.py`
-   - 后台静默守护启动：双击运行 `server/start_windows_bridge.vbs`（由 `watchdog_windows.py` 监控存活并自动重启）
-   - 停止服务：运行 `server/stop_windows_bridge.bat`
+### 2.1 多用户认证与双通道鉴权
+- **密码存储**：`server/agy_hub/common/security.py` 使用 Python 标准库 `hashlib.scrypt`（每用户 16B 随机盐）和 `hmac.compare_digest` 校验；拒绝明文或无盐 SHA256。
+- **防爆破限流**：`hub.db` 表 `login_attempts` 按 `ip:username` 记录失败次数，连续失败达到阈值（默认 5 次）返回 HTTP 429 并锁定（默认 900 秒）。
+- **令牌双通道**：
+  - **Web 端**：网关签发 `HttpOnly; SameSite=Lax` Cookie（`agy_access` 作用域 `/`；`agy_refresh` 作用域 `/api/v2/auth`），前端使用 `BrowserHttpClientAdapter(withCredentials: true)` 自动携 Cookie，前端 JS 与存储零接触凭证。
+  - **Android / iOS 原生端**：`Refresh Token` 存入系统安全存储（`FlutterSecureStorage`），请求通过 `Authorization: Bearer <access_token>` 鉴权，遇到 401 时由 `ApiClient` 互斥拦截器自动调用 `/api/v2/auth/refresh` 轮换并重放原请求。
+  - **复用检测**：已撤销的 `Refresh Token` 若再次被提交刷新，网关立即撤销该用户全部活跃会话。
+- **内部通信与文件下载**：
+  - 网关向节点发出的全部 HTTP/WS 请求附带 `X-Hub-Timestamp`、`X-Hub-Nonce`、`X-Hub-User`、`X-Hub-Permissions`、`X-Hub-Signature`（允许 60s 时间窗防重放）。
+  - 外部浏览器下载或打开原图使用 `POST /api/v2/nodes/{node_id}/files/ticket` 签发 **60 秒有效、绑定单节点与单文件** 的签名 Ticket。
+- **配置强制校验**：`GatewayConfig` 与 `AgentConfig` 在加载时校验 `signing_secret` / `internal_secret` 长度至少 24 字符且不含占位符，`allowed_origins` 严禁配置通配符 `*`。
 
-### 5.2 Steam Deck / Linux 网关节点
-1. **服务配置**：部署为 systemd 用户态服务。
-   - 服务文件位置：`~/.config/systemd/user/agy-remote.service`
-2. **常用管理命令**：
-   ```bash
-   # 重启网关服务
-   systemctl --user restart agy-remote.service
-   # 查看实时运行日志
-   journalctl --user -u agy-remote.service -f -n 50
-   # 查看服务状态
-   systemctl --user status agy-remote.service
-   ```
-3. **公网穿透**：运行 `cloudflared tunnel run <TUNNEL_NAME>` 绑定域名 `agy.tetraacc.me`。
+### 2.2 官方数据库与进程边界
+- **只读约定**：`BaseEngineProvider._connect_ro()` 以 `?mode=ro` 只读打开 `conversation_summaries.db`；磁盘已删的孤儿会话仅在内存中过滤。归档删除（`DELETE /agent/sessions/{sid}`）写入独立 `archive_file` 清单，不会向官方 SQLite 主库写 `DELETE`。
+- **子代理与工程分组**：过滤 `parent_conversation_id`、`nesting_depth`、`agent_name`，结合 `conversations_fts`、`project_id` 与 `workspace_uris`（兼容 `Z:\` 等 Windows 盘符根）对齐桌面端分组与排序。
+- **真实打断**：
+  - Windows：`WindowsEngineProvider.stop_session()` 异步调用 `CancelCascadeInvocation(killBackgroundTasks=true)` 与 `ForceStopCascadeTree`。
+  - Deck：`DeckEngineProvider.stop_session()` 对托管子进程组发送 `SIGTERM`（3 秒超时升 `SIGKILL`）。
 
-### 5.3 前端编译与热同步流程
-当修改了 `lib/` 源码后，需重新编译 Web 静态产物并同步：
+### 2.3 WebSocket 实时事件契约
+- 连接端点：`WSS /ws/v2/nodes/{node_id}/events`
+- 客户端控制帧：`subscribe(session_id, since_step?)`、`unsubscribe(session_id)`、`ping`
+- 服务端推送帧：`step_upsert`、`session_status`、`session_tree_changed`、`node_status`、`pong`、`error`
+- `SessionEventHub` 每次轮询仅打开检查字节偏移并立即关闭句柄，且仅读取完整 `\n` 结尾的行，消除跨会话串屏、半行 JSON 报错与 `NoneType.readline` 崩溃。
+
+### 2.4 新增桌面级对等接口与高延迟反代加固
+- **代码审查、产物与轻量编辑**：新增 `/agent/sessions/{sid}/changes`、`/agent/sessions/{sid}/artifacts`、`/agent/sessions/{sid}/steps/{step_index}/tool-output`、`/agent/git/repos` 及 `PUT /agent/files/content`（校验受控沙箱与文件 `mtime`，冲突返回 409）。
+- **持久化消息队列**：新增 `/agent/sessions/{sid}/queue*`（支持 `GET`/`POST`/`PUT`/`DELETE` 与 `send-now` 插队发送），支持每会话 `queue`（排队入列）与 `immediate`（立即发送）双模式。
+- **跨区高延迟代理与缓存控制**：Gateway 对 HTTP 代理采用长连接读超时、针对 `RemoteProtocolError`/`ConnectTimeout` 的 GET 单次重试以及非压缩响应 `Content-Length` 透传；静态资源托管对 `FontManifest.json` 禁用缓存并将 `MaterialIcons-Regular.otf` 动态改写为带 SHA-256 摘要的 `assets/fonts/v_<sha256[:12]>/MaterialIcons-Regular.otf` 路径，防止 CDN/浏览器命中旧版树摇字体文件。
+
+---
+
+## 3. 前端关键架构与预置模型
+
+- **核心层 (`lib/core/`)**：`ServerConfig`、`TokenStore`、`ApiClient`、`NodeEventSocket`、`PlatformBridge`（基于 `file_picker`、`url_launcher`、`package:web`）、`AppColors`、`FileUtils`。
+- **模型层 (`lib/models/`)**：全部对齐后端 Pydantic snake_case 契约（如 `QuotaBucket.remaining_fraction`、`ToolCallItem.args`、`SessionItem.is_pinned` 与 `root_id`）。
+- **预置模型矩阵 (`lib/models/official_model.dart`)**：
+  - `gemini-3.8-flash-high` / `gemini-3.8-flash-medium` / `gemini-3.8-flash-low`
+  - `claude-sonnet-4-6` / `claude-opus-4-6-thinking`
+  - `gpt-oss-120b-medium` / `gemini-2.5-pro`
+- **交互简化与桌面级工作流**：已移除基于 `Timer` 模拟的假打字机效果，`MarkdownMessageBody` 直接渲染高亮代码块与带认证头的代理图片；新增 `SessionChangesBar` / `ChangeReviewSheet`（CJK 行内对比与 Comment 审查）、`SessionStepsBar`、`SessionArtifactsSheet`、`ToolDetailSheet`、`SessionQueueBar`、`ComposerPrefs`、通用设置弹窗，以及支持明暗双模式自适应的 Catppuccin / Nord 主题调色板。
+
+---
+
+## 4. 运维与账号管理常用命令
+
+### 4.1 账号与权限治理 (`server/server.py user`)
 ```bash
-# 1. 编译 Web 生产版本
-flutter build web --release
+# 新增成员（可写但禁止删除会话）
+python server.py user add --db hub.db --username alice --password "StrongPassword!1" --nodes deck --default-node deck
 
-# 2. 同步至 Windows 本地服务端 web 目录
-Copy-Item -Recurse -Force build/web/* server/web/
+# 赋予/收回节点权限
+python server.py user grant --db hub.db --username alice --node windows --allow-delete
+python server.py user revoke --db hub.db --username alice --node windows
 
-# 3. 同步至 Steam Deck 节点
-scp -r build/web/* deck@<deck-ip>:~/agy_remote/web/
-
-# 4. 重启 Deck 服务以确保静态文件缓存刷新
-ssh deck@<deck-ip> "systemctl --user restart agy-remote.service"
+# 踢出用户全部设备会话 / 禁用 / 重置密码 / 查看列表
+python server.py user kick --db hub.db --username alice
+python server.py user disable --db hub.db --username alice
+python server.py user passwd --db hub.db --username alice --password "NewStrongPassword!2"
+python server.py user list --db hub.db
 ```
+
+### 4.2 部署与托管
+- **Windows**：先按 `agent_config.example.json` 建好 `server/agent_config.json`，运行 `powershell -ExecutionPolicy Bypass -File server\deploy\install_windows_task.ps1` 注册计划任务（自带崩溃重启与 `PYTHONIOENCODING=utf-8`；脚本默认绑定 `127.0.0.1`，如需向远端 Gateway 暴露请显式传入 `-BindHost <Tailscale_IP>`）。
+- **Steam Deck / Linux**：将 `server/deploy/agy-agent-deck.service` 与 `server/deploy/agy-gateway.service` 复制到 `~/.config/systemd/user/` 并启用 `systemctl --user enable --now agy-agent-deck.service agy-gateway.service`。
+- **Web 前端更新**：在项目根目录执行 `flutter build web --release` 后，直接把 `build/web/` 同步至网关部署目录或由同机 Gateway 直接加载 `../build/web`。
 
 ---
 
-## 6. 接手人员后续建议
+## 5. 接手人员后续演进建议
 
-1. **多模型参数配置面板**：当前新建会话已支持 Gemini 2.5 Flash / Gemini 2.5 Pro / Claude 3.7 Sonnet 等预置模型，可进一步在新建弹窗中扩充 Thinking Budget 等微调控制参数。
-2. **断网离线缓存优化**：对于移动端低信号场景，可引入本地 IndexedDB/SQLite 对最近 10 条会话历史进行离线预读渲染。
-3. **安全提醒**：切勿将包含真实密码和节点内外网 IP 的 `server/server_config.json` 提交到公开 Git 仓库中。
+1. **Android / iOS 正式签名与发布配置**：当前已按真三端插件完成接口适配与单元测试验证，正式打包 APK/IPA 前需在目标构建机配置好 Android SDK / Xcode 及正式应用签名证书（并替换 `android/app/build.gradle.kts` 中的 debug 签名配置）。
+2. **线上代理反向 HTTPS 强制校验**：对外网提供服务时务必保持 `gateway_config.json` 中 `cookie_secure: true`，并通过 Cloudflare Tunnel / Caddy / Nginx 终止 TLS。
+3. **管理员 Web 控制台**：后端已提供 `/api/v2/admin/users` 全套管理接口，后续如有需要可直接在 Flutter 侧边栏追加管理员用户管理弹窗。

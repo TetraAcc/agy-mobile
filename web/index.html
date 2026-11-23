@@ -3,117 +3,19 @@
 <head>
   <base href="$FLUTTER_BASE_HREF">
   <meta charset="UTF-8">
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <meta http-equiv="Pragma" content="no-cache">
-  <meta http-equiv="Expires" content="0">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="description" content="AGY Remote Hub">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="agy_remote">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="AGY Remote">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
-  <link rel="icon" type="image/png" href="favicon.png"/>
-  <title>AGY Remote</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <title>AGY Remote Hub</title>
   <link rel="manifest" href="manifest.json">
-  <script>
-    // 强制注销已缓存的旧版 Service Worker，防止浏览器锁死旧版 UI
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistrations().then(function(registrations) {
-        for (var reg of registrations) {
-          reg.unregister();
-        }
-      });
-    }
-    if ('caches' in window) {
-      caches.keys().then(function(names) {
-        for (var name of names) caches.delete(name);
-      });
-    }
-  </script>
-  <script>
-    window.agyBridge = {
-      onFileReady: null,
-      init: function(callback) {
-        this.onFileReady = callback;
-        var self = this;
-
-        // 全局粘贴事件捕获 (Ctrl+V)
-        window.addEventListener('paste', function(e) {
-          if (!e.clipboardData || !e.clipboardData.items) return;
-          for (var i = 0; i < e.clipboardData.items.length; i++) {
-            var item = e.clipboardData.items[i];
-            if (item.type.indexOf('image') !== -1) {
-              var file = item.getAsFile();
-              if (file) {
-                self.readFile(file, true);
-                e.preventDefault();
-                break;
-              }
-            }
-          }
-        });
-
-        // 拖拽文件捕获
-        window.addEventListener('dragover', function(e) {
-          e.preventDefault();
-        });
-        window.addEventListener('drop', function(e) {
-          e.preventDefault();
-          if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-            var file = e.dataTransfer.files[0];
-            var isImg = file.type.indexOf('image') !== -1;
-            self.readFile(file, isImg);
-          }
-        });
-      },
-
-      pickFile: function(accept, isImage) {
-        var self = this;
-        var input = document.createElement('input');
-        input.type = 'file';
-        if (accept) input.accept = accept;
-        input.onchange = function(e) {
-          if (e.target.files && e.target.files.length > 0) {
-            var file = e.target.files[0];
-            var isImg = isImage || (file.type.indexOf('image') !== -1);
-            self.readFile(file, isImg);
-          }
-        };
-        input.click();
-      },
-
-      readFile: function(file, isImg) {
-        var self = this;
-        var reader = new FileReader();
-        reader.onload = function(evt) {
-          var base64 = evt.target.result;
-          if (self.onFileReady) {
-            self.onFileReady(file.name || (isImg ? 'clipboard_image.png' : 'file.txt'), base64, isImg);
-          }
-        };
-        reader.readAsDataURL(file);
-      },
-
-      downloadFile: function(url, filename) {
-        var a = document.createElement('a');
-        a.href = url;
-        if (filename) a.download = filename;
-        a.target = '_blank';
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(function() {
-          document.body.removeChild(a);
-        }, 100);
-      }
-    };
-  </script>
 </head>
 <body>
-  <script>
-    var bootScript = document.createElement('script');
-    bootScript.src = 'flutter_bootstrap.js?v=' + Date.now();
-    bootScript.async = true;
-    document.body.appendChild(bootScript);
-  </script>
+  <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

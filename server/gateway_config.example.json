@@ -1,0 +1,28 @@
+{
+  "host": "0.0.0.0",
+  "port": 8768,
+  "db_path": "hub.db",
+  "signing_secret": "REPLACE_WITH_32_PLUS_CHAR_SIGNING_SECRET",
+  "internal_secret": "REPLACE_WITH_32_PLUS_CHAR_INTERNAL_SECRET",
+  "allowed_origins": [
+    "https://agy.example.com"
+  ],
+  "cookie_secure": true,
+  "access_token_ttl_seconds": 1800,
+  "refresh_token_ttl_seconds": 2592000,
+  "web_dir": null,
+  "nodes": {
+    "deck": {
+      "name": "Steam Deck",
+      "base_url": "http://127.0.0.1:8769",
+      "is_local": true,
+      "health_timeout_seconds": 2.0
+    },
+    "windows": {
+      "name": "Windows PC",
+      "base_url": "http://100.64.0.10:8765",
+      "is_local": false,
+      "health_timeout_seconds": 2.0
+    }
+  }
+}

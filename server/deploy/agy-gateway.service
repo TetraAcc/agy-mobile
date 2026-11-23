@@ -1,0 +1,15 @@
+[Unit]
+Description=AGY Remote Hub v2.0 Edge Gateway (Port 8768)
+After=network-online.target agy-agent-deck.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/agy_remote/server
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=%h/agy_remote/server/.venv/bin/python -u server.py gateway --config gateway_config.json
+Restart=always
+RestartSec=3s
+
+[Install]
+WantedBy=default.target

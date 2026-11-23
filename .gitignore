@@ -61,3 +61,18 @@ server/sessions.json
 *.db
 *.log
 server/*.log
+
+# v2.0 runtime environment, gateway/agent configs and database
+server/.venv/
+server/.pytest_cache/
+**/.pytest_cache/
+*.egg-info/
+server/gateway_config.json
+**/gateway_config.json
+server/agent_config.json
+**/agent_config.json
+server/hub.db
+server/hub.db-shm
+server/hub.db-wal
+**/hub.db*
+server/logs/
