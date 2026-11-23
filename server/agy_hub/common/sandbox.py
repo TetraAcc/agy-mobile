@@ -137,6 +137,7 @@ class RootRegistry:
 
     def __init__(self, initial_roots: dict[str, str | Path] | None = None) -> None:
         self._roots: dict[str, tuple[str, Path, bool]] = {}
+        self._client_paths: dict[str, str] = {}
         if initial_roots:
             for root_id, path in initial_roots.items():
                 self.register_root(root_id, path, name=root_id, readonly=False)
@@ -149,10 +150,12 @@ class RootRegistry:
         readonly: bool = False,
     ) -> Path:
         expanded = os.path.expanduser(str(path))
-        resolved = Path(expanded).resolve()
-        if is_sensitive_path(resolved):
+        abs_path = Path(os.path.abspath(expanded))
+        resolved = abs_path.resolve()
+        if is_sensitive_path(resolved) or is_sensitive_path(abs_path):
             raise SandboxError(f"Refusing to register sensitive root: {root_id}")
         self._roots[root_id] = (name or root_id, resolved, readonly)
+        self._client_paths[root_id] = str(abs_path)
         return resolved
 
     def register_workspace(self, workspace_path: str | Path) -> str | None:
@@ -160,25 +163,33 @@ class RootRegistry:
         if not workspace_path:
             return None
         try:
-            resolved = Path(os.path.expanduser(str(workspace_path))).resolve()
+            expanded = os.path.expanduser(str(workspace_path))
+            abs_path = Path(os.path.abspath(expanded))
+            resolved = abs_path.resolve()
             if not resolved.exists() or not resolved.is_dir():
                 return None
-            if is_sensitive_path(resolved):
+            if is_sensitive_path(resolved) or is_sensitive_path(abs_path):
                 return None
             norm = os.path.normcase(str(resolved))
             for rid, (_, existing_path, _) in self._roots.items():
                 if os.path.normcase(str(existing_path)) == norm:
                     return rid
             root_id = "ws_" + hashlib.sha1(norm.encode("utf-8")).hexdigest()[:12]
-            display = resolved.name or str(resolved).rstrip("\\/")
+            display = abs_path.name or str(abs_path).rstrip("\\/") or resolved.name or str(resolved).rstrip("\\/")
             self._roots[root_id] = (display, resolved, True)
+            self._client_paths[root_id] = str(abs_path)
             return root_id
         except Exception:
             return None
 
     def list_roots(self) -> list[FileRootItem]:
         return [
-            FileRootItem(id=rid, name=name, path=str(path), readonly=readonly)
+            FileRootItem(
+                id=rid,
+                name=name,
+                path=self._client_paths.get(rid, str(path)),
+                readonly=readonly,
+            )
             for rid, (name, path, readonly) in self._roots.items()
         ]
 
