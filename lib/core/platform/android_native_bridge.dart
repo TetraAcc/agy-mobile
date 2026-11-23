@@ -163,6 +163,19 @@ class AndroidNativeBridge {
     }
   }
 
+  static Future<bool> openRemoteMedia(String url, {String mimeType = '*/*'}) async {
+    if (!isAndroidNative || url.isEmpty) return false;
+    try {
+      final ok = await _channel.invokeMethod<bool>('openRemoteMedia', {
+        'url': url,
+        'mimeType': mimeType,
+      });
+      return ok == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   static Future<bool> shareLocalFile(
     String path, {
     String mimeType = '*/*',
@@ -263,6 +276,18 @@ class AndroidNativeBridge {
       'gif' => 'image/gif',
       'bmp' => 'image/bmp',
       'svg' => 'image/svg+xml',
+      'mp4' || 'm4v' => 'video/mp4',
+      'mkv' => 'video/x-matroska',
+      'webm' => 'video/webm',
+      'mov' => 'video/quicktime',
+      'avi' => 'video/x-msvideo',
+      '3gp' => 'video/3gpp',
+      'flv' => 'video/x-flv',
+      'mp3' => 'audio/mpeg',
+      'wav' => 'audio/wav',
+      'ogg' || 'opus' => 'audio/ogg',
+      'm4a' || 'aac' => 'audio/mp4',
+      'flac' => 'audio/flac',
       'md' || 'markdown' => 'text/markdown',
       'txt' || 'log' || 'yaml' || 'yml' || 'py' || 'dart' || 'ts' || 'js' => 'text/plain',
       'json' => 'application/json',

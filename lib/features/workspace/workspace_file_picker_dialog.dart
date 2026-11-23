@@ -23,6 +23,7 @@ class WorkspaceFilePickerDialog extends StatelessWidget {
   final ValueChanged<String> onReadFile;
   final ValueChanged<String>? onPreviewPdf;
   final ValueChanged<String>? onPreviewImage;
+  final ValueChanged<String>? onPreviewMedia;
   final ValueChanged<String> onInsertRef;
 
   const WorkspaceFilePickerDialog({
@@ -45,6 +46,7 @@ class WorkspaceFilePickerDialog extends StatelessWidget {
     required this.onReadFile,
     this.onPreviewPdf,
     this.onPreviewImage,
+    this.onPreviewMedia,
     required this.onInsertRef,
   });
 
@@ -257,16 +259,23 @@ class WorkspaceFilePickerDialog extends StatelessWidget {
                               final item = files[idx];
                               final isPdf = FileUtils.isPdfFile(item.path);
                               final isImg = FileUtils.isImageFile(item.path);
+                              final isMedia = FileUtils.isMediaStreamFile(item.path);
                               final isBin = FileUtils.isBinaryFile(item.path);
 
                               VoidCallback? previewAction;
                               String previewTooltip = '查看内容';
+                              IconData previewIcon = Icons.visibility_outlined;
                               if (isPdf && onPreviewPdf != null) {
                                 previewAction = () => onPreviewPdf!(item.path);
                                 previewTooltip = '在线预览 PDF';
                               } else if (isImg && onPreviewImage != null) {
                                 previewAction = () => onPreviewImage!(item.path);
                                 previewTooltip = '预览图片';
+                              } else if (isMedia && (onPreviewMedia != null || onPreviewPdf != null)) {
+                                final mediaCb = onPreviewMedia ?? onPreviewPdf!;
+                                previewAction = () => mediaCb(item.path);
+                                previewTooltip = '播放音视频';
+                                previewIcon = Icons.play_circle_outline_rounded;
                               } else if (!isBin) {
                                 previewAction = () => onReadFile(item.path);
                                 previewTooltip = '查看内容';
@@ -307,7 +316,7 @@ class WorkspaceFilePickerDialog extends StatelessWidget {
                                           ),
                                           if (previewAction != null)
                                             IconButton(
-                                              icon: const Icon(Icons.visibility_outlined, size: 18),
+                                              icon: Icon(previewIcon, size: 18),
                                               tooltip: previewTooltip,
                                               color: Theme.of(context).colorScheme.primary,
                                               onPressed: previewAction,

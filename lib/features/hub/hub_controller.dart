@@ -1323,6 +1323,27 @@ class HubController extends Notifier<HubState> {
     }
   }
 
+  Future<({String? url, String? filename, String? error})> createSignedMediaUrl(
+    String rawPath, {
+    String? rootId,
+  }) async {
+    try {
+      final nodeId = state.selectedNodeId;
+      if (nodeId.isEmpty) return (url: null, filename: null, error: '未选中节点');
+      final resolved = await _resolveFileTargetWithRefresh(rawPath, rootId: rootId);
+      if (resolved == null || resolved.relPath.isEmpty) {
+        return (url: null, filename: null, error: '无法为该路径签发外链票据');
+      }
+      final ticket = await _api.createDownloadTicket(nodeId, resolved.rootId, resolved.relPath);
+      final mediaUrl = _api.buildMediaTicketUrl(nodeId, ticket.ticket);
+      return (url: mediaUrl, filename: ticket.filename, error: null);
+    } on ApiException catch (e) {
+      return (url: null, filename: null, error: e.message);
+    } catch (e) {
+      return (url: null, filename: null, error: '打开媒体失败: $e');
+    }
+  }
+
   Future<String?> openMediaExternal(String rawPath, {String? rootId}) async {
     try {
       final nodeId = state.selectedNodeId;

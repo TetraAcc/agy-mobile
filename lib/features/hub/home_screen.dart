@@ -13,6 +13,7 @@ import '../../core/platform/platform_bridge.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_fonts.dart';
 import '../../core/theme/theme_provider.dart';
+import '../../core/utils/file_utils.dart';
 import '../../models/models.dart';
 import '../auth/auth_controller.dart';
 import '../chat/bottom_input_bar.dart';
@@ -396,7 +397,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         onBrowse: (rootId, subPath) => hub.browseFiles(rootId, subPath: subPath),
         onReadFile: _readAndOpenTextFile,
         onDownload: (rootId, relPath) => _downloadFileResult(relPath, rootId: rootId),
-        onOpenMediaExternal: (rootId, relPath) => hub.openMediaExternal(relPath, rootId: rootId),
+        onOpenMediaExternal: (rootId, relPath) => _openMediaExternalResult(relPath, rootId: rootId),
         buildDirectMediaUrl: (rootId, relPath) => hub.buildDirectMediaUrlForRoot(rootId, relPath),
         mediaHeaders: hub.mediaHeaders,
         onInsertRef: _insertText,
@@ -776,19 +777,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
   }
 
-  Future<void> _openMediaExternal(String rawPath, {String? rootId}) async {
+  Future<String?> _openMediaExternalResult(String rawPath, {String? rootId}) async {
     if (AndroidNativeBridge.isAndroidNative) {
-      final err = await _downloadWithAndroidSheet(
+      if (FileUtils.isMediaStreamFile(rawPath)) {
+        final signed = await ref
+            .read(hubControllerProvider.notifier)
+            .createSignedMediaUrl(rawPath, rootId: rootId);
+        if (signed.url != null) {
+          final mime = AndroidNativeBridge.inferMimeType(signed.filename ?? rawPath);
+          final opened = await AndroidNativeBridge.openRemoteMedia(
+            signed.url!,
+            mimeType: mime,
+          );
+          if (opened) {
+            return null;
+          }
+        }
+      }
+      return _downloadWithAndroidSheet(
         rawPath,
         rootId: rootId,
         autoOpen: true,
       );
-      if (err != null) {
-        _showSnack(err, isError: true);
-      }
-      return;
     }
-    final err = await ref.read(hubControllerProvider.notifier).openMediaExternal(rawPath, rootId: rootId);
+    return ref.read(hubControllerProvider.notifier).openMediaExternal(rawPath, rootId: rootId);
+  }
+
+  Future<void> _openMediaExternal(String rawPath, {String? rootId}) async {
+    final err = await _openMediaExternalResult(rawPath, rootId: rootId);
     if (err != null) {
       _showSnack(err, isError: true);
     }
@@ -1746,12 +1762,13 @@ class _WorkspaceBrowserSheetState extends State<_WorkspaceBrowserSheet> {
                       onPressed: () => _handleDownload(relPath),
                     ),
                     IconButton(
-                      tooltip: '在新标签页打开原图',
+                      tooltip: kIsWeb ? '在新标签页打开原图' : '用系统相册打开',
                       icon: const Icon(Icons.open_in_new_rounded, size: 18),
                       onPressed: () {
                         if (kIsWeb) {
                           PlatformBridge.openExternalUrl(imageUrl);
                         } else {
+                          Navigator.of(ctx).pop();
                           widget.onOpenMediaExternal(_rootId, relPath);
                         }
                       },
@@ -1824,6 +1841,7 @@ class _WorkspaceBrowserSheetState extends State<_WorkspaceBrowserSheet> {
       onReadFile: _handleReadFile,
       onPreviewPdf: _handlePreviewPdf,
       onPreviewImage: _handlePreviewImage,
+      onPreviewMedia: _handlePreviewPdf,
       onInsertRef: widget.onInsertRef,
     );
   }

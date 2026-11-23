@@ -86,6 +86,12 @@ class MainActivity : FlutterActivity() {
                     result.success(openLocalFileWithIntent(path, mime))
                 }
 
+                "openRemoteMedia" -> {
+                    val url = call.argument<String>("url") ?: ""
+                    val mime = call.argument<String>("mimeType") ?: "*/*"
+                    result.success(openRemoteMediaWithIntent(url, mime))
+                }
+
                 "shareLocalFile" -> {
                     val path = call.argument<String>("path") ?: ""
                     val mime = call.argument<String>("mimeType") ?: "*/*"
@@ -229,6 +235,21 @@ class MainActivity : FlutterActivity() {
             val viewIntent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, mimeType.ifBlank { "*/*" })
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(viewIntent)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun openRemoteMediaWithIntent(url: String, mimeType: String): Boolean {
+        if (url.isBlank()) return false
+        return try {
+            val uri = Uri.parse(url)
+            val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mimeType.ifBlank { "*/*" })
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             startActivity(viewIntent)
             true

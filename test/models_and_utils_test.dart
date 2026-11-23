@@ -320,9 +320,15 @@ void main() {
       expect(AndroidNativeBridge.inferMimeType('report.pdf'), 'application/pdf');
       expect(AndroidNativeBridge.inferMimeType('shot.PNG'), 'image/png');
       expect(AndroidNativeBridge.inferMimeType('photo.jpeg'), 'image/jpeg');
+      expect(AndroidNativeBridge.inferMimeType('demo.mp4'), 'video/mp4');
+      expect(AndroidNativeBridge.inferMimeType('clip.mkv'), 'video/x-matroska');
+      expect(AndroidNativeBridge.inferMimeType('voice.mp3'), 'audio/mpeg');
       expect(AndroidNativeBridge.inferMimeType('notes.md'), 'text/markdown');
       expect(AndroidNativeBridge.inferMimeType('archive.zip'), 'application/zip');
       expect(AndroidNativeBridge.inferMimeType('noext'), '*/*');
+      expect(FileUtils.isVideoFile('demo.mp4'), true);
+      expect(FileUtils.isAudioFile('voice.mp3'), true);
+      expect(FileUtils.isMediaStreamFile('demo.mp4'), true);
 
       final share = SharedIncomingPayload.fromMap({
         'text': 'https://example.com/issue',

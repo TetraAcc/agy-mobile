@@ -14,6 +14,18 @@ class FileUtils {
 
   static bool isPdfFile(String path) => _extensionOf(path) == 'pdf';
 
+  static bool isVideoFile(String path) {
+    const videoExts = {'mp4', 'mkv', 'avi', 'mov', 'webm', 'm4v', '3gp', 'flv'};
+    return videoExts.contains(_extensionOf(path));
+  }
+
+  static bool isAudioFile(String path) {
+    const audioExts = {'mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'opus'};
+    return audioExts.contains(_extensionOf(path));
+  }
+
+  static bool isMediaStreamFile(String path) => isVideoFile(path) || isAudioFile(path);
+
   static bool isBinaryFile(String path) {
     final ext = _extensionOf(path);
     const binaryExts = {
@@ -21,8 +33,8 @@ class FileUtils {
       'exe', 'dll', 'so', 'dylib', 'bin', 'iso', 'apk', 'msi',
       'pdf', 'docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt',
       'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'svg',
-      'mp3', 'wav', 'ogg', 'm4a', 'flac',
-      'mp4', 'mkv', 'avi', 'mov', 'webm',
+      'mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'opus',
+      'mp4', 'mkv', 'avi', 'mov', 'webm', 'm4v', '3gp', 'flv',
       'wasm', 'pyc', 'class', 'o', 'a', 'lib', 'db', 'sqlite'
     };
     return binaryExts.contains(ext);
@@ -37,6 +49,12 @@ class FileUtils {
     }
     if (const {'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'svg'}.contains(ext)) {
       return Icons.image_rounded;
+    }
+    if (const {'mp4', 'mkv', 'avi', 'mov', 'webm', 'm4v', '3gp', 'flv'}.contains(ext)) {
+      return Icons.movie_outlined;
+    }
+    if (const {'mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'opus'}.contains(ext)) {
+      return Icons.audiotrack_rounded;
     }
     if (const {'pdf', 'docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt'}.contains(ext)) {
       return Icons.description_rounded;
@@ -62,6 +80,12 @@ class FileUtils {
     }
     if (const {'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'svg'}.contains(ext)) {
       return const Color(0xFF10B981);
+    }
+    if (const {'mp4', 'mkv', 'avi', 'mov', 'webm', 'm4v', '3gp', 'flv'}.contains(ext)) {
+      return const Color(0xFF6366F1);
+    }
+    if (const {'mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'opus'}.contains(ext)) {
+      return const Color(0xFF06B6D4);
     }
     if (const {'pdf', 'docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt'}.contains(ext)) {
       return const Color(0xFFEF4444);

@@ -451,6 +451,21 @@ def create_agent_app(
         ".webp": "image/webp",
         ".gif": "image/gif",
         ".bmp": "image/bmp",
+        ".mp4": "video/mp4",
+        ".m4v": "video/mp4",
+        ".mkv": "video/x-matroska",
+        ".webm": "video/webm",
+        ".mov": "video/quicktime",
+        ".avi": "video/x-msvideo",
+        ".3gp": "video/3gpp",
+        ".flv": "video/x-flv",
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".ogg": "audio/ogg",
+        ".opus": "audio/ogg",
+        ".m4a": "audio/mp4",
+        ".aac": "audio/mp4",
+        ".flac": "audio/flac",
     }
 
     @app.get("/agent/media")
