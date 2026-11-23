@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/config/responsive_layout.dart';
 import '../../core/theme/app_colors.dart';
 import '../../models/models.dart';
 
@@ -26,6 +27,7 @@ class QuotaDrawer extends StatefulWidget {
   final ValueChanged<AccentThemeOption> onSelectAccentTheme;
   final String currentDisplayName;
   final VoidCallback? onLogout;
+  final bool isPermanentSidebar;
 
   const QuotaDrawer({
     super.key,
@@ -51,6 +53,7 @@ class QuotaDrawer extends StatefulWidget {
     required this.onSelectAccentTheme,
     this.currentDisplayName = '',
     this.onLogout,
+    this.isPermanentSidebar = false,
   });
 
   @override
@@ -69,6 +72,12 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
   }
 
   bool get isDark => widget.isDark;
+
+  void _closeIfDrawer(BuildContext context) {
+    if (!widget.isPermanentSidebar) {
+      Navigator.pop(context);
+    }
+  }
 
   List<SessionItem> _sortPinnedFirst(List<SessionItem> items) {
     if (items.length <= 1) return items;
@@ -166,27 +175,26 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
 
   @override
   Widget build(BuildContext context) {
-    return Drawer(
-      backgroundColor: isDark ? const Color(0xFF111113) : Colors.white,
-      child: SafeArea(
-        child: Column(
-          children: [
-            _buildNodeSelector(context),
-            _buildQuotaCard(context),
-            Container(
-              padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
-              decoration: BoxDecoration(
-                border: Border(bottom: BorderSide(color: isDark ? Colors.white10 : Colors.black12)),
-              ),
-              child: Column(
-                children: [
-                  ElevatedButton.icon(
-                    onPressed: widget.canWrite
-                        ? () {
-                            Navigator.pop(context);
-                            widget.onNewSession();
-                          }
-                        : null,
+    final content = SafeArea(
+      right: !widget.isPermanentSidebar,
+      child: Column(
+        children: [
+          _buildNodeSelector(context),
+          _buildQuotaCard(context),
+          Container(
+            padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+            decoration: BoxDecoration(
+              border: Border(bottom: BorderSide(color: isDark ? Colors.white10 : Colors.black12)),
+            ),
+            child: Column(
+              children: [
+                ElevatedButton.icon(
+                  onPressed: widget.canWrite
+                      ? () {
+                          _closeIfDrawer(context);
+                          widget.onNewSession();
+                        }
+                      : null,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: isDark ? const Color(0xFF222226) : const Color(0xFFF4F4F5),
                       foregroundColor: isDark ? Colors.white : Colors.black87,
@@ -336,7 +344,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                                                 (s) => s.workspacePath.isNotEmpty,
                                                 orElse: () => entry.value.first,
                                               );
-                                              Navigator.pop(context);
+                                              _closeIfDrawer(context);
                                               widget.onNewSessionInProject?.call(
                                                 entry.key,
                                                 firstWithWs.workspacePath,
@@ -526,7 +534,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                   Row(
                     children: [
                       Text(
-                        'v2.0.0',
+                        const String.fromEnvironment('APP_VERSION', defaultValue: 'v2.1.0'),
                         style: TextStyle(
                           fontSize: 10,
                           color: isDark ? Colors.white24 : Colors.black26,
@@ -549,7 +557,31 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
             ),
           ],
         ),
-      ),
+      );
+
+    if (widget.isPermanentSidebar) {
+      return SizedBox(
+        width: ResponsiveLayout.permanentSidebarWidth,
+        child: Material(
+          color: isDark ? const Color(0xFF111113) : Colors.white,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              border: Border(
+                right: BorderSide(
+                  color: isDark ? AppColors.darkBorder : AppColors.lightBorder,
+                  width: 0.6,
+                ),
+              ),
+            ),
+            child: content,
+          ),
+        ),
+      );
+    }
+
+    return Drawer(
+      backgroundColor: isDark ? const Color(0xFF111113) : Colors.white,
+      child: content,
     );
   }
 
@@ -1063,7 +1095,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
           ],
         ),
         onTap: () {
-          Navigator.pop(context);
+          _closeIfDrawer(context);
           widget.onSwitchSession(s);
         },
       ),

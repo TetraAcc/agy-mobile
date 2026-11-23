@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../core/config/responsive_layout.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/utils/file_utils.dart';
 import '../../models/models.dart';
@@ -58,6 +59,7 @@ class ChangeReviewSheet extends StatefulWidget {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      constraints: ResponsiveLayout.workspaceSheetConstraints(context),
       backgroundColor: isDark ? const Color(0xFF111113) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),

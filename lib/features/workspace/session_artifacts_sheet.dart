@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/config/responsive_layout.dart';
 import '../../models/models.dart';
 
 class SessionArtifactsSheet extends StatefulWidget {
@@ -38,6 +39,7 @@ class SessionArtifactsSheet extends StatefulWidget {
     return showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      constraints: ResponsiveLayout.workspaceSheetConstraints(context),
       backgroundColor: isDark ? const Color(0xFF111113) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),

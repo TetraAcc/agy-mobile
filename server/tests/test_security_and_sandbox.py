@@ -132,11 +132,15 @@ def test_sandbox_traversal_and_sensitive_blocklist(tmp_path: Path) -> None:
     content = reg.read_text_file("ws", "hello.py")
     assert "print('ok')" in content.content
 
-    # Media path strips file:/// and rejects outside paths
+    # Media path strips file:/// and line anchors and rejects outside paths
     file_uri = (root / "hello.py").as_uri()
     rid, resolved = reg.resolve_media_path(file_uri)
     assert rid == "ws"
     assert resolved == (root / "hello.py").resolve()
+    rid_anchor, resolved_anchor = reg.resolve_media_path(f"{file_uri}#L1-L20")
+    assert rid_anchor == "ws"
+    assert resolved_anchor == (root / "hello.py").resolve()
+    assert reg.resolve_in_root("ws", "hello.py#L1-L5") == (root / "hello.py").resolve()
 
     with pytest.raises(SandboxError):
         reg.resolve_media_path(outside.as_uri())

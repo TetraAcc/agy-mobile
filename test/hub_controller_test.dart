@@ -7,6 +7,8 @@ import 'package:agy_remote/core/realtime/node_event_socket.dart';
 import 'package:agy_remote/features/auth/auth_controller.dart';
 import 'package:agy_remote/features/hub/hub_controller.dart';
 import 'package:agy_remote/models/models.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -78,6 +80,12 @@ class FakeApiClient extends ApiClient {
   final List<String> sentMessages = [];
   bool returnCreatedSessionId = true;
   bool appendResumeReply = false;
+  int getFileRootsCalls = 0;
+  List<FileRootItem> fileRoots = const [
+    FileRootItem(id: 'scratch', name: 'scratch', path: r'C:\scratch'),
+  ];
+  List<FileRootItem>? refreshedFileRoots;
+  final List<(String, String)> ticketRequests = [];
 
   FakeApiClient()
       : super(
@@ -210,7 +218,17 @@ class FakeApiClient extends ApiClient {
 
   @override
   Future<List<FileRootItem>> getFileRoots(String nodeId) async {
-    return const [FileRootItem(id: 'scratch', name: 'scratch', path: r'C:\scratch')];
+    getFileRootsCalls += 1;
+    if (getFileRootsCalls >= 2 && refreshedFileRoots != null) {
+      return refreshedFileRoots!;
+    }
+    return fileRoots;
+  }
+
+  @override
+  Future<DownloadTicket> createDownloadTicket(String nodeId, String rootId, String path) async {
+    ticketRequests.add((rootId, path));
+    return DownloadTicket(ticket: 't-1', expiresIn: 60, filename: path.split('/').last);
   }
 
   @override
@@ -244,8 +262,21 @@ class FakeApiClient extends ApiClient {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   setUp(() {
     SharedPreferences.setMockInitialValues({});
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('plugins.flutter.io/url_launcher'),
+      (call) async => true,
+    );
+  });
+
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('plugins.flutter.io/url_launcher'),
+      null,
+    );
   });
 
   test('HubController 初始化、WS 会话隔离、分页、停止与切节点', () async {
@@ -363,6 +394,30 @@ void main() {
     expect(relWithPercent?.rootId, 'ws_1');
     expect(relWithPercent?.relPath, '微处理器讲义/讲义_100%_笔记.pdf');
 
+    // URL 编码冒号 + 行号锚点（如 file:///c%3A/scratch/AGENTS.md#L1-L20）应正确解析
+    final encodedDriveUri = hub.resolveRootAndRelPath(
+      'file:///c%3A/scratch/AGENTS.md#L1-L20',
+    );
+    expect(encodedDriveUri?.rootId, 'scratch');
+    expect(encodedDriveUri?.relPath, 'AGENTS.md');
+
+    // 裸相对路径与 ./ 前缀在未显式传 rootId 时应回退到当前会话的 activeRootId (ws_1)
+    final bareRel = hub.resolveRootAndRelPath('AGENTS.md');
+    expect(bareRel?.rootId, 'ws_1');
+    expect(bareRel?.relPath, 'AGENTS.md');
+    final dotRel = hub.resolveRootAndRelPath('./docs/AGENTS.md#L10');
+    expect(dotRel?.rootId, 'ws_1');
+    expect(dotRel?.relPath, 'docs/AGENTS.md');
+
+    // 当 cachedRoots 过期缺少新工作区时，downloadFile 应自动刷新 roots 并重试成功
+    fakeApi.refreshedFileRoots = const [
+      FileRootItem(id: 'scratch', name: 'scratch', path: r'C:\scratch'),
+      FileRootItem(id: 'ws_novel', name: 'novel', path: r'D:\Writing\Novel'),
+    ];
+    final dlErr = await hub.downloadFile('file:///D:/Writing/Novel/AGENTS.md#L1-L30');
+    expect(dlErr, isNull);
+    expect(fakeApi.ticketRequests.last, ('ws_novel', 'AGENTS.md'));
+
     // 切换节点释放旧 WS 并接入 deck
     await hub.switchNode('deck');
     state = container.read(hubControllerProvider);
@@ -392,5 +447,82 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     expect(container.read(hubControllerProvider).isActiveSessionRunning, false);
     await hub.handleAppResumed();
+  });
+
+  test('HubController.enqueueAndroidSystemDownload 刷新根目录并拉起系统下载器', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    final nativeCalls = <MethodCall>[];
+    const nativeChannel = MethodChannel('com.tetra.agyremote/android_native');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      nativeChannel,
+      (call) async {
+        nativeCalls.add(call);
+        if (call.method == 'enqueueSystemDownload') {
+          return <String, Object?>{'ok': true, 'id': 101, 'filename': 'AGENTS.md'};
+        }
+        return null;
+      },
+    );
+    addTearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        nativeChannel,
+        null,
+      );
+    });
+
+    final fakeApi = FakeApiClient();
+    fakeApi.refreshedFileRoots = const [
+      FileRootItem(id: 'scratch', name: 'scratch', path: r'C:\scratch'),
+      FileRootItem(id: 'ws_novel', name: 'novel', path: r'D:\Writing\Novel'),
+    ];
+
+    final container = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(fakeApi),
+        tokenStoreProvider.overrideWithValue(MemoryTokenStore(initialAccess: 'tok')),
+        eventSocketFactoryProvider.overrideWithValue(({
+          required ServerConfig serverConfig,
+          required String nodeId,
+          required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
+        }) {
+          return FakeEventSocket(nodeId);
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const user = UserProfile(
+      id: 1,
+      username: 'tetra',
+      displayName: 'Tetra',
+      role: 'admin',
+      defaultNode: 'win',
+      allowedNodes: ['win'],
+      nodePermissions: {
+        'win': UserPermissionGrant(nodeId: 'win', canWrite: true, canDelete: true),
+      },
+    );
+
+    final hub = container.read(hubControllerProvider.notifier);
+    await hub.initializeForUser(user);
+    await Future<void>.delayed(Duration.zero);
+
+    final res = await hub.enqueueAndroidSystemDownload('file:///D:/Writing/Novel/AGENTS.md#L1-L20');
+    expect(res.error, isNull);
+    expect(res.filename, 'AGENTS.md');
+    expect(fakeApi.getFileRootsCalls, greaterThanOrEqualTo(2));
+    expect(fakeApi.ticketRequests.last, ('ws_novel', 'AGENTS.md'));
+
+    final dlCall = nativeCalls.lastWhere((c) => c.method == 'enqueueSystemDownload');
+    final args = Map<Object?, Object?>.from(dlCall.arguments as Map);
+    expect(
+      args['url'].toString(),
+      contains('/api/v2/nodes/win/files/download?ticket='),
+    );
+    expect(args['filename'], 'AGENTS.md');
+    expect(args['mimeType'], 'text/markdown');
   });
 }

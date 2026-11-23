@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../core/config/responsive_layout.dart';
 import '../../core/network/api_client.dart';
 import '../../core/utils/file_utils.dart';
 import '../../models/models.dart';
@@ -70,6 +71,7 @@ class FileViewerSheet extends StatefulWidget {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      constraints: ResponsiveLayout.workspaceSheetConstraints(context),
       backgroundColor: isDark ? const Color(0xFF111113) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),

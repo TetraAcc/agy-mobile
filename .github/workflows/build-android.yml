@@ -54,9 +54,16 @@ jobs:
           raw_version=$(grep -E '^version:' pubspec.yaml | head -n1 | awk '{print $2}')
           app_version="${raw_version%%+*}"
           if [ -z "$app_version" ]; then
-            app_version="dev"
+            app_version="2.1.0"
           fi
+          base_build="${raw_version#*+}"
+          if ! [[ "$base_build" =~ ^[0-9]+$ ]]; then
+            base_build=20
+          fi
+          build_number=$((base_build + GITHUB_RUN_NUMBER))
           echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: v${app_version}+${build_number}"
 
       - name: Configure Android release signing
         id: signing
@@ -86,33 +93,42 @@ jobs:
         env:
           DEFAULT_GATEWAY_URL: ${{ secrets.DEFAULT_GATEWAY_URL || vars.DEFAULT_GATEWAY_URL }}
         run: |
-          DART_DEFINES=()
+          VERSION="${{ steps.version.outputs.app_version }}"
+          BUILD_NUMBER="${{ steps.version.outputs.build_number }}"
+          DART_DEFINES=("--dart-define=APP_VERSION=v${VERSION}+${BUILD_NUMBER}")
           if [ -n "$DEFAULT_GATEWAY_URL" ]; then
             DART_DEFINES+=("--dart-define=DEFAULT_GATEWAY_URL=${DEFAULT_GATEWAY_URL}")
           fi
 
-          flutter build apk --release --split-per-abi "${DART_DEFINES[@]}"
+          flutter build apk --release --split-per-abi \
+            --build-name="${VERSION}" \
+            --build-number="${BUILD_NUMBER}" \
+            "${DART_DEFINES[@]}"
 
           if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.build_universal }}" = "true" ]; then
-            flutter build apk --release "${DART_DEFINES[@]}"
+            flutter build apk --release \
+              --build-name="${VERSION}" \
+              --build-number="${BUILD_NUMBER}" \
+              "${DART_DEFINES[@]}"
           fi
 
       - name: Package APKs and generate checksums
         shell: bash
         run: |
           VERSION="${{ steps.version.outputs.app_version }}"
+          BUILD_NUMBER="${{ steps.version.outputs.build_number }}"
           mkdir -p dist/android
 
           for abi in arm64-v8a armeabi-v7a x86_64; do
             src="build/app/outputs/flutter-apk/app-${abi}-release.apk"
             if [ -f "$src" ]; then
-              cp "$src" "dist/android/agy-remote-v${VERSION}-${abi}.apk"
+              cp "$src" "dist/android/agy-remote-v${VERSION}-b${BUILD_NUMBER}-${abi}.apk"
             fi
           done
 
           universal_src="build/app/outputs/flutter-apk/app-release.apk"
           if [ -f "$universal_src" ]; then
-            cp "$universal_src" "dist/android/agy-remote-v${VERSION}-universal.apk"
+            cp "$universal_src" "dist/android/agy-remote-v${VERSION}-b${BUILD_NUMBER}-universal.apk"
           fi
 
           cd dist/android
@@ -127,7 +143,7 @@ jobs:
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: agy-remote-android-v${{ steps.version.outputs.app_version }}
+          name: agy-remote-android-v${{ steps.version.outputs.app_version }}-b${{ steps.version.outputs.build_number }}
           path: dist/android/**
           retention-days: 30
 

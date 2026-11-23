@@ -93,22 +93,33 @@ def is_binary_file(path_obj: Path) -> bool:
     return False
 
 
+_LINE_ANCHOR_RE = re.compile(r"#L\d+(?:-L?\d+)?$", re.IGNORECASE)
+
+
 def strip_file_uri(raw_path: str) -> str:
-    """Normalize and strip file:/// / file:// URI schemes."""
+    """Normalize and strip file:/// / file:// URI schemes and optional line anchors."""
     if "\x00" in raw_path:
         raise SandboxError("Null byte is not allowed in path")
-    cleaned = urllib.parse.unquote(raw_path.strip())
-    if cleaned.startswith("file:///"):
+    stripped = raw_path.strip()
+    is_file_uri = stripped.lower().startswith("file://")
+    if is_file_uri:
+        stripped = stripped.split("#", 1)[0].split("?", 1)[0]
+    cleaned = urllib.parse.unquote(stripped)
+    if not is_file_uri:
+        cleaned = _LINE_ANCHOR_RE.sub("", cleaned)
+    if cleaned.lower().startswith("file:///"):
         rest = cleaned[8:]
         # Windows drive like file:///C:/foo -> C:/foo ; POSIX file:///home/deck -> /home/deck
         if len(rest) >= 2 and rest[1] == ":":
             return rest
         return "/" + rest
-    if cleaned.startswith("file://"):
+    if cleaned.lower().startswith("file://"):
         rest = cleaned[7:]
         if len(rest) >= 2 and rest[1] == ":":
             return rest
         return rest
+    if len(cleaned) >= 3 and cleaned[0] == "/" and cleaned[2] == ":":
+        return cleaned[1:]
     return cleaned
 
 

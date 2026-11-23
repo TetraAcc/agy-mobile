@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/config/composer_prefs.dart';
+import '../../core/config/responsive_layout.dart';
 import '../../core/network/api_client.dart';
 import '../../core/platform/android_native_bridge.dart';
 import '../../core/platform/platform_bridge.dart';
@@ -27,6 +28,7 @@ import '../workspace/session_artifacts_sheet.dart';
 import '../workspace/session_changes_bar.dart';
 import '../workspace/tool_detail_sheet.dart';
 import '../workspace/workspace_file_picker_dialog.dart';
+import 'download_progress_dialog.dart';
 import 'hub_controller.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -54,6 +56,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   StreamSubscription<SharedIncomingPayload>? _shareSub;
   final List<SharedIncomingPayload> _queuedShares = [];
   bool _drainingShares = false;
+  bool _isSidebarCollapsed = false;
 
   List<ReviewCommentItem> _commentsForSession(String sessionId) {
     if (sessionId.isEmpty || sessionId != _commentSessionId) return const [];
@@ -381,6 +384,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      constraints: ResponsiveLayout.workspaceSheetConstraints(context),
       backgroundColor: isDark ? const Color(0xFF18181B) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -527,6 +531,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final isDark = Theme.of(context).brightness == Brightness.dark;
     await showModalBottomSheet<void>(
       context: context,
+      constraints: ResponsiveLayout.compactSheetConstraints(context),
       backgroundColor: isDark ? const Color(0xFF18181B) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -620,105 +625,50 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     String? filename,
     bool autoOpen = false,
   }) async {
-    final progress = ValueNotifier<(int, int)>((0, 0));
-    BuildContext? dialogCtx;
-    if (mounted) {
-      unawaited(
-        showDialog<void>(
-          context: context,
-          barrierDismissible: false,
-          builder: (ctx) {
-            dialogCtx = ctx;
-            final isDark = Theme.of(ctx).brightness == Brightness.dark;
-            return PopScope(
-              canPop: false,
-              child: AlertDialog(
-                backgroundColor: isDark ? const Color(0xFF18181B) : Colors.white,
-                content: ValueListenableBuilder<(int, int)>(
-                  valueListenable: progress,
-                  builder: (_, val, __) {
-                    final (received, total) = val;
-                    final double? pct =
-                        total > 0 ? (received / total).clamp(0.0, 1.0) : null;
-                    final subtitle = total > 0
-                        ? '${(pct! * 100).toStringAsFixed(0)}%  (${_formatBytes(received)} / ${_formatBytes(total)})'
-                        : (received > 0 ? '已下载 ${_formatBytes(received)}...' : '正在建立安全下载连接...');
-                    return Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          autoOpen ? '正在获取文件预览...' : '正在下载文件...',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: isDark ? Colors.white : Colors.black87,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        LinearProgressIndicator(value: pct),
-                        const SizedBox(height: 8),
-                        Text(
-                          subtitle,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: isDark ? Colors.white60 : Colors.black54,
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ),
+    final res = await runWithDownloadProgressDialog(
+      context: context,
+      autoOpen: autoOpen,
+      formatBytes: _formatBytes,
+      task: (onProgress, cancelToken) {
+        return ref.read(hubControllerProvider.notifier).downloadFileToLocal(
+              pathOrUri,
+              rootId: rootId,
+              filename: filename,
+              onProgress: onProgress,
+              cancelToken: cancelToken,
             );
-          },
-        ),
-      );
-    }
+      },
+    );
 
-    try {
-      final res = await ref.read(hubControllerProvider.notifier).downloadFileToLocal(
-            pathOrUri,
-            rootId: rootId,
-            filename: filename,
-            onProgress: (rec, tot) => progress.value = (rec, tot),
-          );
-      if (dialogCtx != null && dialogCtx!.mounted) {
-        Navigator.of(dialogCtx!).pop();
-        dialogCtx = null;
-      }
-      if (res.error != null || res.file == null) {
-        return res.error ?? '下载失败';
-      }
-      final file = res.file!;
-      if (autoOpen) {
-        final opened = await AndroidNativeBridge.openLocalFile(
-          file.path,
-          mimeType: file.mimeType,
-        );
-        if (!opened && mounted) {
-          await _showAndroidDownloadCompleteSheet(file);
-        }
-      } else if (mounted) {
+    if (res.cancelled) {
+      return null;
+    }
+    if (res.error != null || res.file == null) {
+      return res.error ?? '下载失败';
+    }
+    final file = res.file!;
+    if (autoOpen) {
+      final opened = await AndroidNativeBridge.openLocalFile(
+        file.path,
+        mimeType: file.mimeType,
+      );
+      if (!opened && mounted) {
         await _showAndroidDownloadCompleteSheet(file);
       }
-      return null;
-    } finally {
-      if (dialogCtx != null && dialogCtx!.mounted) {
-        Navigator.of(dialogCtx!).pop();
-      }
-      progress.dispose();
+    } else if (mounted) {
+      await _showAndroidDownloadCompleteSheet(file);
     }
+    return null;
   }
 
   Future<String?> _downloadFileResult(String pathOrUri, {String? rootId, String? filename}) async {
     if (AndroidNativeBridge.isAndroidNative) {
-      return _downloadWithAndroidSheet(
-        pathOrUri,
-        rootId: rootId,
-        filename: filename,
-        autoOpen: false,
-      );
+      final res = await ref.read(hubControllerProvider.notifier).enqueueAndroidSystemDownload(
+            pathOrUri,
+            rootId: rootId,
+            filename: filename,
+          );
+      return res.error;
     }
     return ref
         .read(hubControllerProvider.notifier)
@@ -729,7 +679,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final err = await _downloadFileResult(pathOrUri, rootId: rootId, filename: filename);
     if (err != null) {
       _showSnack(err, isError: true);
-    } else if (!AndroidNativeBridge.isAndroidNative) {
+    } else if (AndroidNativeBridge.isAndroidNative) {
+      _showSnack('已交由系统下载器后台下载，进度请见通知栏');
+    } else {
       _showSnack('已发起安全下载');
     }
   }
@@ -889,7 +841,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             ),
             const SizedBox(width: 6),
             ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 88),
+              constraints: BoxConstraints(maxWidth: ResponsiveLayout.nodeBadgeMaxWidth(context)),
               child: Text(
                 currentNode.name,
                 maxLines: 1,
@@ -946,6 +898,47 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     );
   }
 
+  Widget _buildSidebar(
+    HubState hubState,
+    HubController hubNotifier,
+    ThemeState themeState,
+    bool isDark, {
+    required bool isPermanent,
+  }) {
+    return QuotaDrawer(
+      nodes: hubState.nodes,
+      selectedNode: hubState.selectedNodeId,
+      onSwitchNode: _handleSwitchNode,
+      quotaData: hubState.quota,
+      isLoadingQuota: hubState.isLoadingQuota,
+      onRequestQuota: () => hubNotifier.fetchQuota(),
+      canWrite: hubState.canWrite,
+      canDelete: hubState.canDelete,
+      onNewSession: () => _showNewSessionDialog(),
+      onNewSessionInProject: (projName, wsPath, rootId) => _showNewSessionDialog(
+        initialProjectName: projName,
+        initialWorkspacePath: wsPath,
+        initialRootId: rootId,
+      ),
+      projects: hubState.projects,
+      generalSessions: hubState.generalSessions,
+      activeSessionId: hubState.activeSessionId,
+      runningSessionIds: hubState.runningSessionIds,
+      onSwitchSession: (s) => hubNotifier.selectSession(s),
+      onDeleteSession: _handleDeleteSession,
+      isDark: isDark,
+      onToggleTheme: (val) {
+        HapticFeedback.lightImpact();
+        ref.read(themeProvider.notifier).setDarkMode(val);
+      },
+      currentAccentThemeId: themeState.accent.id,
+      onSelectAccentTheme: (opt) => ref.read(themeProvider.notifier).setAccentTheme(opt),
+      currentDisplayName: widget.user.displayName,
+      onLogout: _confirmLogout,
+      isPermanentSidebar: isPermanent,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     ref.listen<HubState>(hubControllerProvider, (prev, next) {
@@ -958,6 +951,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final composerPrefs = ref.watch(composerPrefsProvider);
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final hubNotifier = ref.read(hubControllerProvider.notifier);
+
+    final usePermanentSidebar = ResponsiveLayout.usePermanentSidebar(context);
+    final showPermanentSidebar = usePermanentSidebar && !_isSidebarCollapsed;
+    final contentMaxWidth = ResponsiveLayout.contentMaxWidth(context);
 
     final allMessages = hubState.messages;
     final query = _chatSearchQuery.trim().toLowerCase();
@@ -1010,37 +1007,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       },
       child: Scaffold(
         key: _scaffoldKey,
-        drawer: QuotaDrawer(
-        nodes: hubState.nodes,
-        selectedNode: hubState.selectedNodeId,
-        onSwitchNode: _handleSwitchNode,
-        quotaData: hubState.quota,
-        isLoadingQuota: hubState.isLoadingQuota,
-        onRequestQuota: () => hubNotifier.fetchQuota(),
-        canWrite: hubState.canWrite,
-        canDelete: hubState.canDelete,
-        onNewSession: () => _showNewSessionDialog(),
-        onNewSessionInProject: (projName, wsPath, rootId) => _showNewSessionDialog(
-          initialProjectName: projName,
-          initialWorkspacePath: wsPath,
-          initialRootId: rootId,
-        ),
-        projects: hubState.projects,
-        generalSessions: hubState.generalSessions,
-        activeSessionId: hubState.activeSessionId,
-        runningSessionIds: hubState.runningSessionIds,
-        onSwitchSession: (s) => hubNotifier.selectSession(s),
-        onDeleteSession: _handleDeleteSession,
-        isDark: isDark,
-        onToggleTheme: (val) {
-          HapticFeedback.lightImpact();
-          ref.read(themeProvider.notifier).setDarkMode(val);
-        },
-        currentAccentThemeId: themeState.accent.id,
-        onSelectAccentTheme: (opt) => ref.read(themeProvider.notifier).setAccentTheme(opt),
-        currentDisplayName: widget.user.displayName,
-        onLogout: _confirmLogout,
-      ),
+        drawer: usePermanentSidebar
+            ? null
+            : _buildSidebar(hubState, hubNotifier, themeState, isDark, isPermanent: false),
       onDrawerChanged: (isOpen) {
         if (isOpen) hubNotifier.fetchQuota();
       },
@@ -1048,6 +1017,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         backgroundColor: isDark ? AppColors.darkBg : AppColors.lightBg,
         elevation: 0,
         scrolledUnderElevation: 0,
+        leading: usePermanentSidebar
+            ? IconButton(
+                tooltip: _isSidebarCollapsed ? '展开侧边栏' : '收起侧边栏',
+                icon: Icon(
+                  _isSidebarCollapsed ? Icons.menu_rounded : Icons.menu_open_rounded,
+                  size: 21,
+                ),
+                onPressed: () {
+                  setState(() => _isSidebarCollapsed = !_isSidebarCollapsed);
+                },
+              )
+            : null,
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(0.5),
           child: Container(
@@ -1139,8 +1120,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           ),
         ],
       ),
-      body: Column(
+      body: Row(
         children: [
+          if (showPermanentSidebar)
+            _buildSidebar(hubState, hubNotifier, themeState, isDark, isPermanent: true),
+          Expanded(
+            child: Column(
+              children: [
           if (_isChatSearching)
             Container(
               width: double.infinity,
@@ -1153,7 +1139,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               ),
               child: Center(
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 780),
+                  constraints: BoxConstraints(maxWidth: contentMaxWidth),
                   child: Row(
                     children: [
                       const Icon(Icons.search_rounded, size: 16),
@@ -1199,7 +1185,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           else if (planSteps.isNotEmpty)
             Center(
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 780),
+                constraints: BoxConstraints(maxWidth: contentMaxWidth),
                 child: SessionStepsBar(steps: planSteps, isDark: isDark),
               ),
             ),
@@ -1302,7 +1288,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                 }
                                 return Center(
                                   child: ConstrainedBox(
-                                    constraints: const BoxConstraints(maxWidth: 780),
+                                    constraints: BoxConstraints(maxWidth: contentMaxWidth),
                                     child: rowChild,
                                   ),
                                 );
@@ -1357,6 +1343,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             isThinking: hubState.isActiveSessionRunning,
             canWrite: hubState.canWrite,
             isDark: isDark,
+            maxContentWidth: contentMaxWidth,
             queueMode: composerPrefs.queueMode,
             sendKey: composerPrefs.sendKey,
             changesBar: hubState.sessionChanges.totalFiles > 0
@@ -1418,6 +1405,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             onSendMessage: _handleSendMessage,
             onStopTask: _handleStopTask,
             onInsertRichContent: _onPickedLocalFile,
+          ),
+              ],
+            ),
           ),
         ],
       ),

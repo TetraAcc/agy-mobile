@@ -27,6 +27,7 @@ from agy_hub.common.schemas import (
 )
 from agy_hub.common.transcript import (
     clean_display_content,
+    parse_all_workspace_paths,
     parse_project_name_and_path,
     parse_transcript_line,
 )
@@ -97,6 +98,34 @@ class BaseEngineProvider(ABC):
                 self.registry.register_root("scratch", self.default_workspace, name="scratch")
             except SandboxError:
                 pass
+        self.sync_workspace_roots_sync()
+
+    def sync_workspace_roots_sync(self) -> None:
+        """Pre-register all trusted local workspaces referenced in Antigravity SQLite."""
+        conn = self._connect_ro()
+        if conn is None:
+            return
+        try:
+            cur = conn.cursor()
+            tables = {
+                t[0] for t in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+            if "conversation_summaries" not in tables:
+                return
+            cols = [c[1] for c in cur.execute("PRAGMA table_info(conversation_summaries)").fetchall()]
+            if "workspace_uris" not in cols:
+                return
+            rows = cur.execute(
+                "SELECT DISTINCT workspace_uris FROM conversation_summaries "
+                "WHERE workspace_uris IS NOT NULL AND workspace_uris != '' AND workspace_uris != '[]'"
+            ).fetchall()
+            for (ws_uris,) in rows:
+                for local_path in parse_all_workspace_paths(ws_uris):
+                    self.registry.register_workspace(local_path)
+        except Exception as exc:
+            logger.debug("Workspace root pre-registration skipped: %s", exc)
+        finally:
+            conn.close()
 
     @staticmethod
     def validate_session_id(session_id: str) -> str:
@@ -362,6 +391,10 @@ class BaseEngineProvider(ABC):
             ws_root_id = ""
             if proj_path:
                 ws_root_id = self.registry.register_workspace(proj_path) or ""
+            for extra_path in parse_all_workspace_paths(ws_uris):
+                rid = self.registry.register_workspace(extra_path)
+                if not ws_root_id and rid:
+                    ws_root_id = rid
 
             is_running = bool(
                 self.is_managed_process_running(cid_str)

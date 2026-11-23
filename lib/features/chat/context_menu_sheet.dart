@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../core/config/responsive_layout.dart';
+
 class ContextMenuSheet extends StatelessWidget {
   final bool isDark;
   final bool canWrite;
@@ -36,6 +38,7 @@ class ContextMenuSheet extends StatelessWidget {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      constraints: ResponsiveLayout.compactSheetConstraints(context),
       backgroundColor: isDark ? const Color(0xFF18181B) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),

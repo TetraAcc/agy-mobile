@@ -26,6 +26,10 @@ class BinaryFileApiException extends ApiException {
   const BinaryFileApiException([String message = '二进制文件不支持文本查看']) : super(415, message);
 }
 
+class DownloadCancelledException implements Exception {
+  const DownloadCancelledException();
+}
+
 class ApiClient {
   final Dio _dio;
   final Dio _refreshDio;
@@ -636,12 +640,14 @@ class ApiClient {
     String fullUrl,
     String savePath, {
     void Function(int received, int total)? onProgress,
+    CancelToken? cancelToken,
   }) async {
     var lastReceived = 0;
     try {
       await _dio.download(
         fullUrl,
         savePath,
+        cancelToken: cancelToken,
         onReceiveProgress: (received, total) {
           lastReceived = received;
           onProgress?.call(received, total);
@@ -649,6 +655,16 @@ class ApiClient {
       );
       return lastReceived;
     } on DioException catch (e) {
+      if (e.type == DioExceptionType.cancel) {
+        throw const DownloadCancelledException();
+      }
+      final code = e.response?.statusCode ?? 0;
+      if (code == 403) {
+        throw const ApiException(403, '无权限下载该文件');
+      }
+      if (code == 404) {
+        throw const ApiException(404, '目标文件不存在或已被移动');
+      }
       _throwDioError(e);
     }
   }

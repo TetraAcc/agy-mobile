@@ -181,6 +181,31 @@ class AndroidNativeBridge {
     }
   }
 
+  static Future<({bool ok, String? error})> enqueueSystemDownload({
+    required String url,
+    required String filename,
+    String? mimeType,
+  }) async {
+    if (!isAndroidNative) {
+      return (ok: false, error: '当前非 Android 原生环境');
+    }
+    try {
+      final raw = await _channel.invokeMethod<Map<dynamic, dynamic>>('enqueueSystemDownload', {
+        'url': url,
+        'filename': filename,
+        'mimeType': mimeType ?? inferMimeType(filename),
+      });
+      if (raw == null) {
+        return (ok: false, error: '系统下载器未返回结果');
+      }
+      final ok = raw['ok'] == true;
+      final err = raw['error']?.toString();
+      return (ok: ok, error: ok ? null : (err ?? '系统下载器启动失败'));
+    } catch (e) {
+      return (ok: false, error: '无法拉起系统下载器: $e');
+    }
+  }
+
   static Future<bool> requestNotificationPermission() async {
     if (!isAndroidNative) return false;
     try {

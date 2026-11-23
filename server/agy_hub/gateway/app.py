@@ -234,10 +234,10 @@ def create_gateway_app(
             root_id=payload.root_id,
             rel_path=payload.path,
             username=user.username,
-            ttl_seconds=60,
+            ttl_seconds=600,
         )
         filename = Path(payload.path).name or "download"
-        return DownloadTicketResponse(ticket=ticket, expires_in=60, filename=filename)
+        return DownloadTicketResponse(ticket=ticket, expires_in=600, filename=filename)
 
     @app.api_route(
         "/api/v2/nodes/{node_id}/{subpath:path}",

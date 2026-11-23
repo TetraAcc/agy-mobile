@@ -54,6 +54,52 @@ def clean_display_content(raw_text: str) -> str:
     return stripped
 
 
+def _parse_single_workspace_uri(raw_uri: str) -> tuple[str | None, str | None]:
+    decoded = urllib.parse.unquote(raw_uri).split("#", 1)[0].split("?", 1)[0]
+    if decoded.lower().startswith("file:///"):
+        rest = decoded[8:]
+        # Windows path embedded in URI, e.g. file:///C:/Users/dev/proj or file:///Z:/
+        if len(rest) >= 2 and rest[1] == ":":
+            win_path = rest.replace("/", "\\")
+            clean_win = win_path.rstrip("\\/")
+            if len(clean_win) == 2 and clean_win[1] == ":":
+                return clean_win, clean_win + "\\"
+            folder_name = clean_win.split("\\")[-1] or clean_win
+            return folder_name, clean_win
+        # POSIX path, e.g. file:///home/deck/proj
+        posix_path = "/" + rest.lstrip("/")
+        clean_posix = posix_path.rstrip("/") or "/"
+        folder_name = clean_posix.rsplit("/", 1)[-1] or clean_posix
+        return folder_name, clean_posix
+
+    if decoded.lower().startswith("file://"):
+        local_path = decoded[7:]
+        clean_path = local_path.rstrip("/\\") or "/"
+        folder_name = os.path.basename(clean_path) or clean_path
+        return folder_name, clean_path
+    return None, None
+
+
+def parse_all_workspace_paths(ws_uris: str | None) -> list[str]:
+    """Extract all valid local workspace paths from a workspace_uris JSON list."""
+    if not ws_uris or ws_uris.strip() in ("", "[]"):
+        return []
+    paths: list[str] = []
+    try:
+        uris = json.loads(ws_uris)
+        if not isinstance(uris, list):
+            return []
+        for raw_uri in uris:
+            if not isinstance(raw_uri, str):
+                continue
+            _, local_path = _parse_single_workspace_uri(raw_uri)
+            if local_path and local_path not in paths:
+                paths.append(local_path)
+    except Exception:
+        pass
+    return paths
+
+
 def parse_project_name_and_path(ws_uris: str | None) -> tuple[str | None, str | None]:
     """Parse Antigravity SQLite workspace_uris JSON field into (project_name, local_path).
 
@@ -69,29 +115,7 @@ def parse_project_name_and_path(ws_uris: str | None) -> tuple[str | None, str | 
         raw_uri = uris[0]
         if not isinstance(raw_uri, str):
             return None, None
-        decoded = urllib.parse.unquote(raw_uri)
-
-        if decoded.startswith("file:///"):
-            rest = decoded[8:]
-            # Windows path embedded in URI, e.g. file:///C:/Users/dev/proj or file:///Z:/
-            if len(rest) >= 2 and rest[1] == ":":
-                win_path = rest.replace("/", "\\")
-                clean_win = win_path.rstrip("\\/")
-                if len(clean_win) == 2 and clean_win[1] == ":":
-                    return clean_win, clean_win + "\\"
-                folder_name = clean_win.split("\\")[-1] or clean_win
-                return folder_name, clean_win
-            # POSIX path, e.g. file:///home/deck/proj
-            posix_path = "/" + rest.lstrip("/")
-            clean_posix = posix_path.rstrip("/") or "/"
-            folder_name = clean_posix.rsplit("/", 1)[-1] or clean_posix
-            return folder_name, clean_posix
-
-        if decoded.startswith("file://"):
-            local_path = decoded[7:]
-            clean_path = local_path.rstrip("/\\") or "/"
-            folder_name = os.path.basename(clean_path) or clean_path
-            return folder_name, clean_path
+        return _parse_single_workspace_uri(raw_uri)
     except Exception:
         pass
     return None, None

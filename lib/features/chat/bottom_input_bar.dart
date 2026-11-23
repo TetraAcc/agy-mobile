@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/config/composer_prefs.dart';
+import '../../core/config/responsive_layout.dart';
 import '../../core/platform/platform_bridge.dart';
 import '../../core/theme/app_colors.dart';
 import '../../models/models.dart';
@@ -14,6 +15,7 @@ class BottomInputBar extends StatefulWidget {
   final bool isThinking;
   final bool canWrite;
   final bool isDark;
+  final double maxContentWidth;
   final Widget? changesBar;
   final Widget? queueBar;
   final String queueMode;
@@ -32,6 +34,7 @@ class BottomInputBar extends StatefulWidget {
     required this.isThinking,
     this.canWrite = true,
     required this.isDark,
+    this.maxContentWidth = 780.0,
     this.changesBar,
     this.queueBar,
     this.queueMode = ComposerPrefs.queueModeQueue,
@@ -126,15 +129,18 @@ class _BottomInputBarState extends State<BottomInputBar> {
 
     final composerBg = isDark ? const Color(0xFF1B1B1F) : const Color(0xFFF5F5F7);
     final composerBorder = isDark ? const Color(0xFF2D2D34) : const Color(0xFFE4E4E7);
+    final isCompactKeyboard = ResponsiveLayout.isCompactHeightKeyboardOpen(context);
 
     return Container(
       color: isDark ? AppColors.darkBg : AppColors.lightBg,
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+      padding: isCompactKeyboard
+          ? const EdgeInsets.fromLTRB(12, 2, 12, 4)
+          : const EdgeInsets.fromLTRB(12, 4, 12, 8),
       child: SafeArea(
         top: false,
         child: Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 780),
+            constraints: BoxConstraints(maxWidth: widget.maxContentWidth),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -152,7 +158,9 @@ class _BottomInputBarState extends State<BottomInputBar> {
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(color: composerBorder, width: 1),
                   ),
-                  padding: const EdgeInsets.fromLTRB(14, 10, 10, 8),
+                  padding: isCompactKeyboard
+                      ? const EdgeInsets.fromLTRB(14, 7, 10, 6)
+                      : const EdgeInsets.fromLTRB(14, 10, 10, 8),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -161,7 +169,7 @@ class _BottomInputBarState extends State<BottomInputBar> {
                         controller: widget.inputController,
                         enabled: inputEnabled,
                         minLines: 1,
-                        maxLines: 6,
+                        maxLines: isCompactKeyboard ? 3 : 6,
                         keyboardType: TextInputType.multiline,
                         textInputAction: (_isTouchMobile || _isCtrlEnter)
                             ? TextInputAction.newline

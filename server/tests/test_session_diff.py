@@ -169,15 +169,20 @@ def test_agent_changes_and_git_repos_and_head_diff_endpoints(tmp_agent_env: dict
         assert ch_data["total_added"] == 1
         assert ch_data["files"][0]["hunks"][0]["start_line"] == 1
 
-        # 2. Git repo discovery automatically finds demo_project inside scratch
+        # 2. Git repo discovery finds demo_project via pre-registered workspace root
         repos_resp = client.get("/agent/git/repos", headers=_signed_headers("GET", "/agent/git/repos"))
         assert repos_resp.status_code == 200
         repos = repos_resp.json()["repos"]
         demo_repo = next((r for r in repos if r["name"] == "demo_project"), None)
         assert demo_repo is not None
-        assert demo_repo["root_id"] == "scratch"
-        assert demo_repo["sub_path"] == "demo_project"
+        assert demo_repo["root_id"].startswith("ws_")
+        assert demo_repo["sub_path"] == ""
         assert demo_repo["change_count"] == 1
+
+        # 2b. /agent/files/roots exposes pre-registered workspace roots even before /agent/sessions
+        roots_resp = client.get("/agent/files/roots", headers=_signed_headers("GET", "/agent/files/roots"))
+        assert roots_resp.status_code == 200
+        assert any(r["id"] == demo_repo["root_id"] for r in roots_resp.json())
 
         # 3. Git diff supports sub_path and scope=head
         diff_uncommitted = client.get(

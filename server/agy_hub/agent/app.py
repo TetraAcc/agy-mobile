@@ -377,6 +377,7 @@ def create_agent_app(
 
     @app.get("/agent/files/roots", response_model=list[FileRootItem])
     async def list_file_roots(_caller: GatewayCaller = Depends(require_gateway_signature)) -> list[FileRootItem]:
+        await asyncio.to_thread(engine_provider.sync_workspace_roots_sync)
         return root_registry.list_roots()
 
     @app.get("/agent/files/tree", response_model=FileTreeResponse)

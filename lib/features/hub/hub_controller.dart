@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -264,11 +265,13 @@ class HubController extends Notifier<HubState> {
       generalSessions: const [],
       activeSessionId: '',
       activeSessionTitle: '正在接入 ${target.name}...',
+      activeRootId: 'scratch',
       messages: const [],
       hasMoreMessages: false,
       clearNextBeforeStep: true,
       clearQuota: true,
       clearSessionChanges: true,
+      cachedRoots: const [],
       pendingAttachments: const [],
     );
 
@@ -304,9 +307,8 @@ class HubController extends Notifier<HubState> {
     });
 
     await Future.wait([
-      refreshSessionTree(autoSelectFirst: true),
+      refreshSessionTree(autoSelectFirst: true).then((_) => refreshFileRoots()),
       fetchQuota(),
-      refreshFileRoots(),
     ]);
   }
 
@@ -1150,22 +1152,56 @@ class HubController extends Notifier<HubState> {
     );
   }
 
+  static final RegExp _lineAnchorRe = RegExp(r'#L\d+(?:-L?\d+)?$', caseSensitive: false);
+
   ({String rootId, String relPath})? resolveRootAndRelPath(String rawPath, {String? rootId}) {
     var cleaned = rawPath.trim();
-    if (cleaned.startsWith('file://')) {
-      if (cleaned.startsWith('file:///')) {
-        final rest = cleaned.substring(8);
+    if (cleaned.isEmpty) return null;
+
+    final isFileUri = cleaned.toLowerCase().startsWith('file://');
+    if (isFileUri) {
+      final hashIdx = cleaned.indexOf('#');
+      if (hashIdx >= 0) cleaned = cleaned.substring(0, hashIdx);
+      final queryIdx = cleaned.indexOf('?');
+      if (queryIdx >= 0) cleaned = cleaned.substring(0, queryIdx);
+
+      final hasTripleSlash = cleaned.toLowerCase().startsWith('file:///');
+      var rest = hasTripleSlash ? cleaned.substring(8) : cleaned.substring(7);
+      try {
+        rest = Uri.decodeFull(rest);
+      } catch (_) {}
+      if (hasTripleSlash) {
         cleaned = (rest.length >= 2 && rest[1] == ':') ? rest : '/$rest';
       } else {
-        cleaned = cleaned.substring(7);
+        cleaned = rest;
       }
-      try {
-        cleaned = Uri.decodeFull(cleaned);
-      } catch (_) {}
+    } else {
+      cleaned = cleaned.replaceFirst(_lineAnchorRe, '');
     }
 
-    if (rootId != null && rootId.isNotEmpty && !cleaned.startsWith('/') && !(cleaned.length >= 2 && cleaned[1] == ':')) {
-      return (rootId: rootId, relPath: cleaned.replaceAll('\\', '/'));
+    // Normalize stray leading slash before a Windows drive letter (e.g. /C:/foo -> C:/foo)
+    if (cleaned.length >= 3 && cleaned[0] == '/' && cleaned[2] == ':') {
+      cleaned = cleaned.substring(1);
+    }
+
+    final isAbsolute = cleaned.startsWith('/') ||
+        cleaned.startsWith('\\') ||
+        (cleaned.length >= 2 && cleaned[1] == ':');
+
+    if (!isAbsolute) {
+      final effectiveRootId = (rootId != null && rootId.isNotEmpty)
+          ? rootId
+          : (state.activeRootId.isNotEmpty ? state.activeRootId : '');
+      if (effectiveRootId.isNotEmpty) {
+        var rel = cleaned.replaceAll('\\', '/');
+        while (rel.startsWith('./')) {
+          rel = rel.substring(2);
+        }
+        if (rel.isNotEmpty) {
+          return (rootId: effectiveRootId, relPath: rel);
+        }
+      }
+      return null;
     }
 
     final normTarget = cleaned.replaceAll('\\', '/');
@@ -1190,6 +1226,21 @@ class HubController extends Notifier<HubState> {
     return null;
   }
 
+  Future<({String rootId, String relPath})?> _resolveFileTargetWithRefresh(
+    String pathOrUri, {
+    String? rootId,
+  }) async {
+    if (state.cachedRoots.isEmpty) {
+      await refreshFileRoots();
+    }
+    var resolved = resolveRootAndRelPath(pathOrUri, rootId: rootId);
+    if (resolved == null || resolved.relPath.isEmpty) {
+      await refreshFileRoots();
+      resolved = resolveRootAndRelPath(pathOrUri, rootId: rootId);
+    }
+    return resolved;
+  }
+
   String resolveMediaUrl(String rawPath, {String? rootId}) {
     if (state.selectedNodeId.isEmpty) return rawPath;
     return _api.buildMediaUrl(state.selectedNodeId, rawPath, rootId: rootId);
@@ -1206,10 +1257,7 @@ class HubController extends Notifier<HubState> {
     try {
       final nodeId = state.selectedNodeId;
       if (nodeId.isEmpty) return '未选中节点';
-      if (state.cachedRoots.isEmpty) {
-        await refreshFileRoots();
-      }
-      final resolved = resolveRootAndRelPath(pathOrUri, rootId: rootId);
+      final resolved = await _resolveFileTargetWithRefresh(pathOrUri, rootId: rootId);
       if (resolved == null || resolved.relPath.isEmpty) {
         return '该文件不在当前受控工作区根目录内，无法下载';
       }
@@ -1228,10 +1276,7 @@ class HubController extends Notifier<HubState> {
     try {
       final nodeId = state.selectedNodeId;
       if (nodeId.isEmpty) return '未选中节点';
-      if (state.cachedRoots.isEmpty) {
-        await refreshFileRoots();
-      }
-      final resolved = resolveRootAndRelPath(rawPath, rootId: rootId);
+      final resolved = await _resolveFileTargetWithRefresh(rawPath, rootId: rootId);
       if (resolved == null || resolved.relPath.isEmpty) {
         return '无法为该路径签发外链票据';
       }
@@ -1246,27 +1291,69 @@ class HubController extends Notifier<HubState> {
     }
   }
 
-  Future<({DownloadedLocalFile? file, String? error})> downloadFileToLocal(
+  Future<({String? filename, String? error})> enqueueAndroidSystemDownload(
+    String pathOrUri, {
+    String? rootId,
+    String? filename,
+  }) async {
+    try {
+      final nodeId = state.selectedNodeId;
+      if (nodeId.isEmpty) return (filename: null, error: '未选中节点');
+      final resolved = await _resolveFileTargetWithRefresh(pathOrUri, rootId: rootId);
+      if (resolved == null || resolved.relPath.isEmpty) {
+        return (filename: null, error: '该文件不在当前受控工作区根目录内，无法下载');
+      }
+      final ticket = await _api.createDownloadTicket(nodeId, resolved.rootId, resolved.relPath);
+      final dlUrl = _api.buildDownloadUrl(nodeId, ticket.ticket);
+      final rawName = (filename != null && filename.trim().isNotEmpty)
+          ? filename.trim()
+          : (ticket.filename.isNotEmpty ? ticket.filename : 'download.bin');
+      final mimeType = AndroidNativeBridge.inferMimeType(rawName);
+      final res = await AndroidNativeBridge.enqueueSystemDownload(
+        url: dlUrl,
+        filename: rawName,
+        mimeType: mimeType,
+      );
+      if (res.ok) {
+        return (filename: rawName, error: null);
+      }
+      return (filename: null, error: res.error ?? '无法拉起系统下载器');
+    } on ApiException catch (e) {
+      return (filename: null, error: e.message);
+    } catch (e) {
+      return (filename: null, error: '下载失败: $e');
+    }
+  }
+
+  Future<({DownloadedLocalFile? file, String? error, bool cancelled})> downloadFileToLocal(
     String pathOrUri, {
     String? rootId,
     String? filename,
     void Function(int received, int total)? onProgress,
+    CancelToken? cancelToken,
   }) async {
+    String? createdSavePath;
     try {
       final nodeId = state.selectedNodeId;
-      if (nodeId.isEmpty) return (file: null, error: '未选中节点');
-      if (state.cachedRoots.isEmpty) {
-        await refreshFileRoots();
+      if (nodeId.isEmpty) return (file: null, error: '未选中节点', cancelled: false);
+      final resolved = await _resolveFileTargetWithRefresh(pathOrUri, rootId: rootId);
+      if (cancelToken?.isCancelled == true) {
+        return (file: null, error: null, cancelled: true);
       }
-      final resolved = resolveRootAndRelPath(pathOrUri, rootId: rootId);
       if (resolved == null || resolved.relPath.isEmpty) {
-        return (file: null, error: '该文件不在当前受控工作区根目录内，无法下载');
+        return (file: null, error: '该文件不在当前受控工作区根目录内，无法下载', cancelled: false);
       }
       final dir = await AndroidNativeBridge.getDownloadsDir();
+      if (cancelToken?.isCancelled == true) {
+        return (file: null, error: null, cancelled: true);
+      }
       if (dir == null || dir.isEmpty) {
-        return (file: null, error: '无法访问本地缓存下载目录');
+        return (file: null, error: '无法访问本地缓存下载目录', cancelled: false);
       }
       final ticket = await _api.createDownloadTicket(nodeId, resolved.rootId, resolved.relPath);
+      if (cancelToken?.isCancelled == true) {
+        return (file: null, error: null, cancelled: true);
+      }
       final dlUrl = _api.buildDownloadUrl(nodeId, ticket.ticket);
       final rawName = (filename != null && filename.trim().isNotEmpty)
           ? filename.trim()
@@ -1274,10 +1361,12 @@ class HubController extends Notifier<HubState> {
       final safeName = rawName.replaceAll(RegExp(r'[^a-zA-Z0-9._\-\u4e00-\u9fff]+'), '_');
       final sep = dir.endsWith('/') || dir.endsWith('\\') ? '' : '/';
       final savePath = '$dir$sep${DateTime.now().millisecondsSinceEpoch}_$safeName';
+      createdSavePath = savePath;
       final bytesCount = await _api.downloadUrlToPath(
         dlUrl,
         savePath,
         onProgress: onProgress,
+        cancelToken: cancelToken,
       );
       return (
         file: DownloadedLocalFile(
@@ -1287,11 +1376,26 @@ class HubController extends Notifier<HubState> {
           mimeType: AndroidNativeBridge.inferMimeType(rawName),
         ),
         error: null,
+        cancelled: false,
       );
+    } on DownloadCancelledException {
+      if (createdSavePath != null) {
+        unawaited(PlatformBridge.deleteLocalFile(createdSavePath));
+      }
+      return (file: null, error: null, cancelled: true);
     } on ApiException catch (e) {
-      return (file: null, error: e.message);
+      if (createdSavePath != null) {
+        unawaited(PlatformBridge.deleteLocalFile(createdSavePath));
+      }
+      return (file: null, error: e.message, cancelled: false);
     } catch (e) {
-      return (file: null, error: '下载失败: $e');
+      if (createdSavePath != null) {
+        unawaited(PlatformBridge.deleteLocalFile(createdSavePath));
+      }
+      if (cancelToken?.isCancelled == true) {
+        return (file: null, error: null, cancelled: true);
+      }
+      return (file: null, error: '下载失败: $e', cancelled: false);
     }
   }
 }

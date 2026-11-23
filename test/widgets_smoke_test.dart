@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:agy_remote/core/config/composer_prefs.dart';
+import 'package:agy_remote/core/config/responsive_layout.dart';
 import 'package:agy_remote/core/config/server_config.dart';
 import 'package:agy_remote/core/platform/platform_bridge.dart';
 import 'package:agy_remote/features/auth/auth_controller.dart';
@@ -9,6 +12,7 @@ import 'package:agy_remote/features/chat/markdown_message_body.dart';
 import 'package:agy_remote/features/chat/message_card.dart';
 import 'package:agy_remote/features/chat/session_queue_bar.dart';
 import 'package:agy_remote/features/chat/session_steps_bar.dart';
+import 'package:agy_remote/features/hub/download_progress_dialog.dart';
 import 'package:agy_remote/features/sessions/quota_drawer.dart';
 import 'package:agy_remote/features/workspace/change_review_sheet.dart';
 import 'package:agy_remote/features/workspace/file_viewer_sheet.dart';
@@ -817,5 +821,200 @@ void main() {
     final normalGeneralY = tester.getTopLeft(find.text('最新未置顶会话')).dy;
     expect(pinnedHeaderY, lessThan(projectsHeaderY));
     expect(pinnedGeneralY, lessThan(normalGeneralY));
+  });
+
+  testWidgets('runWithDownloadProgressDialog 同步极速失败时自动关闭弹窗不卡死且不崩溃', (tester) async {
+    String? result;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (ctx) => Center(
+              child: ElevatedButton(
+                onPressed: () async {
+                  result = await runWithDownloadProgressDialog<String>(
+                    context: ctx,
+                    autoOpen: false,
+                    formatBytes: (b) => '$b B',
+                    task: (_, __) async => '该文件不在当前受控工作区根目录内，无法下载',
+                  );
+                },
+                child: const Text('触发快速失败下载'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('触发快速失败下载'));
+    await tester.pumpAndSettle();
+
+    expect(result, '该文件不在当前受控工作区根目录内，无法下载');
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('正在下载文件...'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('runWithDownloadProgressDialog 点击取消按钮后立刻取消任务并关闭弹窗', (tester) async {
+    final completer = Completer<String>();
+    var tokenCancelled = false;
+    String? result;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (ctx) => Center(
+              child: ElevatedButton(
+                onPressed: () async {
+                  result = await runWithDownloadProgressDialog<String>(
+                    context: ctx,
+                    autoOpen: false,
+                    formatBytes: (b) => '$b B',
+                    task: (_, cancelToken) async {
+                      unawaited(cancelToken.whenCancel.then((_) {
+                        tokenCancelled = true;
+                        if (!completer.isCompleted) {
+                          completer.complete('cancelled');
+                        }
+                      }));
+                      return completer.future;
+                    },
+                  );
+                },
+                child: const Text('触发挂起下载'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('触发挂起下载'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('正在下载文件...'), findsOneWidget);
+    expect(find.text('取消'), findsOneWidget);
+
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+
+    expect(tokenCancelled, true);
+    expect(result, 'cancelled');
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('ResponsiveLayout 断点与平板工作区弹窗宽度约束', (tester) async {
+    Future<void> checkViewport(
+      Size size,
+      void Function(BuildContext ctx) verify,
+    ) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (ctx) {
+              verify(ctx);
+              return const SizedBox.shrink();
+            },
+          ),
+        ),
+      );
+    }
+
+    // 1. 手机竖屏 390x844
+    await checkViewport(const Size(390, 844), (ctx) {
+      expect(ResponsiveLayout.isTabletOrLarger(ctx), false);
+      expect(ResponsiveLayout.usePermanentSidebar(ctx), false);
+      expect(ResponsiveLayout.nodeBadgeMaxWidth(ctx), 88.0);
+      expect(ResponsiveLayout.contentMaxWidth(ctx), 780.0);
+    });
+
+    // 2. 小新 Pad Pro 12.7 竖屏 736x1178
+    await checkViewport(const Size(736, 1178), (ctx) {
+      expect(ResponsiveLayout.isTabletOrLarger(ctx), true);
+      expect(ResponsiveLayout.usePermanentSidebar(ctx), false);
+      expect(ResponsiveLayout.contentMaxWidth(ctx), 840.0);
+      expect(ResponsiveLayout.workspaceSheetConstraints(ctx).maxWidth, greaterThan(640.0));
+    });
+
+    // 3. 小新 Pad Pro 12.7 横屏 1280x800
+    await checkViewport(const Size(1280, 800), (ctx) {
+      expect(ResponsiveLayout.isTabletOrLarger(ctx), true);
+      expect(ResponsiveLayout.usePermanentSidebar(ctx), true);
+      expect(ResponsiveLayout.contentMaxWidth(ctx), 840.0);
+      expect(ResponsiveLayout.workspaceSheetConstraints(ctx).maxWidth, 1080.0);
+      expect(ResponsiveLayout.nodeBadgeMaxWidth(ctx), 180.0);
+    });
+  });
+
+  testWidgets('QuotaDrawer 常驻侧边栏模式切换会话与新建会话不误触发 Navigator.pop', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    var newSessionTapped = 0;
+    String? switchedId;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Row(
+            children: [
+              QuotaDrawer(
+                nodes: const [
+                  HostNode(id: 'win', name: 'Windows PC', isOnline: true, engineAlive: true, canWrite: true),
+                ],
+                selectedNode: 'win',
+                onSwitchNode: (_) {},
+                quotaData: null,
+                isLoadingQuota: false,
+                onRequestQuota: () {},
+                onNewSession: () => newSessionTapped += 1,
+                projects: const {},
+                generalSessions: const [
+                  SessionItem(id: 's-tab', title: '平板横屏测试会话'),
+                ],
+                activeSessionId: '',
+                onSwitchSession: (s) => switchedId = s.id,
+                onDeleteSession: (_) {},
+                isDark: true,
+                onToggleTheme: (_) {},
+                onSelectAccentTheme: (_) {},
+                isPermanentSidebar: true,
+              ),
+              const Expanded(
+                child: Center(child: Text('主聊天区')),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(Drawer), findsNothing);
+    expect(find.text('主聊天区'), findsOneWidget);
+
+    await tester.tap(find.text('新建会话'));
+    await tester.pump();
+    expect(newSessionTapped, 1);
+
+    await tester.tap(find.text('平板横屏测试会话'));
+    await tester.pump();
+    expect(switchedId, 's-tab');
+    // 路由未被 pop 掉，整个双栏界面保持可见
+    expect(find.text('主聊天区'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }

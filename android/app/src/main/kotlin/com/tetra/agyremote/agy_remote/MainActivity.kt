@@ -2,6 +2,7 @@ package com.tetra.agyremote.agy_remote
 
 import android.Manifest
 import android.app.Activity
+import android.app.DownloadManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -12,6 +13,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
@@ -89,6 +91,13 @@ class MainActivity : FlutterActivity() {
                     val mime = call.argument<String>("mimeType") ?: "*/*"
                     val title = call.argument<String>("title") ?: "分享文件"
                     result.success(shareLocalFileWithIntent(path, mime, title))
+                }
+
+                "enqueueSystemDownload" -> {
+                    val url = call.argument<String>("url") ?: ""
+                    val filename = call.argument<String>("filename") ?: "download.bin"
+                    val mime = call.argument<String>("mimeType") ?: "*/*"
+                    result.success(enqueueSystemDownload(url, filename, mime))
                 }
 
                 "requestNotificationPermission" -> handleRequestNotificationPermission(result)
@@ -245,6 +254,48 @@ class MainActivity : FlutterActivity() {
             true
         } catch (_: Exception) {
             false
+        }
+    }
+
+    private fun enqueueSystemDownload(
+        url: String,
+        filename: String,
+        mimeType: String
+    ): Map<String, Any?> {
+        if (url.isBlank()) {
+            return mapOf("ok" to false, "error" to "下载地址为空")
+        }
+        val cleanBase = filename
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .trim()
+            .replace(Regex("[/\\\\:*?\"<>|]+"), "_")
+        val safeName = cleanBase.ifBlank { "download.bin" }
+        return try {
+            val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val request = DownloadManager.Request(Uri.parse(url)).apply {
+                setTitle(safeName)
+                setDescription("AGY Remote 安全下载")
+                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                setAllowedOverMetered(true)
+                setAllowedOverRoaming(true)
+                addRequestHeader(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                )
+                if (mimeType.isNotBlank() && mimeType != "*/*") {
+                    setMimeType(mimeType)
+                }
+                try {
+                    setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, safeName)
+                } catch (_: Exception) {
+                    setDestinationInExternalFilesDir(this@MainActivity, Environment.DIRECTORY_DOWNLOADS, safeName)
+                }
+            }
+            val id = dm.enqueue(request)
+            mapOf("ok" to true, "id" to id, "filename" to safeName)
+        } catch (e: Exception) {
+            mapOf("ok" to false, "error" to (e.message ?: "系统下载器启动失败"))
         }
     }
 
