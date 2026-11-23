@@ -1017,4 +1017,95 @@ void main() {
     expect(find.text('主聊天区'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('SessionChangesBar 标注最新修改且 ChangeReviewSheet 支持单步/最新/全部范围切换', (tester) async {
+    final requestedScopes = <String>[];
+
+    const multiStepChanges = SessionChangesData(
+      sessionId: 's1',
+      totalFiles: 1,
+      totalAdded: 5,
+      totalRemoved: 1,
+      files: [
+        SessionFileChange(
+          filePath: 'C:/novel/ch01.md',
+          fileName: 'ch01.md',
+          directory: 'C:/novel',
+          addedLines: 5,
+          removedLines: 1,
+          editCount: 2,
+          lastStepIndex: 8,
+          hunks: [
+            SessionEditHunk(
+              hunkId: 's3_h1',
+              stepIndex: 3,
+              toolName: 'edit_file',
+              addedLines: 2,
+              removedLines: 0,
+              beforeText: '旧段落A',
+              afterText: '新段落A',
+              inlineSegments: [InlineDiffSegment(kind: 'insert', text: '新段落A')],
+            ),
+            SessionEditHunk(
+              hunkId: 's8_h2',
+              stepIndex: 8,
+              toolName: 'edit_file',
+              addedLines: 3,
+              removedLines: 1,
+              beforeText: '旧段落B',
+              afterText: '新段落B',
+              inlineSegments: [InlineDiffSegment(kind: 'insert', text: '新段落B')],
+            ),
+          ],
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              SessionChangesBar(
+                changes: multiStepChanges,
+                isDark: true,
+                onOpenReview: () {},
+                onOpenFile: (_) {},
+              ),
+              Expanded(
+                child: ChangeReviewSheet(
+                  initialSessionChanges: multiStepChanges,
+                  initialFilePath: 'C:/novel/ch01.md',
+                  initialStepIndex: 8,
+                  initialScope: 'step',
+                  onLoadSessionChangesScoped: ({String scope = 'all', int? stepIndex}) async {
+                    requestedScopes.add('$scope:${stepIndex ?? "none"}');
+                    return multiStepChanges;
+                  },
+                  onFillPrompt: (_) {},
+                  onSendPrompt: (_) async => null,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 底部条显式带有「最新修改」徽标
+    expect(find.text('最新修改'), findsWidgets);
+    // 默认单步模式下只展示 Step 8 的 hunk，不混入 Step 3 的 hunk
+    expect(find.text('单步 #8'), findsOneWidget);
+    expect(find.textContaining('新段落B'), findsOneWidget);
+    expect(find.textContaining('新段落A'), findsNothing);
+    expect(requestedScopes.first, 'all:8');
+
+    // 点击「全部修改」后展示全部两个步骤的 hunk
+    await tester.tap(find.text('全部修改'));
+    await tester.pumpAndSettle();
+    expect(requestedScopes.last, 'all:none');
+    expect(find.textContaining('新段落A'), findsOneWidget);
+    expect(find.textContaining('新段落B'), findsOneWidget);
+  });
 }

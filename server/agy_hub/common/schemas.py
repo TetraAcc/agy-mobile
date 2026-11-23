@@ -92,6 +92,7 @@ class SessionSummary(BaseModel):
     title: str
     preview: str = ""
     updated_at: str = ""
+    last_modified: str = ""
     is_pinned: bool = False
     is_running: bool = False
     workspace_path: str = ""

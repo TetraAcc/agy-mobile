@@ -404,13 +404,15 @@ class BaseEngineProvider(ABC):
             if is_running:
                 running_session_ids.append(cid_str)
 
-            time_str = str(mod_time).split("T")[0].split(" ")[0] if mod_time else ""
+            raw_mod_str = str(mod_time or "")
+            time_str = raw_mod_str.split("T")[0].split(" ")[0] if raw_mod_str else ""
             is_pinned = cid_str in pinned_cids
             summary = SessionSummary(
                 id=cid_str,
                 title=display_title,
                 preview=str(preview or ""),
                 updated_at=time_str,
+                last_modified=raw_mod_str,
                 is_pinned=is_pinned,
                 is_running=is_running,
                 workspace_path=proj_path or str(self.default_workspace),

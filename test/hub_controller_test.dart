@@ -86,6 +86,7 @@ class FakeApiClient extends ApiClient {
   ];
   List<FileRootItem>? refreshedFileRoots;
   final List<(String, String)> ticketRequests = [];
+  SessionTreeData? customWinTree;
 
   FakeApiClient()
       : super(
@@ -112,6 +113,9 @@ class FakeApiClient extends ApiClient {
         generalSessions: [SessionItem(id: 'deck-s1', title: 'Deck 会话', rootId: 'scratch')],
         engineAlive: true,
       );
+    }
+    if (customWinTree != null) {
+      return customWinTree!;
     }
     return const SessionTreeData(
       projects: {
@@ -237,6 +241,8 @@ class FakeApiClient extends ApiClient {
     String sessionId, {
     bool includeHunks = false,
     String? filePath,
+    String scope = 'all',
+    int? stepIndex,
   }) async {
     if (nodeId == 'win' && sessionId == 's1') {
       return const SessionChangesData(
@@ -524,5 +530,112 @@ void main() {
     );
     expect(args['filename'], 'AGENTS.md');
     expect(args['mimeType'], 'text/markdown');
+  });
+
+  test('HubController 进入应用优先打开正在运行的对话，无运行中则打开最近修改的活跃对话', () async {
+    const user = UserProfile(
+      id: 1,
+      username: 'tetra',
+      displayName: 'Tetra',
+      role: 'admin',
+      defaultNode: 'win',
+      allowedNodes: ['win'],
+      nodePermissions: {
+        'win': UserPermissionGrant(nodeId: 'win', canWrite: true, canDelete: true),
+      },
+    );
+
+    // 场景 1：通用会话里有一条正在运行的任务，即使项目列表排在前面也优先打开运行中对话
+    final fakeApi1 = FakeApiClient()
+      ..customWinTree = const SessionTreeData(
+        projects: {
+          'Novel': [
+            SessionItem(
+              id: 'p-pinned',
+              title: '置顶旧章节',
+              isPinned: true,
+              lastModified: '2026-11-23T22:50:00Z',
+            ),
+          ],
+        },
+        generalSessions: [
+          SessionItem(
+            id: 'g-running',
+            title: '后台正在生成的章节',
+            isRunning: true,
+            lastModified: '2026-11-23T21:00:00Z',
+          ),
+        ],
+        runningSessionIds: {'g-running'},
+        engineAlive: true,
+      );
+
+    final c1 = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(fakeApi1),
+        tokenStoreProvider.overrideWithValue(MemoryTokenStore(initialAccess: 'tok')),
+        eventSocketFactoryProvider.overrideWithValue(({
+          required ServerConfig serverConfig,
+          required String nodeId,
+          required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
+        }) =>
+            FakeEventSocket(nodeId)),
+      ],
+    );
+    addTearDown(c1.dispose);
+
+    await c1.read(hubControllerProvider.notifier).initializeForUser(user);
+    await Future<void>.delayed(Duration.zero);
+    expect(c1.read(hubControllerProvider).activeSessionId, 'g-running');
+
+    // 场景 2：无运行中任务时，跨项目与置顶顺序，优先打开 lastModified 最新的活跃对话
+    final fakeApi2 = FakeApiClient()
+      ..customWinTree = const SessionTreeData(
+        projects: {
+          'Novel': [
+            SessionItem(
+              id: 'p-old-pinned',
+              title: '十天前置顶的大纲',
+              isPinned: true,
+              lastModified: '2026-11-10T08:00:00Z',
+            ),
+            SessionItem(
+              id: 'p-recent',
+              title: '五分钟前修改的第五章',
+              isPinned: false,
+              lastModified: '2026-11-23T23:05:00Z',
+            ),
+          ],
+        },
+        generalSessions: [
+          SessionItem(
+            id: 'g-latest',
+            title: '刚刚在聊的通用会话',
+            isPinned: false,
+            lastModified: '2026-11-23T23:10:00Z',
+          ),
+        ],
+        engineAlive: true,
+      );
+
+    final c2 = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(fakeApi2),
+        tokenStoreProvider.overrideWithValue(MemoryTokenStore(initialAccess: 'tok')),
+        eventSocketFactoryProvider.overrideWithValue(({
+          required ServerConfig serverConfig,
+          required String nodeId,
+          required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
+        }) =>
+            FakeEventSocket(nodeId)),
+      ],
+    );
+    addTearDown(c2.dispose);
+
+    await c2.read(hubControllerProvider.notifier).initializeForUser(user);
+    await Future<void>.delayed(Duration.zero);
+    expect(c2.read(hubControllerProvider).activeSessionId, 'g-latest');
   });
 }

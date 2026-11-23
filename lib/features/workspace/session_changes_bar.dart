@@ -59,6 +59,22 @@ class _SessionChangesBarState extends State<SessionChangesBar> {
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               child: Row(
                 children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: primary.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(5),
+                    ),
+                    child: Text(
+                      '最新修改',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w700,
+                        color: primary,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 7),
                   Text(
                     '${changes.totalFiles} $fileNoun',
                     style: TextStyle(

@@ -583,6 +583,8 @@ class ApiClient {
     String sessionId, {
     bool includeHunks = false,
     String? filePath,
+    String scope = 'all',
+    int? stepIndex,
   }) async {
     return _exec(
       () => _dio.get<dynamic>(
@@ -590,6 +592,8 @@ class ApiClient {
         queryParameters: {
           'include_hunks': includeHunks,
           if (filePath != null && filePath.isNotEmpty) 'file_path': filePath,
+          if (scope != 'all') 'scope': scope,
+          if (stepIndex != null) 'step_index': stepIndex,
         },
       ),
       (data) => SessionChangesData.fromJson(Map<String, dynamic>.from(data as Map)),

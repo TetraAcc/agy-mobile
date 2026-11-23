@@ -132,23 +132,62 @@ def test_agent_changes_and_git_repos_and_head_diff_endpoints(tmp_agent_env: dict
 
     logs_dir = brain_dir / sid / ".system_generated" / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
+    second_file = proj_dir / "ch02.md"
     (logs_dir / "transcript_full.jsonl").write_text(
-        json.dumps(
-            {
-                "step_index": 5,
-                "created_at": "2026-11-23T08:05:00Z",
-                "tool_calls": [
+        "\n".join(
+            [
+                json.dumps(
                     {
-                        "name": "edit_file",
-                        "args": {
-                            "Path": str(note_file),
-                            "Target": "第一行\n修改后的第二行",
-                            "Replacement": "第一行\n修改后的第二行\n新增第三行",
-                        },
-                    }
-                ],
-            },
-            ensure_ascii=False,
+                        "step_index": 1,
+                        "source": "USER_EXPLICIT",
+                        "type": "USER_INPUT",
+                        "content": "写第一章",
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "step_index": 2,
+                        "created_at": "2026-11-23T08:01:00Z",
+                        "tool_calls": [
+                            {
+                                "name": "write_file",
+                                "args": {
+                                    "Path": str(second_file),
+                                    "Content": "第二章初稿\n",
+                                },
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "step_index": 4,
+                        "source": "USER_EXPLICIT",
+                        "type": "USER_INPUT",
+                        "content": "改 notes.md",
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "step_index": 5,
+                        "created_at": "2026-11-23T08:05:00Z",
+                        "tool_calls": [
+                            {
+                                "name": "edit_file",
+                                "args": {
+                                    "Path": str(note_file),
+                                    "Target": "第一行\n修改后的第二行",
+                                    "Replacement": "第一行\n修改后的第二行\n新增第三行",
+                                },
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+            ]
         )
         + "\n",
         encoding="utf-8",
@@ -160,14 +199,24 @@ def test_agent_changes_and_git_repos_and_head_diff_endpoints(tmp_agent_env: dict
         registry=tmp_agent_env["registry"],
     )
     with TestClient(app) as client:
-        # 1. Session changes endpoint
+        # 1. Session changes endpoint: scope=all vs scope=latest_turn vs step_index
         ch_path = f"/agent/sessions/{sid}/changes"
-        ch_resp = client.get(f"{ch_path}?include_hunks=true", headers=_signed_headers("GET", ch_path))
-        assert ch_resp.status_code == 200
-        ch_data = ch_resp.json()
+        ch_all = client.get(f"{ch_path}?include_hunks=true&scope=all", headers=_signed_headers("GET", ch_path))
+        assert ch_all.status_code == 200
+        assert ch_all.json()["total_files"] == 2
+
+        ch_latest = client.get(f"{ch_path}?include_hunks=true&scope=latest_turn", headers=_signed_headers("GET", ch_path))
+        assert ch_latest.status_code == 200
+        ch_data = ch_latest.json()
         assert ch_data["total_files"] == 1
         assert ch_data["total_added"] == 1
+        assert ch_data["files"][0]["file_name"] == "notes.md"
         assert ch_data["files"][0]["hunks"][0]["start_line"] == 1
+
+        ch_step2 = client.get(f"{ch_path}?include_hunks=true&step_index=2", headers=_signed_headers("GET", ch_path))
+        assert ch_step2.status_code == 200
+        assert ch_step2.json()["total_files"] == 1
+        assert ch_step2.json()["files"][0]["file_name"] == "ch02.md"
 
         # 2. Git repo discovery finds demo_project via pre-registered workspace root
         repos_resp = client.get("/agent/git/repos", headers=_signed_headers("GET", "/agent/git/repos"))

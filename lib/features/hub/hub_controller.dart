@@ -455,7 +455,11 @@ class HubController extends Notifier<HubState> {
       );
 
       if (autoSelectFirst && state.activeSessionId.isEmpty) {
-        final first = _findFirstSession(tree.projects, tree.generalSessions);
+        final first = _findFirstSession(
+          tree.projects,
+          tree.generalSessions,
+          runningIds: mergedRunning,
+        );
         if (first != null) {
           await selectSession(first);
         } else {
@@ -472,13 +476,42 @@ class HubController extends Notifier<HubState> {
 
   SessionItem? _findFirstSession(
     Map<String, List<SessionItem>> projects,
-    List<SessionItem> general,
-  ) {
-    for (final list in projects.values) {
-      if (list.isNotEmpty) return list.first;
+    List<SessionItem> general, {
+    Set<String> runningIds = const {},
+  }) {
+    final allSessions = <SessionItem>[
+      for (final list in projects.values) ...list,
+      ...general,
+    ];
+    if (allSessions.isEmpty) return null;
+
+    String sortKeyOf(SessionItem s) =>
+        s.lastModified.isNotEmpty ? s.lastModified : s.updatedAt;
+
+    SessionItem pickMostRecent(List<SessionItem> candidates) {
+      var best = candidates.first;
+      var bestKey = sortKeyOf(best);
+      for (var i = 1; i < candidates.length; i++) {
+        final cur = candidates[i];
+        final curKey = sortKeyOf(cur);
+        if (curKey.compareTo(bestKey) > 0) {
+          best = cur;
+          bestKey = curKey;
+        }
+      }
+      return best;
     }
-    if (general.isNotEmpty) return general.first;
-    return null;
+
+    // Priority 1: Any currently running session (most recently modified first)
+    final running = allSessions
+        .where((s) => s.isRunning || runningIds.contains(s.id))
+        .toList();
+    if (running.isNotEmpty) {
+      return pickMostRecent(running);
+    }
+
+    // Priority 2: Most recently modified active session across all projects & general
+    return pickMostRecent(allSessions);
   }
 
   SessionItem? _findSessionById(
@@ -1112,19 +1145,35 @@ class HubController extends Notifier<HubState> {
     final sid = state.activeSessionId;
     if (nodeId.isEmpty || sid.isEmpty) return;
     try {
-      final summary = await _api.getSessionChanges(nodeId, sid, includeHunks: false);
+      final summary = await _api.getSessionChanges(
+        nodeId,
+        sid,
+        includeHunks: false,
+        scope: 'latest_turn',
+      );
       if (_disposed || state.selectedNodeId != nodeId || state.activeSessionId != sid) return;
       state = state.copyWith(sessionChanges: summary);
     } catch (_) {}
   }
 
-  Future<SessionChangesData> fetchSessionChangesDetail({String? filePath}) async {
+  Future<SessionChangesData> fetchSessionChangesDetail({
+    String? filePath,
+    String scope = 'all',
+    int? stepIndex,
+  }) async {
     final nodeId = state.selectedNodeId;
     final sid = state.activeSessionId;
     if (nodeId.isEmpty || sid.isEmpty) {
       return const SessionChangesData();
     }
-    return _api.getSessionChanges(nodeId, sid, includeHunks: true, filePath: filePath);
+    return _api.getSessionChanges(
+      nodeId,
+      sid,
+      includeHunks: true,
+      filePath: filePath,
+      scope: scope,
+      stepIndex: stepIndex,
+    );
   }
 
   Future<List<GitRepoItem>> fetchGitRepos() async {

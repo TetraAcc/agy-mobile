@@ -484,6 +484,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     String? initialFilePath,
     int? initialStepIndex,
     int initialTabIndex = 0,
+    String initialScope = 'all',
   }) {
     final hubState = ref.read(hubControllerProvider);
     final hubNotifier = ref.read(hubControllerProvider.notifier);
@@ -491,10 +492,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
     ChangeReviewSheet.show(
       context,
-      initialSessionChanges: hubState.sessionChanges,
+      initialSessionChanges: initialScope == 'latest_turn' ? hubState.sessionChanges : null,
       initialFilePath: initialFilePath,
       initialStepIndex: initialStepIndex,
       initialTabIndex: initialTabIndex,
+      initialScope: initialScope,
       preferredRootId: hubState.activeRootId,
       canWrite: hubState.canWrite,
       initialComments: _commentsForSession(sid),
@@ -505,7 +507,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           _draftComments = List<ReviewCommentItem>.from(next);
         });
       },
-      onLoadSessionChanges: sid.isEmpty ? null : () => hubNotifier.fetchSessionChangesDetail(),
+      onLoadSessionChangesScoped: sid.isEmpty
+          ? null
+          : ({String scope = 'all', int? stepIndex}) => hubNotifier.fetchSessionChangesDetail(
+                scope: scope,
+                stepIndex: stepIndex,
+              ),
       onLoadGitRepos: () => hubNotifier.fetchGitRepos(),
       onLoadGitDiff: (rid, sub, scope) => hubNotifier.fetchGitDiff(rootId: rid, subPath: sub, scope: scope),
       onFillPrompt: _insertText,
@@ -1258,6 +1265,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                       onOpenEditDiff: (filePath, stepIdx) => _openChangeReview(
                                         initialFilePath: filePath,
                                         initialStepIndex: stepIdx,
+                                        initialScope: 'step',
                                       ),
                                       onOpenToolDetail: _openToolDetail,
                                       onSubmitQuickReply: _sendPromptDirect,
@@ -1351,10 +1359,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                     changes: hubState.sessionChanges,
                     pendingCommentCount: _commentsForSession(hubState.activeSessionId).length,
                     isDark: isDark,
-                    onOpenReview: () => _openChangeReview(),
+                    onOpenReview: () => _openChangeReview(initialScope: 'latest_turn'),
                     onOpenFile: (f) => _openChangeReview(
                       initialFilePath: f.filePath,
-                      initialStepIndex: f.lastStepIndex,
+                      initialScope: 'latest_turn',
                     ),
                   )
                 : null,

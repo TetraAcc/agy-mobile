@@ -3,6 +3,7 @@ class SessionItem {
   final String title;
   final String preview;
   final String updatedAt;
+  final String lastModified;
   final bool isPinned;
   final bool isRunning;
   final String workspacePath;
@@ -13,6 +14,7 @@ class SessionItem {
     required this.title,
     this.preview = '',
     this.updatedAt = '',
+    this.lastModified = '',
     this.isPinned = false,
     this.isRunning = false,
     this.workspacePath = '',
@@ -27,6 +29,7 @@ class SessionItem {
       title: json['title']?.toString() ?? '未命名会话',
       preview: json['preview']?.toString() ?? '',
       updatedAt: (json['updated_at'] ?? json['time'])?.toString() ?? '',
+      lastModified: json['last_modified']?.toString() ?? '',
       isPinned: json['is_pinned'] == true,
       isRunning: json['is_running'] == true,
       workspacePath: json['workspace_path']?.toString() ?? '',

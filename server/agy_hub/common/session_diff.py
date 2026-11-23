@@ -7,7 +7,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from agy_hub.common.sandbox import is_sensitive_path
 from agy_hub.common.schemas import (
@@ -210,6 +210,8 @@ def extract_session_changes(
     session_id: str,
     include_hunks: bool = False,
     file_path_filter: str | None = None,
+    scope: Literal["all", "latest_turn"] = "all",
+    step_index_filter: int | None = None,
 ) -> SessionChangesResponse:
     """Parse transcript_full.jsonl (fallback transcript.jsonl) into per-file diff summaries."""
     logs_dir = brain_dir / session_id / ".system_generated" / "logs"
@@ -224,6 +226,38 @@ def extract_session_changes(
     file_records: dict[str, dict[str, Any]] = {}
     tracked_contents: dict[str, str] = {}
     disk_text_cache: dict[str, str | None] = {}
+    raw_edits: list[dict[str, Any]] = []
+
+    def _queue_edit(
+        turn_id: int,
+        raw_file_path: str,
+        tool_name: str,
+        step_index: int,
+        timestamp: str,
+        before_text: str,
+        after_text: str,
+        *,
+        is_new: bool = False,
+        explicit_start: int | None = None,
+        explicit_end: int | None = None,
+    ) -> None:
+        display_path = _normalize_display_path(raw_file_path)
+        if not display_path or is_sensitive_path(Path(display_path)):
+            return
+        raw_edits.append(
+            {
+                "turn_id": turn_id,
+                "raw_file_path": raw_file_path,
+                "tool_name": tool_name,
+                "step_index": step_index,
+                "timestamp": timestamp,
+                "before_text": before_text,
+                "after_text": after_text,
+                "is_new": is_new,
+                "explicit_start": explicit_start,
+                "explicit_end": explicit_end,
+            }
+        )
 
     def _record_edit(
         raw_file_path: str,
@@ -288,6 +322,7 @@ def extract_session_changes(
                 )
             )
 
+    current_turn_id = 0
     try:
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -299,11 +334,15 @@ def extract_session_changes(
                     continue
                 if not isinstance(step_obj, dict):
                     continue
+
+                step_index = int(step_obj.get("step_index", 0) or 0)
+                if step_obj.get("source") == "USER_EXPLICIT" or step_obj.get("type") in ("USER_INPUT", "USER_EXPLICIT"):
+                    current_turn_id = step_index if step_index > 0 else (current_turn_id + 1)
+
                 tool_calls = step_obj.get("tool_calls")
                 if not isinstance(tool_calls, list) or not tool_calls:
                     continue
 
-                step_index = int(step_obj.get("step_index", 0) or 0)
                 timestamp = str(step_obj.get("created_at", "") or "")
 
                 for tc in tool_calls:
@@ -322,7 +361,7 @@ def extract_session_changes(
                         norm_k = os.path.normcase(_normalize_display_path(raw_p))
                         if norm_k in tracked_contents and before and before in tracked_contents[norm_k]:
                             tracked_contents[norm_k] = tracked_contents[norm_k].replace(before, after, 1)
-                        _record_edit(raw_p, tool_name, step_index, timestamp, before, after)
+                        _queue_edit(current_turn_id, raw_p, tool_name, step_index, timestamp, before, after)
 
                     elif tool_name == "write_file":
                         raw_p = _unwrap_str(args.get("Path") or args.get("path"))
@@ -335,11 +374,29 @@ def extract_session_changes(
                         if is_append:
                             before = ""
                             tracked_contents[norm_k] = (prev or "") + content
-                            _record_edit(raw_p, tool_name, step_index, timestamp, before, content, is_new=prev is None)
+                            _queue_edit(
+                                current_turn_id,
+                                raw_p,
+                                tool_name,
+                                step_index,
+                                timestamp,
+                                before,
+                                content,
+                                is_new=prev is None,
+                            )
                         else:
                             before = prev if prev is not None else ""
                             tracked_contents[norm_k] = content
-                            _record_edit(raw_p, tool_name, step_index, timestamp, before, content, is_new=prev is None)
+                            _queue_edit(
+                                current_turn_id,
+                                raw_p,
+                                tool_name,
+                                step_index,
+                                timestamp,
+                                before,
+                                content,
+                                is_new=prev is None,
+                            )
 
                     elif tool_name == "replace_file_content":
                         raw_p = _unwrap_str(args.get("TargetFile") or args.get("target_file"))
@@ -349,7 +406,8 @@ def extract_session_changes(
                         e_line = args.get("EndLine") or args.get("end_line")
                         if not raw_p:
                             continue
-                        _record_edit(
+                        _queue_edit(
+                            current_turn_id,
                             raw_p,
                             tool_name,
                             step_index,
@@ -372,7 +430,8 @@ def extract_session_changes(
                             after = _unwrap_str(chunk.get("ReplacementContent") or chunk.get("replacement_content")).replace("\r\n", "\n")
                             s_line = chunk.get("StartLine") or chunk.get("start_line")
                             e_line = chunk.get("EndLine") or chunk.get("end_line")
-                            _record_edit(
+                            _queue_edit(
+                                current_turn_id,
                                 raw_p,
                                 tool_name,
                                 step_index,
@@ -384,6 +443,30 @@ def extract_session_changes(
                             )
     except OSError:
         return SessionChangesResponse(session_id=session_id)
+
+    if not raw_edits:
+        return SessionChangesResponse(session_id=session_id)
+
+    if step_index_filter is not None:
+        selected_edits = [e for e in raw_edits if e["step_index"] == step_index_filter]
+    elif scope == "latest_turn":
+        latest_turn_id = raw_edits[-1]["turn_id"]
+        selected_edits = [e for e in raw_edits if e["turn_id"] == latest_turn_id]
+    else:
+        selected_edits = raw_edits
+
+    for e in selected_edits:
+        _record_edit(
+            e["raw_file_path"],
+            e["tool_name"],
+            e["step_index"],
+            e["timestamp"],
+            e["before_text"],
+            e["after_text"],
+            is_new=e["is_new"],
+            explicit_start=e["explicit_start"],
+            explicit_end=e["explicit_end"],
+        )
 
     sorted_recs = sorted(file_records.values(), key=lambda r: (-r["last_step_index"], r["file_name"].lower()))
     summaries = [SessionFileChangeSummary(**rec) for rec in sorted_recs]

@@ -12,11 +12,13 @@ class ChangeReviewSheet extends StatefulWidget {
   final String? initialFilePath;
   final int? initialStepIndex;
   final int initialTabIndex;
+  final String initialScope;
   final String? preferredRootId;
   final bool canWrite;
   final List<ReviewCommentItem> initialComments;
   final ValueChanged<List<ReviewCommentItem>>? onCommentsChanged;
   final Future<SessionChangesData> Function()? onLoadSessionChanges;
+  final Future<SessionChangesData> Function({String scope, int? stepIndex})? onLoadSessionChangesScoped;
   final Future<List<GitRepoItem>> Function()? onLoadGitRepos;
   final Future<GitDiffData> Function(String rootId, String subPath, String scope)? onLoadGitDiff;
   final ValueChanged<String> onFillPrompt;
@@ -28,11 +30,13 @@ class ChangeReviewSheet extends StatefulWidget {
     this.initialFilePath,
     this.initialStepIndex,
     this.initialTabIndex = 0,
+    this.initialScope = 'all',
     this.preferredRootId,
     this.canWrite = true,
     this.initialComments = const [],
     this.onCommentsChanged,
     this.onLoadSessionChanges,
+    this.onLoadSessionChangesScoped,
     this.onLoadGitRepos,
     this.onLoadGitDiff,
     required this.onFillPrompt,
@@ -45,11 +49,13 @@ class ChangeReviewSheet extends StatefulWidget {
     String? initialFilePath,
     int? initialStepIndex,
     int initialTabIndex = 0,
+    String initialScope = 'all',
     String? preferredRootId,
     bool canWrite = true,
     List<ReviewCommentItem> initialComments = const [],
     ValueChanged<List<ReviewCommentItem>>? onCommentsChanged,
     Future<SessionChangesData> Function()? onLoadSessionChanges,
+    Future<SessionChangesData> Function({String scope, int? stepIndex})? onLoadSessionChangesScoped,
     Future<List<GitRepoItem>> Function()? onLoadGitRepos,
     Future<GitDiffData> Function(String rootId, String subPath, String scope)? onLoadGitDiff,
     required ValueChanged<String> onFillPrompt,
@@ -69,11 +75,13 @@ class ChangeReviewSheet extends StatefulWidget {
         initialFilePath: initialFilePath,
         initialStepIndex: initialStepIndex,
         initialTabIndex: initialTabIndex,
+        initialScope: initialScope,
         preferredRootId: preferredRootId,
         canWrite: canWrite,
         initialComments: initialComments,
         onCommentsChanged: onCommentsChanged,
         onLoadSessionChanges: onLoadSessionChanges,
+        onLoadSessionChangesScoped: onLoadSessionChangesScoped,
         onLoadGitRepos: onLoadGitRepos,
         onLoadGitDiff: onLoadGitDiff,
         onFillPrompt: onFillPrompt,
@@ -91,6 +99,7 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
   late List<ReviewCommentItem> _comments;
 
   // Session changes state
+  late String _activeScope;
   SessionChangesData _sessionChanges = const SessionChangesData();
   bool _loadingSession = false;
   String? _sessionError;
@@ -115,13 +124,14 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
   void initState() {
     super.initState();
     _tabIndex = widget.initialTabIndex;
+    _activeScope = widget.initialScope;
     _comments = List<ReviewCommentItem>.from(widget.initialComments);
     _sessionChanges = widget.initialSessionChanges ?? const SessionChangesData();
     _selectedFilePath = _matchFilePath(_sessionChanges.files, widget.initialFilePath);
     if (_selectedFilePath != null) {
       _inlineWordMode = _defaultInlineMode(_selectedFilePath!);
     }
-    if (widget.onLoadSessionChanges != null) {
+    if (widget.onLoadSessionChangesScoped != null || widget.onLoadSessionChanges != null) {
       unawaited(_loadSessionChanges());
     }
     if (_tabIndex == 1 && widget.onLoadGitRepos != null) {
@@ -151,14 +161,26 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
   }
 
   Future<void> _loadSessionChanges() async {
-    final loader = widget.onLoadSessionChanges;
-    if (loader == null) return;
+    final scopedLoader = widget.onLoadSessionChangesScoped;
+    final legacyLoader = widget.onLoadSessionChanges;
+    if (scopedLoader == null && legacyLoader == null) return;
     setState(() {
       _loadingSession = true;
       _sessionError = null;
     });
     try {
-      final data = await loader();
+      final SessionChangesData data;
+      if (scopedLoader != null) {
+        if (_activeScope == 'step' && widget.initialStepIndex != null) {
+          data = await scopedLoader(scope: 'all', stepIndex: widget.initialStepIndex);
+        } else if (_activeScope == 'latest_turn') {
+          data = await scopedLoader(scope: 'latest_turn');
+        } else {
+          data = await scopedLoader(scope: 'all');
+        }
+      } else {
+        data = await legacyLoader!();
+      }
       if (!mounted) return;
       final matched = _matchFilePath(data.files, _selectedFilePath ?? widget.initialFilePath);
       setState(() {
@@ -176,6 +198,14 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
         _sessionError = '加载本会话修改失败: $e';
       });
     }
+  }
+
+  void _switchSessionScope(String nextScope) {
+    if (_activeScope == nextScope) return;
+    setState(() {
+      _activeScope = nextScope;
+    });
+    unawaited(_loadSessionChanges());
   }
 
   Future<void> _loadGitRepos() async {
@@ -401,33 +431,148 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
     );
   }
 
+  Widget _buildScopeChip({
+    required String label,
+    required String scopeValue,
+    required bool isDark,
+    required Color primary,
+    required Color borderColor,
+  }) {
+    final selected = _activeScope == scopeValue;
+    return InkWell(
+      onTap: () => _switchSessionScope(scopeValue),
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        decoration: BoxDecoration(
+          color: selected
+              ? primary.withValues(alpha: 0.16)
+              : (isDark ? const Color(0xFF18181B) : const Color(0xFFF4F4F5)),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: selected ? primary : borderColor),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            color: selected ? primary : (isDark ? Colors.white70 : Colors.black87),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildScopeSelectorRow(bool isDark, Color primary, Color borderColor) {
+    final hasLoader = widget.onLoadSessionChangesScoped != null || widget.onLoadSessionChanges != null;
+    final hasStep = widget.initialStepIndex != null;
+    if (!hasLoader && !hasStep && widget.initialScope == 'all') {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          Text(
+            '范围:',
+            style: TextStyle(
+              fontSize: 11.5,
+              color: isDark ? Colors.white54 : Colors.black54,
+            ),
+          ),
+          const SizedBox(width: 6),
+          if (hasStep) ...[
+            _buildScopeChip(
+              label: '单步 #${widget.initialStepIndex}',
+              scopeValue: 'step',
+              isDark: isDark,
+              primary: primary,
+              borderColor: borderColor,
+            ),
+            const SizedBox(width: 6),
+          ],
+          _buildScopeChip(
+            label: '最新修改',
+            scopeValue: 'latest_turn',
+            isDark: isDark,
+            primary: primary,
+            borderColor: borderColor,
+          ),
+          const SizedBox(width: 6),
+          _buildScopeChip(
+            label: '全部修改',
+            scopeValue: 'all',
+            isDark: isDark,
+            primary: primary,
+            borderColor: borderColor,
+          ),
+          const Spacer(),
+          if (hasLoader)
+            IconButton(
+              tooltip: '刷新修改记录',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              icon: _loadingSession
+                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.refresh_rounded, size: 17),
+              onPressed: _loadingSession ? null : _loadSessionChanges,
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSessionTab(bool isDark, Color primary, Color borderColor) {
+    final scopeBar = _buildScopeSelectorRow(isDark, primary, borderColor);
     if (_loadingSession && _sessionChanges.files.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          scopeBar,
+          const Expanded(child: Center(child: CircularProgressIndicator())),
+        ],
+      );
     }
     if (_sessionError != null && _sessionChanges.files.isEmpty) {
-      return Center(
-        child: Text(_sessionError!, style: TextStyle(color: AppColors.statusRed(isDark), fontSize: 13)),
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          scopeBar,
+          Expanded(
+            child: Center(
+              child: Text(_sessionError!, style: TextStyle(color: AppColors.statusRed(isDark), fontSize: 13)),
+            ),
+          ),
+        ],
       );
     }
     if (_sessionChanges.files.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.fact_check_outlined, size: 46, color: isDark ? Colors.white24 : Colors.black26),
-            const SizedBox(height: 10),
-            Text(
-              '当前会话暂无文件修改记录',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: isDark ? Colors.white70 : Colors.black87),
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          scopeBar,
+          Expanded(
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.fact_check_outlined, size: 46, color: isDark ? Colors.white24 : Colors.black26),
+                  const SizedBox(height: 10),
+                  Text(
+                    '当前范围暂无文件修改记录',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: isDark ? Colors.white70 : Colors.black87),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '可切换上方「全部修改」或「Git 变更」查看完整历史',
+                    style: TextStyle(fontSize: 12, color: isDark ? Colors.white38 : Colors.black45),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 4),
-            Text(
-              'Agent 修改或创建文稿/代码后会自动在此汇总 Diff',
-              style: TextStyle(fontSize: 12, color: isDark ? Colors.white38 : Colors.black45),
-            ),
-          ],
-        ),
+          ),
+        ],
       );
     }
 
@@ -441,10 +586,17 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
       }
     }
 
-    if (selectedFile == null) {
-      return _buildSessionFileList(isDark, primary, borderColor);
-    }
-    return _buildSessionFileDetail(selectedFile, isDark, primary, borderColor);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        scopeBar,
+        Expanded(
+          child: selectedFile == null
+              ? _buildSessionFileList(isDark, primary, borderColor)
+              : _buildSessionFileDetail(selectedFile, isDark, primary, borderColor),
+        ),
+      ],
+    );
   }
 
   Widget _buildSessionFileList(bool isDark, Color primary, Color borderColor) {
@@ -470,15 +622,6 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
                 '-${_sessionChanges.totalRemoved}',
                 style: const TextStyle(fontSize: 12, fontFamily: 'monospace', fontWeight: FontWeight.bold, color: Color(0xFFF87171)),
               ),
-              const Spacer(),
-              if (widget.onLoadSessionChanges != null)
-                IconButton(
-                  tooltip: '刷新修改记录',
-                  icon: _loadingSession
-                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.refresh_rounded, size: 18),
-                  onPressed: _loadingSession ? null : _loadSessionChanges,
-                ),
             ],
           ),
         ),
@@ -590,8 +733,13 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
   }
 
   Widget _buildSessionFileDetail(SessionFileChange file, bool isDark, Color primary, Color borderColor) {
-    final hunks = List<SessionEditHunk>.from(file.hunks);
-    if (widget.initialStepIndex != null) {
+    var hunks = List<SessionEditHunk>.from(file.hunks);
+    if (_activeScope == 'step' && widget.initialStepIndex != null) {
+      final stepOnly = hunks.where((h) => h.stepIndex == widget.initialStepIndex).toList();
+      if (stepOnly.isNotEmpty) {
+        hunks = stepOnly;
+      }
+    } else if (widget.initialStepIndex != null) {
       hunks.sort((a, b) {
         final aMatch = a.stepIndex == widget.initialStepIndex ? 0 : 1;
         final bMatch = b.stepIndex == widget.initialStepIndex ? 0 : 1;
