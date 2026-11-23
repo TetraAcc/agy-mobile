@@ -58,7 +58,7 @@ class ChangeReviewSheet extends StatefulWidget {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+      backgroundColor: isDark ? const Color(0xFF111113) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -319,7 +319,7 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final primary = Theme.of(context).colorScheme.primary;
-    final borderColor = isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0);
+    final borderColor = isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7);
 
     return Container(
       height: MediaQuery.of(context).size.height * 0.90,
@@ -381,7 +381,7 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
         decoration: BoxDecoration(
           color: selected
               ? primary.withValues(alpha: isDark ? 0.2 : 0.12)
-              : (isDark ? const Color(0xFF161F30) : const Color(0xFFF1F5F9)),
+              : (isDark ? const Color(0xFF18181B) : const Color(0xFFF4F4F5)),
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
             color: selected ? primary : (isDark ? Colors.white12 : Colors.black12),
@@ -498,7 +498,7 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   decoration: BoxDecoration(
-                    color: isDark ? const Color(0xFF161F30) : const Color(0xFFF8FAFC),
+                    color: isDark ? const Color(0xFF18181B) : const Color(0xFFF8F8F9),
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(color: borderColor),
                   ),
@@ -690,7 +690,7 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
 
     return Container(
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF090D16) : const Color(0xFFF8FAFC),
+        color: isDark ? const Color(0xFF090D16) : const Color(0xFFF8F8F9),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
           color: isHighlightedStep ? primary.withValues(alpha: 0.7) : borderColor,
@@ -703,7 +703,7 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF161F30) : const Color(0xFFF1F5F9),
+              color: isDark ? const Color(0xFF18181B) : const Color(0xFFF4F4F5),
               borderRadius: const BorderRadius.vertical(top: Radius.circular(9)),
             ),
             child: Row(
@@ -775,13 +775,13 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
     if (hunk.inlineSegments.isEmpty) {
       return Text(
         hunk.afterText.isNotEmpty ? hunk.afterText : hunk.beforeText,
-        style: TextStyle(fontSize: 13.5, height: 1.65, color: isDark ? const Color(0xFFE2E8F0) : const Color(0xFF1E293B)),
+        style: TextStyle(fontSize: 13.5, height: 1.65, color: isDark ? const Color(0xFFE4E4E7) : const Color(0xFF222226)),
       );
     }
     final baseStyle = TextStyle(
       fontSize: 13.5,
       height: 1.7,
-      color: isDark ? const Color(0xFFE2E8F0) : const Color(0xFF1E293B),
+      color: isDark ? const Color(0xFFE4E4E7) : const Color(0xFF222226),
     );
     return SelectableText.rich(
       TextSpan(
@@ -826,7 +826,7 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: lines.map((line) {
           Color? bgColor;
-          var textColor = isDark ? const Color(0xFFE2E8F0) : const Color(0xFF1E293B);
+          var textColor = isDark ? const Color(0xFFE4E4E7) : const Color(0xFF222226);
           var fontWeight = FontWeight.normal;
           var tappable = false;
 
@@ -974,7 +974,7 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10),
                 decoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF161F30) : const Color(0xFFF1F5F9),
+                  color: isDark ? const Color(0xFF18181B) : const Color(0xFFF4F4F5),
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: borderColor),
                 ),
@@ -983,7 +983,7 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
                     value: _selectedRepo?.id,
                     isExpanded: true,
                     isDense: true,
-                    dropdownColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+                    dropdownColor: isDark ? const Color(0xFF222226) : Colors.white,
                     items: _gitRepos
                         .map(
                           (r) => DropdownMenuItem<String>(
@@ -1083,7 +1083,7 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
                           width: double.infinity,
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(
-                            color: isDark ? const Color(0xFF090D16) : const Color(0xFFF8FAFC),
+                            color: isDark ? const Color(0xFF090D16) : const Color(0xFFF8F8F9),
                             borderRadius: BorderRadius.circular(10),
                             border: Border.all(color: borderColor),
                           ),
@@ -1123,7 +1123,7 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
       margin: const EdgeInsets.only(top: 10),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF161F30) : const Color(0xFFF8FAFC),
+        color: isDark ? const Color(0xFF18181B) : const Color(0xFFF8F8F9),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: primary.withValues(alpha: 0.4)),
       ),
@@ -1212,7 +1212,7 @@ class _CommentEditorDialogState extends State<_CommentEditorDialog> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final excerpt = widget.excerpt.trim();
     return AlertDialog(
-      backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+      backgroundColor: isDark ? const Color(0xFF222226) : Colors.white,
       title: Text(
         widget.title,
         style: TextStyle(fontSize: 15, color: isDark ? Colors.white : Colors.black87),
@@ -1240,7 +1240,7 @@ class _CommentEditorDialogState extends State<_CommentEditorDialog> {
                 margin: const EdgeInsets.only(bottom: 10),
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+                  color: isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5),
                   borderRadius: BorderRadius.circular(6),
                   border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
                 ),
@@ -1262,7 +1262,7 @@ class _CommentEditorDialogState extends State<_CommentEditorDialog> {
                 hintText: '输入评审意见 / 修改要求...',
                 hintStyle: TextStyle(color: isDark ? Colors.white30 : Colors.black26, fontSize: 12.5),
                 filled: true,
-                fillColor: isDark ? const Color(0xFF0B0F19) : const Color(0xFFF8FAFC),
+                fillColor: isDark ? const Color(0xFF111113) : const Color(0xFFF8F8F9),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
               ),
             ),

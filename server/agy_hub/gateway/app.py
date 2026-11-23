@@ -45,6 +45,7 @@ _NO_CACHE_FILES = {
 _NO_CACHE_CONTROL = "no-cache, no-store, must-revalidate, max-age=0"
 _VERSIONED_FONT_RE = re.compile(r"^assets/fonts/v_[0-9a-f]{12}/MaterialIcons-Regular\.otf$")
 _MATERIAL_FONT_REL = "assets/fonts/MaterialIcons-Regular.otf"
+_SAFE_FONT_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+\.(?:ttf|otf)$")
 
 
 class _StaticFileVersioner:
@@ -308,6 +309,24 @@ def create_gateway_app(
             internal_secret=config.internal_secret,
             ws_connector=ws_connector,
         )
+
+    # Self-hosted optional UI fonts (persisted outside build/web so web deploys keep them)
+    font_search_dirs: list[Path] = [(server_dir.parent / "fonts").resolve()]
+    if web_dir:
+        font_search_dirs.append((web_dir / "fonts").resolve())
+
+    @app.get("/static-fonts/{filename}")
+    async def serve_static_font(filename: str) -> Response:
+        if not _SAFE_FONT_NAME_RE.fullmatch(filename):
+            return JSONResponse(status_code=404, content={"detail": "Font not found"})
+        for root in font_search_dirs:
+            candidate = (root / filename).resolve()
+            if candidate.is_relative_to(root) and candidate.is_file():
+                media_type = "font/otf" if filename.lower().endswith(".otf") else "font/ttf"
+                resp = FileResponse(candidate, media_type=media_type)
+                resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+                return resp
+        return JSONResponse(status_code=404, content={"detail": "Font not found"})
 
     # Static frontend serving & SPA fallback (never intercept /api/* or /ws/*)
     if web_dir:

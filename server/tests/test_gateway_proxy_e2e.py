@@ -119,6 +119,16 @@ async def test_gateway_to_agent_e2e_http_ticket_ws_and_static_cache(tmp_agent_en
             assert wasm_resp.status_code == 200
             assert "max-age=86400" in wasm_resp.headers.get("cache-control", "")
 
+            # Verify self-hosted /static-fonts route with immutable caching and strict filename check
+            fonts_dir = web_dist / "fonts"
+            fonts_dir.mkdir(exist_ok=True)
+            (fonts_dir / "DemoFont.ttf").write_bytes(b"\x00\x01\x00\x00" + b"0" * 32)
+            font_ok = await client.get("/static-fonts/DemoFont.ttf")
+            assert font_ok.status_code == 200
+            assert "immutable" in font_ok.headers.get("cache-control", "")
+            font_bad = await client.get("/static-fonts/secret.json")
+            assert font_bad.status_code == 404
+
             # Login as tetra (cookie & bearer)
             login_resp = await client.post(
                 "/api/v2/auth/login",

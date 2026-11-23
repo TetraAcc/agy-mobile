@@ -631,4 +631,25 @@ class ApiClient {
       (data) => QuotaData.fromJson(Map<String, dynamic>.from(data as Map)),
     );
   }
+
+  Future<int> downloadUrlToPath(
+    String fullUrl,
+    String savePath, {
+    void Function(int received, int total)? onProgress,
+  }) async {
+    var lastReceived = 0;
+    try {
+      await _dio.download(
+        fullUrl,
+        savePath,
+        onReceiveProgress: (received, total) {
+          lastReceived = received;
+          onProgress?.call(received, total);
+        },
+      );
+      return lastReceived;
+    } on DioException catch (e) {
+      _throwDioError(e);
+    }
+  }
 }

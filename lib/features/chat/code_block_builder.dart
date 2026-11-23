@@ -49,24 +49,17 @@ class _CodeBlockWidgetState extends State<CodeBlockWidget> {
   @override
   Widget build(BuildContext context) {
     final displayLang = widget.language.isEmpty ? 'CODE' : widget.language.toUpperCase();
-    final headerBg = widget.isDark ? const Color(0xFF131B2B) : const Color(0xFFF1F5F9);
-    final bodyBg = widget.isDark ? const Color(0xFF0B101D) : const Color(0xFFF8FAFC);
-    final borderColor = widget.isDark ? const Color(0xFF223049) : const Color(0xFFE2E8F0);
-    final dividerColor = widget.isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0);
+    final headerBg = widget.isDark ? const Color(0xFF1D1D21) : const Color(0xFFF1F1F3);
+    final bodyBg = widget.isDark ? const Color(0xFF141417) : const Color(0xFFF8F8F9);
+    final borderColor = widget.isDark ? const Color(0xFF2A2A30) : const Color(0xFFE4E4E7);
+    final dividerColor = widget.isDark ? const Color(0xFF26262C) : const Color(0xFFE4E4E7);
 
     return Container(
-      margin: const EdgeInsets.symmetric(vertical: 8),
+      margin: const EdgeInsets.symmetric(vertical: 10),
       decoration: BoxDecoration(
         color: bodyBg,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: borderColor, width: 1),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: widget.isDark ? 0.25 : 0.04),
-            blurRadius: widget.isDark ? 8 : 6,
-            offset: const Offset(0, 2),
-          ),
-        ],
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -81,28 +74,15 @@ class _CodeBlockWidgetState extends State<CodeBlockWidget> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 7,
-                      height: 7,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: widget.isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      displayLang,
-                      style: TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.8,
-                        color: widget.isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                      ),
-                    ),
-                  ],
+                Text(
+                  displayLang,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.6,
+                    color: widget.isDark ? const Color(0xFFA1A1AA) : const Color(0xFF71717A),
+                  ),
                 ),
                 InkWell(
                   onTap: _handleCopy,

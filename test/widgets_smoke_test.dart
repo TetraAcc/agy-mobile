@@ -9,6 +9,7 @@ import 'package:agy_remote/features/chat/markdown_message_body.dart';
 import 'package:agy_remote/features/chat/message_card.dart';
 import 'package:agy_remote/features/chat/session_queue_bar.dart';
 import 'package:agy_remote/features/chat/session_steps_bar.dart';
+import 'package:agy_remote/features/sessions/quota_drawer.dart';
 import 'package:agy_remote/features/workspace/change_review_sheet.dart';
 import 'package:agy_remote/features/workspace/file_viewer_sheet.dart';
 import 'package:agy_remote/features/workspace/session_changes_bar.dart';
@@ -740,5 +741,81 @@ void main() {
     expect(insertedFile!.isImage, true);
     expect(insertedFile!.filename.endsWith('.png'), true);
     expect(sendCount, 0);
+  });
+
+  testWidgets('ContextMenuSheet 在传入 onTakePhoto 时展示拍照上传选项', (tester) async {
+    var photoTapped = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ContextMenuSheet(
+            isDark: true,
+            canWrite: true,
+            onPickFile: () {},
+            onPickImage: () {},
+            onTakePhoto: () => photoTapped = true,
+            onRequestGitDiff: () {},
+            onOpenWorkspaceFiles: () {},
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('拍照上传'), findsOneWidget);
+    await tester.tap(find.text('拍照上传'));
+    await tester.pump();
+    expect(photoTapped, true);
+  });
+
+  testWidgets('QuotaDrawer 在顶部展示已置顶分组且将置顶会话排在普通会话之前', (tester) async {
+    tester.view.physicalSize = const Size(800, 1200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: QuotaDrawer(
+            nodes: const [
+              HostNode(id: 'win', name: 'Windows PC', isOnline: true, engineAlive: true, canWrite: true),
+            ],
+            selectedNode: 'win',
+            onSwitchNode: (_) {},
+            quotaData: null,
+            isLoadingQuota: false,
+            onRequestQuota: () {},
+            onNewSession: () {},
+            projects: const {
+              'Novel': [
+                SessionItem(id: 'p1', title: '普通章节会话', isPinned: false),
+                SessionItem(id: 'p2', title: '项目置顶会话', isPinned: true),
+              ],
+            },
+            generalSessions: const [
+              SessionItem(id: 'g1', title: '最新未置顶会话', isPinned: false),
+              SessionItem(id: 'g2', title: '较早但已置顶会话', isPinned: true),
+            ],
+            activeSessionId: 'g1',
+            onSwitchSession: (_) {},
+            onDeleteSession: (_) {},
+            isDark: true,
+            onToggleTheme: (_) {},
+            onSelectAccentTheme: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('已置顶 (2)'), findsOneWidget);
+    final pinnedHeaderY = tester.getTopLeft(find.text('已置顶 (2)')).dy;
+    final projectsHeaderY = tester.getTopLeft(find.text('项目列表')).dy;
+    final pinnedGeneralY = tester.getTopLeft(find.text('较早但已置顶会话').first).dy;
+    final normalGeneralY = tester.getTopLeft(find.text('最新未置顶会话')).dy;
+    expect(pinnedHeaderY, lessThan(projectsHeaderY));
+    expect(pinnedGeneralY, lessThan(normalGeneralY));
   });
 }

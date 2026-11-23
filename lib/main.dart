@@ -48,6 +48,8 @@ class AgyRemoteApp extends ConsumerWidget {
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.light,
+        fontFamily: themeState.font.fontFamily,
+        fontFamilyFallback: themeState.font.fallbacks.isEmpty ? null : themeState.font.fallbacks,
         scaffoldBackgroundColor: AppColors.lightBg,
         colorScheme: ColorScheme.light(
           primary: themeState.accent.lightPrimary,
@@ -60,12 +62,14 @@ class AgyRemoteApp extends ConsumerWidget {
       darkTheme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
+        fontFamily: themeState.font.fontFamily,
+        fontFamilyFallback: themeState.font.fallbacks.isEmpty ? null : themeState.font.fallbacks,
         scaffoldBackgroundColor: AppColors.darkBg,
         colorScheme: ColorScheme.dark(
           primary: themeState.accent.primary,
-          onPrimary: const Color(0xFF0F172A),
+          onPrimary: const Color(0xFF111113),
           secondary: themeState.accent.secondary,
-          onSecondary: const Color(0xFF0F172A),
+          onSecondary: const Color(0xFF111113),
           surface: AppColors.darkBg,
         ),
       ),

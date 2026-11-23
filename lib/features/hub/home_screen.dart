@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -5,8 +7,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/config/composer_prefs.dart';
 import '../../core/network/api_client.dart';
+import '../../core/platform/android_native_bridge.dart';
 import '../../core/platform/platform_bridge.dart';
 import '../../core/theme/app_colors.dart';
+import '../../core/theme/app_fonts.dart';
 import '../../core/theme/theme_provider.dart';
 import '../../models/models.dart';
 import '../auth/auth_controller.dart';
@@ -47,6 +51,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   String _commentSessionId = '';
   List<ReviewCommentItem> _draftComments = const [];
   DateTime? _lastBackPressAt;
+  StreamSubscription<SharedIncomingPayload>? _shareSub;
+  final List<SharedIncomingPayload> _queuedShares = [];
+  bool _drainingShares = false;
 
   List<ReviewCommentItem> _commentsForSession(String sessionId) {
     if (sessionId.isEmpty || sessionId != _commentSessionId) return const [];
@@ -59,6 +66,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_onScrollChanged);
     _disposeWebPaste = PlatformBridge.registerWebDropAndPaste(_onPickedLocalFile);
+    if (AndroidNativeBridge.isAndroidNative) {
+      AndroidNativeBridge.ensureInitialized();
+      _shareSub = AndroidNativeBridge.incomingShares.listen(_enqueueIncomingShare);
+      unawaited(_loadInitialShares());
+      unawaited(AndroidNativeBridge.requestNotificationPermission());
+    }
     Future.microtask(() {
       ref.read(hubControllerProvider.notifier).initializeForUser(widget.user);
     });
@@ -76,6 +89,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   @override
   void dispose() {
+    _shareSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _disposeWebPaste?.call();
     _scrollController.removeListener(_onScrollChanged);
@@ -134,6 +148,84 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (picked != null) {
       await _onPickedLocalFile(picked);
     }
+  }
+
+  Future<void> _loadInitialShares() async {
+    final items = await AndroidNativeBridge.consumePendingShares();
+    if (!mounted || items.isEmpty) return;
+    for (final item in items) {
+      _enqueueIncomingShare(item);
+    }
+  }
+
+  void _enqueueIncomingShare(SharedIncomingPayload payload) {
+    if (!mounted || payload.isEmpty) return;
+    _queuedShares.add(payload);
+    if (ref.read(hubControllerProvider).selectedNodeId.isNotEmpty) {
+      unawaited(_drainQueuedShares());
+    }
+  }
+
+  Future<void> _drainQueuedShares() async {
+    if (_drainingShares || !mounted) return;
+    final hubState = ref.read(hubControllerProvider);
+    if (hubState.selectedNodeId.isEmpty) return;
+    _drainingShares = true;
+    try {
+      while (_queuedShares.isNotEmpty && mounted) {
+        final payload = _queuedShares.removeAt(0);
+        final sharedText = payload.text?.trim() ?? '';
+        if (sharedText.isNotEmpty) {
+          final prefix = _inputController.text.trim().isNotEmpty ? '\n' : '';
+          _insertText('$prefix$sharedText');
+          if (payload.files.isEmpty) {
+            _showSnack('已填入来自其他应用的分享内容');
+          }
+        }
+        if (payload.files.isNotEmpty) {
+          if (!ref.read(hubControllerProvider).canWrite) {
+            _showSnack('当前节点为只读权限，无法上传分享的文件', isError: true);
+            for (final f in payload.files) {
+              unawaited(PlatformBridge.deleteLocalFile(f.path));
+            }
+            continue;
+          }
+          for (final f in payload.files) {
+            final bytes = await PlatformBridge.readLocalFileBytes(f.path);
+            unawaited(PlatformBridge.deleteLocalFile(f.path));
+            if (bytes != null && bytes.isNotEmpty && mounted) {
+              await _onPickedLocalFile(
+                PickedLocalFile(
+                  filename: f.name,
+                  bytes: bytes,
+                  isImage: f.isImage,
+                ),
+              );
+            }
+          }
+        }
+      }
+    } finally {
+      _drainingShares = false;
+    }
+  }
+
+  Future<void> _captureAndUploadPhoto() async {
+    final photo = await AndroidNativeBridge.capturePhoto();
+    if (photo == null || !mounted) return;
+    final bytes = await PlatformBridge.readLocalFileBytes(photo.path);
+    unawaited(PlatformBridge.deleteLocalFile(photo.path));
+    if (bytes == null || bytes.isEmpty) {
+      _showSnack('未能读取拍摄的照片', isError: true);
+      return;
+    }
+    await _onPickedLocalFile(
+      PickedLocalFile(
+        filename: photo.name,
+        bytes: bytes,
+        isImage: true,
+      ),
+    );
   }
 
   Future<void> _handleSendMessage() async {
@@ -289,7 +381,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: isDark ? const Color(0xFF161F30) : Colors.white,
+      backgroundColor: isDark ? const Color(0xFF18181B) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -423,7 +515,211 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     );
   }
 
+  String _formatBytes(int bytes) {
+    if (bytes <= 0) return '未知大小';
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+  }
+
+  Future<void> _showAndroidDownloadCompleteSheet(DownloadedLocalFile file) async {
+    if (!mounted) return;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: isDark ? const Color(0xFF18181B) : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.download_done_rounded,
+                    color: AppColors.statusGreen(isDark),
+                    size: 22,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      file.filename,
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '已下载到本地缓存 (${_formatBytes(file.sizeBytes)})',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: isDark ? Colors.white54 : Colors.black54,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.share_rounded, size: 18),
+                      label: const Text('转发 / 分享'),
+                      onPressed: () async {
+                        Navigator.pop(ctx);
+                        final ok = await AndroidNativeBridge.shareLocalFile(
+                          file.path,
+                          mimeType: file.mimeType,
+                          title: '分享 ${file.filename}',
+                        );
+                        if (!ok && mounted) {
+                          _showSnack('未能唤起系统分享面板', isError: true);
+                        }
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton.icon(
+                      icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                      label: const Text('直接打开'),
+                      onPressed: () async {
+                        Navigator.pop(ctx);
+                        final ok = await AndroidNativeBridge.openLocalFile(
+                          file.path,
+                          mimeType: file.mimeType,
+                        );
+                        if (!ok && mounted) {
+                          _showSnack('未找到可打开此类型文件的应用，可尝试转发给其他应用', isError: true);
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<String?> _downloadWithAndroidSheet(
+    String pathOrUri, {
+    String? rootId,
+    String? filename,
+    bool autoOpen = false,
+  }) async {
+    final progress = ValueNotifier<(int, int)>((0, 0));
+    BuildContext? dialogCtx;
+    if (mounted) {
+      unawaited(
+        showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) {
+            dialogCtx = ctx;
+            final isDark = Theme.of(ctx).brightness == Brightness.dark;
+            return PopScope(
+              canPop: false,
+              child: AlertDialog(
+                backgroundColor: isDark ? const Color(0xFF18181B) : Colors.white,
+                content: ValueListenableBuilder<(int, int)>(
+                  valueListenable: progress,
+                  builder: (_, val, __) {
+                    final (received, total) = val;
+                    final double? pct =
+                        total > 0 ? (received / total).clamp(0.0, 1.0) : null;
+                    final subtitle = total > 0
+                        ? '${(pct! * 100).toStringAsFixed(0)}%  (${_formatBytes(received)} / ${_formatBytes(total)})'
+                        : (received > 0 ? '已下载 ${_formatBytes(received)}...' : '正在建立安全下载连接...');
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          autoOpen ? '正在获取文件预览...' : '正在下载文件...',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: isDark ? Colors.white : Colors.black87,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        LinearProgressIndicator(value: pct),
+                        const SizedBox(height: 8),
+                        Text(
+                          subtitle,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isDark ? Colors.white60 : Colors.black54,
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            );
+          },
+        ),
+      );
+    }
+
+    try {
+      final res = await ref.read(hubControllerProvider.notifier).downloadFileToLocal(
+            pathOrUri,
+            rootId: rootId,
+            filename: filename,
+            onProgress: (rec, tot) => progress.value = (rec, tot),
+          );
+      if (dialogCtx != null && dialogCtx!.mounted) {
+        Navigator.of(dialogCtx!).pop();
+        dialogCtx = null;
+      }
+      if (res.error != null || res.file == null) {
+        return res.error ?? '下载失败';
+      }
+      final file = res.file!;
+      if (autoOpen) {
+        final opened = await AndroidNativeBridge.openLocalFile(
+          file.path,
+          mimeType: file.mimeType,
+        );
+        if (!opened && mounted) {
+          await _showAndroidDownloadCompleteSheet(file);
+        }
+      } else if (mounted) {
+        await _showAndroidDownloadCompleteSheet(file);
+      }
+      return null;
+    } finally {
+      if (dialogCtx != null && dialogCtx!.mounted) {
+        Navigator.of(dialogCtx!).pop();
+      }
+      progress.dispose();
+    }
+  }
+
   Future<String?> _downloadFileResult(String pathOrUri, {String? rootId, String? filename}) async {
+    if (AndroidNativeBridge.isAndroidNative) {
+      return _downloadWithAndroidSheet(
+        pathOrUri,
+        rootId: rootId,
+        filename: filename,
+        autoOpen: false,
+      );
+    }
     return ref
         .read(hubControllerProvider.notifier)
         .downloadFile(pathOrUri, rootId: rootId, filename: filename);
@@ -433,12 +729,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final err = await _downloadFileResult(pathOrUri, rootId: rootId, filename: filename);
     if (err != null) {
       _showSnack(err, isError: true);
-    } else {
+    } else if (!AndroidNativeBridge.isAndroidNative) {
       _showSnack('已发起安全下载');
     }
   }
 
   Future<void> _openMediaExternal(String rawPath, {String? rootId}) async {
+    if (AndroidNativeBridge.isAndroidNative) {
+      final err = await _downloadWithAndroidSheet(
+        rawPath,
+        rootId: rootId,
+        autoOpen: true,
+      );
+      if (err != null) {
+        _showSnack(err, isError: true);
+      }
+      return;
+    }
     final err = await ref.read(hubControllerProvider.notifier).openMediaExternal(rawPath, rootId: rootId);
     if (err != null) {
       _showSnack(err, isError: true);
@@ -504,13 +811,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   Widget _buildNodeSwitchButton(BuildContext context, HubState hubState, bool isDark) {
     if (hubState.nodes.isEmpty) return const SizedBox.shrink();
     final currentNode = hubState.currentNode ?? hubState.nodes.first;
-    final isWin = currentNode.id != 'deck';
 
     return PopupMenuButton<String>(
       tooltip: '切换目标电脑',
       offset: const Offset(0, 45),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      color: isDark ? const Color(0xFF1E293B) : Colors.white,
+      color: isDark ? const Color(0xFF222226) : Colors.white,
       onSelected: _handleSwitchNode,
       itemBuilder: (context) {
         return hubState.nodes.map((node) {
@@ -564,32 +870,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           );
         }).toList();
       },
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: isDark
-              ? (isWin
-                  ? const Color(0xFF1E3A8A).withValues(alpha: 0.4)
-                  : const Color(0xFF334155).withValues(alpha: 0.5))
-              : (isWin ? const Color(0xFFE0F2FE) : const Color(0xFFF1F5F9)),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: isWin
-                ? const Color(0xFF38BDF8).withValues(alpha: 0.6)
-                : (isDark ? Colors.white12 : Colors.black12),
-            width: 1,
-          ),
-        ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              isWin ? Icons.desktop_windows_rounded : Icons.videogame_asset_rounded,
-              size: 14,
-              color: isWin ? const Color(0xFF38BDF8) : (isDark ? Colors.white70 : Colors.black87),
+            Container(
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: !currentNode.isOnline
+                    ? (isDark ? Colors.white24 : Colors.black26)
+                    : (currentNode.engineAlive
+                        ? AppColors.statusGreen(isDark)
+                        : AppColors.statusAmber(isDark)),
+              ),
             ),
-            const SizedBox(width: 5),
+            const SizedBox(width: 6),
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 88),
               child: Text(
@@ -597,14 +895,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: isDark ? Colors.white : Colors.black87,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w500,
+                  color: isDark ? const Color(0xFFD4D4D8) : const Color(0xFF3F3F46),
                 ),
               ),
             ),
-            const SizedBox(width: 3),
-            Icon(Icons.arrow_drop_down_rounded, size: 16, color: isDark ? Colors.white38 : Colors.black38),
+            const SizedBox(width: 1),
+            Icon(
+              Icons.expand_more_rounded,
+              size: 15,
+              color: isDark ? Colors.white38 : Colors.black38,
+            ),
           ],
         ),
       ),
@@ -612,44 +914,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
   Widget _buildThinkingIndicator(BuildContext context, bool isDark, String focusText) {
-    final label = focusText.trim().isNotEmpty ? focusText.trim() : 'Agent 正在思考并执行指令...';
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12, top: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF161F30) : Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.4),
-          width: 1,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.05),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
+    final label = focusText.trim().isNotEmpty ? focusText.trim() : '正在思考并执行...';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16, top: 2),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           SizedBox(
-            width: 14,
-            height: 14,
+            width: 13,
+            height: 13,
             child: CircularProgressIndicator(
-              strokeWidth: 2,
+              strokeWidth: 1.8,
               valueColor: AlwaysStoppedAnimation<Color>(Theme.of(context).colorScheme.primary),
             ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 9),
           Flexible(
             child: Text(
               label,
               style: TextStyle(
-                fontSize: 12,
+                fontSize: 12.5,
                 fontWeight: FontWeight.w500,
-                color: isDark ? Colors.white70 : Colors.black87,
+                color: isDark ? const Color(0xFFA1A1AA) : const Color(0xFF71717A),
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -662,10 +948,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<HubState>(hubControllerProvider, (prev, next) {
+      if (next.selectedNodeId.isNotEmpty && _queuedShares.isNotEmpty) {
+        unawaited(_drainQueuedShares());
+      }
+    });
     final hubState = ref.watch(hubControllerProvider);
     final themeState = ref.watch(themeProvider);
     final composerPrefs = ref.watch(composerPrefsProvider);
-    final authState = ref.watch(authControllerProvider);
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final hubNotifier = ref.read(hubControllerProvider.notifier);
 
@@ -687,9 +977,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final hasThinking = hubState.isActiveSessionRunning && !(_isChatSearching && query.isNotEmpty);
     final hasLoadMore = hubState.hasMoreMessages && !(_isChatSearching && query.isNotEmpty);
     final totalItems = messages.length + (hasThinking ? 1 : 0) + (hasLoadMore ? 1 : 0);
-    final rawBaseUrl = authState.serverConfig.baseUrl;
-    final parsedHost = Uri.tryParse(rawBaseUrl)?.host;
-    final displayServerLabel = (parsedHost != null && parsedHost.isNotEmpty) ? parsedHost : rawBaseUrl;
 
     return PopScope(
       canPop: kIsWeb,
@@ -758,45 +1045,57 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         if (isOpen) hubNotifier.fetchQuota();
       },
       appBar: AppBar(
-        backgroundColor: isDark ? const Color(0xFF161F30) : Colors.white,
-        elevation: isDark ? 0 : 1,
+        backgroundColor: isDark ? AppColors.darkBg : AppColors.lightBg,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(0.5),
+          child: Container(
+            height: 0.5,
+            color: isDark ? AppColors.darkBorder : AppColors.lightBorder,
+          ),
+        ),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Text(
               hubState.activeSessionTitle,
               style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.bold,
-                color: isDark ? Colors.white : Colors.black87,
+                fontSize: 14.5,
+                fontWeight: FontWeight.w600,
+                color: isDark ? AppColors.darkTextPrimary : AppColors.lightTextPrimary,
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            Row(
-              children: [
-                Container(
-                  width: 7,
-                  height: 7,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: hubState.isConnected
-                        ? AppColors.statusGreen(isDark)
-                        : (hubState.isConnecting ? AppColors.statusAmber(isDark) : AppColors.statusRed(isDark)),
-                  ),
+            if (!hubState.isConnected)
+              Padding(
+                padding: const EdgeInsets.only(top: 1),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: hubState.isConnecting
+                            ? AppColors.statusAmber(isDark)
+                            : AppColors.statusRed(isDark),
+                      ),
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      hubState.isConnecting ? '事件流连接中...' : '未连接',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        color: isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary,
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 5),
-                Flexible(
-                  child: Text(
-                    hubState.isConnected
-                        ? '已连接 ($displayServerLabel)'
-                        : (hubState.isConnecting ? '事件流连接中...' : '未连接'),
-                    style: TextStyle(fontSize: 10, color: isDark ? Colors.white54 : Colors.black45),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
+              ),
           ],
         ),
         actions: [
@@ -844,55 +1143,66 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         children: [
           if (_isChatSearching)
             Container(
+              width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF111927) : const Color(0xFFF8FAFC),
+                color: isDark ? const Color(0xFF18181B) : const Color(0xFFF8F8F9),
                 border: Border(
-                  bottom: BorderSide(color: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0)),
+                  bottom: BorderSide(color: isDark ? const Color(0xFF222226) : const Color(0xFFE4E4E7)),
                 ),
               ),
-              child: Row(
-                children: [
-                  const Icon(Icons.search_rounded, size: 16),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(
-                      controller: _chatSearchController,
-                      autofocus: true,
-                      onChanged: (val) => setState(() => _chatSearchQuery = val),
-                      style: TextStyle(fontSize: 13, color: isDark ? Colors.white : Colors.black87),
-                      decoration: InputDecoration(
-                        isDense: true,
-                        hintText: '在当前会话内搜索...',
-                        hintStyle: TextStyle(fontSize: 12, color: isDark ? Colors.white38 : Colors.black38),
-                        border: InputBorder.none,
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 780),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.search_rounded, size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: _chatSearchController,
+                          autofocus: true,
+                          onChanged: (val) => setState(() => _chatSearchQuery = val),
+                          style: TextStyle(fontSize: 13, color: isDark ? Colors.white : Colors.black87),
+                          decoration: InputDecoration(
+                            isDense: true,
+                            hintText: '在当前会话内搜索...',
+                            hintStyle: TextStyle(fontSize: 12, color: isDark ? Colors.white38 : Colors.black38),
+                            border: InputBorder.none,
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                  if (query.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 6),
-                      child: Text(
-                        '${messages.length} 条',
-                        style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black45),
+                      if (query.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: Text(
+                            '${messages.length} 条',
+                            style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black45),
+                          ),
+                        ),
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded, size: 18),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () {
+                          setState(() {
+                            _isChatSearching = false;
+                            _chatSearchQuery = '';
+                            _chatSearchController.clear();
+                          });
+                        },
                       ),
-                    ),
-                  IconButton(
-                    icon: const Icon(Icons.close_rounded, size: 18),
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () {
-                      setState(() {
-                        _isChatSearching = false;
-                        _chatSearchQuery = '';
-                        _chatSearchController.clear();
-                      });
-                    },
+                    ],
                   ),
-                ],
+                ),
               ),
             )
           else if (planSteps.isNotEmpty)
-            SessionStepsBar(steps: planSteps, isDark: isDark),
+            Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 780),
+                child: SessionStepsBar(steps: planSteps, isDark: isDark),
+              ),
+            ),
           Expanded(
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
@@ -901,19 +1211,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   ? const Center(child: CircularProgressIndicator())
                   : messages.isEmpty
                       ? Center(
-                          child: Text(
-                            (_isChatSearching && query.isNotEmpty)
-                                ? '未找到包含「$_chatSearchQuery」的消息'
-                                : hubState.selectedNodeId.isEmpty
-                                    ? '尚未配置可用控制节点'
-                                    : (hubState.activeSessionId.isEmpty
-                                        ? '点击左上角 [≡] 选择会话或新建任务'
-                                        : '暂无消息记录，请在下方发送第一条指令'),
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: isDark ? Colors.white38 : Colors.black38,
-                              fontSize: 13,
-                              height: 1.5,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 28),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.change_history_rounded,
+                                  size: 32,
+                                  color: isDark ? Colors.white24 : Colors.black26,
+                                ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  (_isChatSearching && query.isNotEmpty)
+                                      ? '未找到包含「$_chatSearchQuery」的消息'
+                                      : hubState.selectedNodeId.isEmpty
+                                          ? '尚未配置可用控制节点'
+                                          : (hubState.activeSessionId.isEmpty
+                                              ? '点击左上角选择会话或新建任务'
+                                              : '输入指令，开始远程协作'),
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color: isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary,
+                                    fontSize: 13.5,
+                                    height: 1.5,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         )
@@ -923,55 +1247,67 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                               controller: _scrollController,
                               reverse: true,
                               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                            itemCount: totalItems,
-                            itemBuilder: (ctx, idx) {
-                              if (hasThinking && idx == 0) {
-                                return _buildThinkingIndicator(context, isDark, activeFocus);
-                              }
-                              final shiftedIdx = hasThinking ? idx - 1 : idx;
-                              if (shiftedIdx < messages.length) {
-                                final msg = messages[messages.length - 1 - shiftedIdx];
-                                return MessageCard(
-                                  key: ValueKey(msg.messageKey),
-                                  msg: msg,
-                                  isDark: isDark,
-                                  resolveMediaUrl: (p) => hubNotifier.resolveMediaUrl(p),
-                                  mediaHeaders: hubNotifier.mediaHeaders,
-                                  onDownloadFile: (p, {filename}) => _downloadFile(p, filename: filename),
-                                  onOpenUrl: PlatformBridge.openExternalUrl,
-                                  onOpenMediaExternal: (p) => _openMediaExternal(p),
-                                  onOpenEditDiff: (filePath, stepIdx) => _openChangeReview(
-                                    initialFilePath: filePath,
-                                    initialStepIndex: stepIdx,
+                              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+                              itemCount: totalItems,
+                              itemBuilder: (ctx, idx) {
+                                Widget rowChild;
+                                if (hasThinking && idx == 0) {
+                                  rowChild = Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: _buildThinkingIndicator(context, isDark, activeFocus),
+                                  );
+                                } else {
+                                  final shiftedIdx = hasThinking ? idx - 1 : idx;
+                                  if (shiftedIdx < messages.length) {
+                                    final msg = messages[messages.length - 1 - shiftedIdx];
+                                    rowChild = MessageCard(
+                                      key: ValueKey(msg.messageKey),
+                                      msg: msg,
+                                      isDark: isDark,
+                                      resolveMediaUrl: (p) => hubNotifier.resolveMediaUrl(p),
+                                      mediaHeaders: hubNotifier.mediaHeaders,
+                                      onDownloadFile: (p, {filename}) => _downloadFile(p, filename: filename),
+                                      onOpenUrl: PlatformBridge.openExternalUrl,
+                                      onOpenMediaExternal: (p) => _openMediaExternal(p),
+                                      onOpenEditDiff: (filePath, stepIdx) => _openChangeReview(
+                                        initialFilePath: filePath,
+                                        initialStepIndex: stepIdx,
+                                      ),
+                                      onOpenToolDetail: _openToolDetail,
+                                      onSubmitQuickReply: _sendPromptDirect,
+                                    );
+                                  } else {
+                                    rowChild = Padding(
+                                      padding: const EdgeInsets.only(bottom: 14),
+                                      child: Center(
+                                        child: TextButton.icon(
+                                          onPressed: hubState.isLoadingMore
+                                              ? null
+                                              : () => hubNotifier.loadEarlierMessages(),
+                                          icon: hubState.isLoadingMore
+                                              ? const SizedBox(
+                                                  width: 14,
+                                                  height: 14,
+                                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                                )
+                                              : const Icon(Icons.history_rounded, size: 16),
+                                          label: Text(
+                                            hubState.isLoadingMore ? '加载中...' : '加载更早消息',
+                                            style: const TextStyle(fontSize: 12),
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                }
+                                return Center(
+                                  child: ConstrainedBox(
+                                    constraints: const BoxConstraints(maxWidth: 780),
+                                    child: rowChild,
                                   ),
-                                  onOpenToolDetail: _openToolDetail,
-                                  onSubmitQuickReply: _sendPromptDirect,
                                 );
-                              }
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: 12),
-                                child: Center(
-                                  child: TextButton.icon(
-                                    onPressed: hubState.isLoadingMore
-                                        ? null
-                                        : () => hubNotifier.loadEarlierMessages(),
-                                    icon: hubState.isLoadingMore
-                                        ? const SizedBox(
-                                            width: 14,
-                                            height: 14,
-                                            child: CircularProgressIndicator(strokeWidth: 2),
-                                          )
-                                        : const Icon(Icons.history_rounded, size: 16),
-                                    label: Text(
-                                      hubState.isLoadingMore ? '加载中...' : '加载更早消息',
-                                      style: const TextStyle(fontSize: 12),
-                                    ),
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
+                              },
+                            ),
                           if (_showScrollToBottom)
                             Positioned(
                               bottom: 14,
@@ -1071,6 +1407,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 canWrite: hubState.canWrite,
                 onPickFile: () => _pickAndUpload(imagesOnly: false),
                 onPickImage: () => _pickAndUpload(imagesOnly: true),
+                onTakePhoto: (AndroidNativeBridge.isAndroidNative && hubState.canWrite)
+                    ? _captureAndUploadPhoto
+                    : null,
                 onRequestGitDiff: () => _openChangeReview(),
                 onOpenWorkspaceFiles: _openWorkspaceFilePicker,
                 onOpenSessionArtifacts: hubState.activeSessionId.isEmpty ? null : _openSessionArtifacts,
@@ -1264,9 +1603,9 @@ class _WorkspaceBrowserSheetState extends State<_WorkspaceBrowserSheet> {
             maxHeight: MediaQuery.of(ctx).size.height * 0.85,
           ),
           decoration: BoxDecoration(
-            color: widget.isDark ? const Color(0xFF0F172A) : Colors.white,
+            color: widget.isDark ? const Color(0xFF111113) : Colors.white,
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: widget.isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+            border: Border.all(color: widget.isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
             boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 24, spreadRadius: 4)],
           ),
           clipBehavior: Clip.antiAlias,
@@ -1275,7 +1614,7 @@ class _WorkspaceBrowserSheetState extends State<_WorkspaceBrowserSheet> {
             children: [
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                color: widget.isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+                color: widget.isDark ? const Color(0xFF222226) : const Color(0xFFF8F8F9),
                 child: Row(
                   children: [
                     Icon(Icons.image_outlined, size: 16, color: Theme.of(context).colorScheme.primary),
@@ -1444,7 +1783,7 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
         Container(
           padding: const EdgeInsets.all(3),
           decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF0B0F19) : const Color(0xFFF1F5F9),
+            color: isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5),
             borderRadius: BorderRadius.circular(18),
             border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
           ),
@@ -1458,7 +1797,7 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                   decoration: BoxDecoration(
-                    color: active ? (isDark ? const Color(0xFF334155) : Colors.white) : Colors.transparent,
+                    color: active ? (isDark ? const Color(0xFF2C2C32) : Colors.white) : Colors.transparent,
                     borderRadius: BorderRadius.circular(14),
                     boxShadow: active && !isDark
                         ? [
@@ -1493,9 +1832,11 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
     final primary = Theme.of(context).colorScheme.primary;
     final prefs = ref.watch(composerPrefsProvider);
     final prefsNotifier = ref.read(composerPrefsProvider.notifier);
+    final themeState = ref.watch(themeProvider);
+    final themeNotifier = ref.read(themeProvider.notifier);
 
     return AlertDialog(
-      backgroundColor: isDark ? const Color(0xFF161F30) : Colors.white,
+      backgroundColor: isDark ? const Color(0xFF18181B) : Colors.white,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       title: Text(
         '通用设置',
@@ -1546,6 +1887,97 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
               Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
               const SizedBox(height: 12),
               Text(
+                '界面字体',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: AppFonts.options.map((opt) {
+                  final isSelected = themeState.font.id == opt.id;
+                  final isLoading = themeState.loadingFontId == opt.id;
+                  return InkWell(
+                    borderRadius: BorderRadius.circular(10),
+                    onTap: themeState.loadingFontId != null
+                        ? null
+                        : () async {
+                            final ok = await themeNotifier.setFont(
+                              opt,
+                              baseUrl: widget.currentUrl,
+                            );
+                            if (!ok && context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('字体文件暂不可用，已切换为系统相近字体 (${opt.name})'),
+                                  duration: const Duration(seconds: 2),
+                                ),
+                              );
+                            }
+                          },
+                    child: Container(
+                      width: 196,
+                      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? primary.withValues(alpha: isDark ? 0.14 : 0.08)
+                            : (isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5)),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: isSelected
+                              ? primary.withValues(alpha: 0.7)
+                              : (isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
+                          width: isSelected ? 1.2 : 1,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  opt.name,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                                    color: isSelected
+                                        ? primary
+                                        : (isDark ? Colors.white : Colors.black87),
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  opt.description,
+                                  style: TextStyle(
+                                    fontSize: 10.5,
+                                    color: isDark ? Colors.white54 : Colors.black54,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (isLoading)
+                            SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 1.8, color: primary),
+                            )
+                          else if (isSelected)
+                            Icon(Icons.check_rounded, size: 16, color: primary),
+                        ],
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 16),
+              Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
+              const SizedBox(height: 12),
+              Text(
                 '网关连接',
                 style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
               ),
@@ -1573,7 +2005,7 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
                     hintText: 'https://agy.example.com',
                     hintStyle: TextStyle(color: isDark ? Colors.white24 : Colors.black26),
                     filled: true,
-                    fillColor: isDark ? const Color(0xFF0B0F19) : const Color(0xFFF1F5F9),
+                    fillColor: isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5),
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                   ),
                 ),
@@ -1587,7 +2019,7 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
             onPressed: () => Navigator.pop(context),
             style: ElevatedButton.styleFrom(
               backgroundColor: primary,
-              foregroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+              foregroundColor: isDark ? const Color(0xFF111113) : Colors.white,
             ),
             child: const Text('完成'),
           )
@@ -1603,7 +2035,7 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: primary,
-              foregroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+              foregroundColor: isDark ? const Color(0xFF111113) : Colors.white,
             ),
             child: const Text('保存'),
           ),

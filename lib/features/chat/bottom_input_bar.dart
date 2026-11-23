@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../../core/config/composer_prefs.dart';
 import '../../core/platform/platform_bridge.dart';
+import '../../core/theme/app_colors.dart';
 import '../../models/models.dart';
 import 'attachment_preview_bar.dart';
 
@@ -123,155 +124,225 @@ class _BottomInputBarState extends State<BottomInputBar> {
       hintText = '向 Agent 发送指令...';
     }
 
+    final composerBg = isDark ? const Color(0xFF1B1B1F) : const Color(0xFFF5F5F7);
+    final composerBorder = isDark ? const Color(0xFF2D2D34) : const Color(0xFFE4E4E7);
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      color: isDark ? const Color(0xFF161F30) : Colors.white,
+      color: isDark ? AppColors.darkBg : AppColors.lightBg,
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
       child: SafeArea(
         top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (widget.changesBar != null) widget.changesBar!,
-            if (widget.queueBar != null) widget.queueBar!,
-            if (widget.pendingAttachments.isNotEmpty)
-              AttachmentPreviewBar(
-                attachments: widget.pendingAttachments,
-                onRemove: widget.onRemoveAttachment,
-                isDark: isDark,
-              ),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 780),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: InkWell(
+                if (widget.changesBar != null) widget.changesBar!,
+                if (widget.queueBar != null) widget.queueBar!,
+                if (widget.pendingAttachments.isNotEmpty)
+                  AttachmentPreviewBar(
+                    attachments: widget.pendingAttachments,
+                    onRemove: widget.onRemoveAttachment,
+                    isDark: isDark,
+                  ),
+                Container(
+                  decoration: BoxDecoration(
+                    color: composerBg,
                     borderRadius: BorderRadius.circular(20),
-                    onTap: widget.isConnected ? widget.onShowAddContext : null,
-                    child: Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: isDark
-                            ? Colors.white.withValues(alpha: 0.08)
-                            : Colors.black.withValues(alpha: 0.05),
-                      ),
-                      child: Icon(
-                        Icons.add_rounded,
-                        color: widget.isConnected
-                            ? (isDark ? Colors.white70 : Colors.black54)
-                            : (isDark ? Colors.white24 : Colors.black26),
-                        size: 22,
-                      ),
-                    ),
+                    border: Border.all(color: composerBorder, width: 1),
                   ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(
-                    focusNode: _focusNode,
-                    controller: widget.inputController,
-                    enabled: inputEnabled,
-                    minLines: 1,
-                    maxLines: 5,
-                    keyboardType: TextInputType.multiline,
-                    textInputAction: (_isTouchMobile || _isCtrlEnter)
-                        ? TextInputAction.newline
-                        : TextInputAction.send,
-                    contentInsertionConfiguration:
-                        (widget.onInsertRichContent != null && inputEnabled)
-                            ? ContentInsertionConfiguration(
-                                allowedMimeTypes: const <String>[
-                                  'image/png',
-                                  'image/jpeg',
-                                  'image/webp',
-                                  'image/gif',
-                                ],
-                                onContentInserted: (KeyboardInsertedContent content) {
-                                  final data = content.data;
-                                  if (data == null || data.isEmpty) return;
-                                  final ext = _extFromMime(content.mimeType);
-                                  widget.onInsertRichContent!(
-                                    PickedLocalFile(
-                                      filename:
-                                          'ime_image_${DateTime.now().millisecondsSinceEpoch}.$ext',
-                                      bytes: data,
-                                      isImage: true,
-                                    ),
-                                  );
-                                },
-                              )
-                            : null,
-                    style: TextStyle(color: isDark ? Colors.white : Colors.black87),
-                    decoration: InputDecoration(
-                      hintText: hintText,
-                      hintStyle: TextStyle(
-                        color: isDark ? Colors.white24 : Colors.black26,
-                        fontSize: 13,
-                      ),
-                      filled: true,
-                      fillColor: isDark ? const Color(0xFF0B0F19) : const Color(0xFFF1F5F9),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        borderSide: BorderSide.none,
-                      ),
-                    ),
-                    onSubmitted: (_) {
-                      if (!_isTouchMobile && inputEnabled && !_isCtrlEnter && _hasDraft) {
-                        widget.onSendMessage();
-                      }
-                    },
-                  ),
-                ),
-                const SizedBox(width: 6),
-                ValueListenableBuilder<TextEditingValue>(
-                  valueListenable: widget.inputController,
-                  builder: (_, val, __) {
-                    final hasTextOrAttach =
-                        val.text.trim().isNotEmpty || widget.pendingAttachments.isNotEmpty;
-                    if (!widget.isThinking) {
-                      return IconButton(
-                        icon: Icon(Icons.arrow_upward_rounded, color: primary),
-                        tooltip: _isCtrlEnter ? '发送 (Ctrl+Enter)' : '发送',
-                        onPressed: inputEnabled ? widget.onSendMessage : null,
-                      );
-                    }
-                    return Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (inputEnabled && hasTextOrAttach)
-                          IconButton(
-                            icon: Icon(
-                              isQueueMode ? Icons.playlist_add_rounded : Icons.send_rounded,
-                              color: primary,
-                            ),
-                            tooltip: isQueueMode ? '排队入列' : '立即发送',
-                            onPressed: widget.onSendMessage,
-                          ),
-                        IconButton(
-                          icon: Container(
-                            width: 32,
-                            height: 32,
-                            decoration: BoxDecoration(
-                              color: Colors.redAccent.withValues(alpha: 0.15),
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.redAccent, width: 1.5),
-                            ),
-                            child: const Center(
-                              child: Icon(Icons.stop_rounded, color: Colors.redAccent, size: 20),
-                            ),
-                          ),
-                          tooltip: '停止当前任务 (Stop)',
-                          onPressed: inputEnabled ? widget.onStopTask : null,
+                  padding: const EdgeInsets.fromLTRB(14, 10, 10, 8),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextField(
+                        focusNode: _focusNode,
+                        controller: widget.inputController,
+                        enabled: inputEnabled,
+                        minLines: 1,
+                        maxLines: 6,
+                        keyboardType: TextInputType.multiline,
+                        textInputAction: (_isTouchMobile || _isCtrlEnter)
+                            ? TextInputAction.newline
+                            : TextInputAction.send,
+                        contentInsertionConfiguration:
+                            (widget.onInsertRichContent != null && inputEnabled)
+                                ? ContentInsertionConfiguration(
+                                    allowedMimeTypes: const <String>[
+                                      'image/png',
+                                      'image/jpeg',
+                                      'image/webp',
+                                      'image/gif',
+                                    ],
+                                    onContentInserted: (KeyboardInsertedContent content) {
+                                      final data = content.data;
+                                      if (data == null || data.isEmpty) return;
+                                      final ext = _extFromMime(content.mimeType);
+                                      widget.onInsertRichContent!(
+                                        PickedLocalFile(
+                                          filename:
+                                              'ime_image_${DateTime.now().millisecondsSinceEpoch}.$ext',
+                                          bytes: data,
+                                          isImage: true,
+                                        ),
+                                      );
+                                    },
+                                  )
+                                : null,
+                        style: TextStyle(
+                          color: isDark ? const Color(0xFFF4F4F5) : const Color(0xFF18181B),
+                          fontSize: 14.5,
+                          height: 1.45,
                         ),
-                      ],
-                    );
-                  },
+                        decoration: InputDecoration(
+                          isDense: true,
+                          hintText: hintText,
+                          hintStyle: TextStyle(
+                            color: isDark ? const Color(0xFF71717A) : const Color(0xFFA1A1AA),
+                            fontSize: 14,
+                          ),
+                          filled: false,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+                          border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          disabledBorder: InputBorder.none,
+                        ),
+                        onSubmitted: (_) {
+                          if (!_isTouchMobile && inputEnabled && !_isCtrlEnter && _hasDraft) {
+                            widget.onSendMessage();
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          InkWell(
+                            borderRadius: BorderRadius.circular(16),
+                            onTap: widget.isConnected ? widget.onShowAddContext : null,
+                            child: Container(
+                              width: 32,
+                              height: 32,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(16),
+                                color: isDark
+                                    ? Colors.white.withValues(alpha: 0.06)
+                                    : Colors.black.withValues(alpha: 0.05),
+                              ),
+                              child: Icon(
+                                Icons.add_rounded,
+                                color: widget.isConnected
+                                    ? (isDark ? const Color(0xFFD4D4D8) : const Color(0xFF3F3F46))
+                                    : (isDark ? Colors.white24 : Colors.black26),
+                                size: 20,
+                              ),
+                            ),
+                          ),
+                          const Spacer(),
+                          ValueListenableBuilder<TextEditingValue>(
+                            valueListenable: widget.inputController,
+                            builder: (_, val, __) {
+                              final hasTextOrAttach =
+                                  val.text.trim().isNotEmpty || widget.pendingAttachments.isNotEmpty;
+                              final canSendNow = inputEnabled && hasTextOrAttach;
+                              if (!widget.isThinking) {
+                                return Tooltip(
+                                  message: _isCtrlEnter ? '发送 (Ctrl+Enter)' : '发送',
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(18),
+                                    onTap: inputEnabled ? widget.onSendMessage : null,
+                                    child: AnimatedContainer(
+                                      duration: const Duration(milliseconds: 150),
+                                      width: 32,
+                                      height: 32,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: canSendNow
+                                            ? (isDark
+                                                ? const Color(0xFFF4F4F5)
+                                                : const Color(0xFF18181B))
+                                            : (isDark
+                                                ? Colors.white.withValues(alpha: 0.08)
+                                                : Colors.black.withValues(alpha: 0.08)),
+                                      ),
+                                      child: Icon(
+                                        Icons.arrow_upward_rounded,
+                                        size: 18,
+                                        color: canSendNow
+                                            ? (isDark ? const Color(0xFF111113) : Colors.white)
+                                            : (isDark ? Colors.white30 : Colors.black26),
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              }
+                              return Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (inputEnabled && hasTextOrAttach) ...[
+                                    Tooltip(
+                                      message: isQueueMode ? '排队入列' : '立即发送',
+                                      child: InkWell(
+                                        borderRadius: BorderRadius.circular(16),
+                                        onTap: widget.onSendMessage,
+                                        child: Container(
+                                          width: 32,
+                                          height: 32,
+                                          decoration: BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            color: primary.withValues(alpha: 0.16),
+                                          ),
+                                          child: Icon(
+                                            isQueueMode
+                                                ? Icons.playlist_add_rounded
+                                                : Icons.send_rounded,
+                                            size: 17,
+                                            color: primary,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                  ],
+                                  Tooltip(
+                                    message: '停止当前任务',
+                                    child: InkWell(
+                                      borderRadius: BorderRadius.circular(10),
+                                      onTap: inputEnabled ? widget.onStopTask : null,
+                                      child: Container(
+                                        width: 32,
+                                        height: 32,
+                                        decoration: BoxDecoration(
+                                          color: Colors.redAccent.withValues(alpha: 0.12),
+                                          borderRadius: BorderRadius.circular(10),
+                                          border: Border.all(
+                                            color: Colors.redAccent.withValues(alpha: 0.6),
+                                            width: 1.2,
+                                          ),
+                                        ),
+                                        child: const Center(
+                                          child: Icon(
+                                            Icons.stop_rounded,
+                                            color: Colors.redAccent,
+                                            size: 18,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
-          ],
+          ),
         ),
       ),
     );

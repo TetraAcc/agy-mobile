@@ -25,4 +25,10 @@ class PlatformBridge {
 
   static VoidCallback registerWebDropAndPaste(void Function(PickedLocalFile file) onFile) =>
       impl.implRegisterWebDropAndPaste(onFile);
+
+  static Future<Uint8List?> readLocalFileBytes(String path) =>
+      impl.implReadLocalFileBytes(path);
+
+  static Future<void> deleteLocalFile(String path) =>
+      impl.implDeleteLocalFile(path);
 }

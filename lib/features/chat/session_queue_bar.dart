@@ -61,7 +61,7 @@ class _SessionQueueBarState extends State<SessionQueueBar> {
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+        color: isDark ? const Color(0xFF111113) : const Color(0xFFF8F8F9),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
           color: badgeColor.withValues(alpha: 0.45),
@@ -152,7 +152,7 @@ class _SessionQueueBarState extends State<SessionQueueBar> {
                   return Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                     decoration: BoxDecoration(
-                      color: isDark ? const Color(0xFF161F30) : Colors.white,
+                      color: isDark ? const Color(0xFF18181B) : Colors.white,
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
                     ),
@@ -255,7 +255,7 @@ class _EditQueuedMessageDialogState extends State<_EditQueuedMessageDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      backgroundColor: widget.isDark ? const Color(0xFF161F30) : Colors.white,
+      backgroundColor: widget.isDark ? const Color(0xFF18181B) : Colors.white,
       title: Text(
         '编辑队列消息',
         style: TextStyle(
@@ -271,7 +271,7 @@ class _EditQueuedMessageDialogState extends State<_EditQueuedMessageDialog> {
         style: TextStyle(fontSize: 13, color: widget.isDark ? Colors.white : Colors.black87),
         decoration: InputDecoration(
           filled: true,
-          fillColor: widget.isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+          fillColor: widget.isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5),
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
         ),
       ),

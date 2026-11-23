@@ -1,22 +1,43 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config/server_config.dart';
 import 'app_colors.dart';
+import 'app_fonts.dart';
+import 'font_loader_service.dart';
 
 class ThemeState {
   final ThemeMode themeMode;
   final AccentThemeOption accent;
+  final AppFontOption font;
+  final String? loadingFontId;
+  final int fontRevision;
 
   const ThemeState({
     this.themeMode = ThemeMode.dark,
     required this.accent,
+    this.font = AppFonts.system,
+    this.loadingFontId,
+    this.fontRevision = 0,
   });
 
-  ThemeState copyWith({ThemeMode? themeMode, AccentThemeOption? accent}) {
+  ThemeState copyWith({
+    ThemeMode? themeMode,
+    AccentThemeOption? accent,
+    AppFontOption? font,
+    String? loadingFontId,
+    bool clearLoadingFont = false,
+    int? fontRevision,
+  }) {
     return ThemeState(
       themeMode: themeMode ?? this.themeMode,
       accent: accent ?? this.accent,
+      font: font ?? this.font,
+      loadingFontId: clearLoadingFont ? null : (loadingFontId ?? this.loadingFontId),
+      fontRevision: fontRevision ?? this.fontRevision,
     );
   }
 }
@@ -24,11 +45,16 @@ class ThemeState {
 class ThemeController extends Notifier<ThemeState> {
   static const _darkModeKey = 'is_dark_mode';
   static const _accentKey = 'accent_theme';
+  static const _fontKey = 'app_font_id';
 
   @override
   ThemeState build() {
-    _loadPrefs();
-    return ThemeState(themeMode: ThemeMode.dark, accent: AppColors.accentThemes.first);
+    unawaited(_loadPrefs());
+    return ThemeState(
+      themeMode: ThemeMode.dark,
+      accent: AppColors.accentThemes.first,
+      font: AppFonts.system,
+    );
   }
 
   Future<void> _loadPrefs() async {
@@ -36,10 +62,22 @@ class ThemeController extends Notifier<ThemeState> {
       final prefs = await SharedPreferences.getInstance();
       final isDark = prefs.getBool(_darkModeKey) ?? true;
       final accentId = prefs.getString(_accentKey) ?? 'emerald';
-      state = ThemeState(
+      final fontOpt = AppFonts.getById(prefs.getString(_fontKey));
+      state = state.copyWith(
         themeMode: isDark ? ThemeMode.dark : ThemeMode.light,
         accent: AppColors.getThemeById(accentId),
+        font: fontOpt,
       );
+      if (fontOpt.remoteFile != null) {
+        final serverCfg = await ServerConfig.load();
+        final loaded = await FontLoaderService.ensureLoaded(
+          fontOpt,
+          baseUrl: serverCfg.baseUrl,
+        );
+        if (loaded && state.font.id == fontOpt.id) {
+          state = state.copyWith(fontRevision: state.fontRevision + 1);
+        }
+      }
     } catch (_) {}
   }
 
@@ -57,6 +95,34 @@ class ThemeController extends Notifier<ThemeState> {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_accentKey, option.id);
     } catch (_) {}
+  }
+
+  Future<bool> setFont(AppFontOption option, {required String baseUrl}) async {
+    if (option.remoteFile == null) {
+      state = state.copyWith(
+        font: option,
+        clearLoadingFont: true,
+        fontRevision: state.fontRevision + 1,
+      );
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_fontKey, option.id);
+      } catch (_) {}
+      return true;
+    }
+
+    state = state.copyWith(loadingFontId: option.id);
+    final loaded = await FontLoaderService.ensureLoaded(option, baseUrl: baseUrl);
+    state = state.copyWith(
+      font: option,
+      clearLoadingFont: true,
+      fontRevision: state.fontRevision + 1,
+    );
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_fontKey, option.id);
+    } catch (_) {}
+    return loaded;
   }
 }
 

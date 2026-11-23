@@ -37,10 +37,10 @@ class _SessionStepsBarState extends State<SessionStepsBar> {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: widget.isDark ? const Color(0xFF111927) : const Color(0xFFF8FAFC),
+        color: widget.isDark ? const Color(0xFF18181B) : const Color(0xFFF8F8F9),
         border: Border(
           bottom: BorderSide(
-            color: widget.isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
+            color: widget.isDark ? const Color(0xFF222226) : const Color(0xFFE4E4E7),
           ),
         ),
       ),

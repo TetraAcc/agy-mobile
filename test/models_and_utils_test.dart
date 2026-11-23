@@ -1,4 +1,6 @@
+import 'package:agy_remote/core/platform/android_native_bridge.dart';
 import 'package:agy_remote/core/theme/app_colors.dart';
+import 'package:agy_remote/core/theme/app_fonts.dart';
 import 'package:agy_remote/core/utils/file_utils.dart';
 import 'package:agy_remote/models/models.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -183,7 +185,8 @@ void main() {
 
   group('AppColors 与 FileUtils 测试', () {
     test('AppColors 常量检查与日/夜间双色适配', () {
-      expect(AppColors.darkBg.toARGB32(), 0xFF0B0F19);
+      expect(AppColors.darkBg.toARGB32(), 0xFF111113);
+      expect(AppColors.lightBg.toARGB32(), 0xFFFFFFFF);
       expect(AppColors.accentThemes.length, 6);
       expect(AppColors.getThemeById('non_existent').id, 'emerald');
       for (final opt in AppColors.accentThemes) {
@@ -311,6 +314,32 @@ void main() {
       expect(queueData.items.length, 1);
       expect(queueData.items.first.id, 'q1');
       expect(queueData.items.first.content, '下一条指令');
+    });
+
+    test('AndroidNativeBridge inferMimeType 与 SharedIncomingPayload 解析', () {
+      expect(AndroidNativeBridge.inferMimeType('report.pdf'), 'application/pdf');
+      expect(AndroidNativeBridge.inferMimeType('shot.PNG'), 'image/png');
+      expect(AndroidNativeBridge.inferMimeType('photo.jpeg'), 'image/jpeg');
+      expect(AndroidNativeBridge.inferMimeType('notes.md'), 'text/markdown');
+      expect(AndroidNativeBridge.inferMimeType('archive.zip'), 'application/zip');
+      expect(AndroidNativeBridge.inferMimeType('noext'), '*/*');
+
+      final share = SharedIncomingPayload.fromMap({
+        'text': 'https://example.com/issue',
+        'files': [
+          {'path': '/tmp/a.png', 'name': 'a.png', 'mimeType': 'image/png'},
+          {'path': '/tmp/doc.pdf', 'name': 'doc.pdf', 'mimeType': 'application/pdf'},
+        ],
+      });
+      expect(share.isEmpty, false);
+      expect(share.files.length, 2);
+      expect(share.files[0].isImage, true);
+      expect(share.files[1].isImage, false);
+
+      expect(AppFonts.options.length, 4);
+      expect(AppFonts.getById('wenkai').remoteFile, 'LXGWWenKaiLite-Regular.ttf');
+      expect(AppFonts.getById('serif').remoteFile, 'NotoSerifSC-Regular.ttf');
+      expect(AppFonts.getById('unknown').id, 'system');
     });
   });
 }

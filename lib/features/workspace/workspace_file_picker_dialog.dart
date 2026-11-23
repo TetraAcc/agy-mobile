@@ -151,7 +151,7 @@ class WorkspaceFilePickerDialog extends StatelessWidget {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10),
               decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+                color: isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5),
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
               ),
@@ -160,7 +160,7 @@ class WorkspaceFilePickerDialog extends StatelessWidget {
                   value: roots.any((r) => r.id == activeRootId) ? activeRootId : roots.first.id,
                   isExpanded: true,
                   isDense: true,
-                  dropdownColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+                  dropdownColor: isDark ? const Color(0xFF222226) : Colors.white,
                   items: roots
                       .map(
                         (r) => DropdownMenuItem<String>(
@@ -284,7 +284,7 @@ class WorkspaceFilePickerDialog extends StatelessWidget {
                                   item.name,
                                   style: TextStyle(
                                     color: isDark
-                                        ? (item.isDir ? Colors.white : const Color(0xFFE2E8F0))
+                                        ? (item.isDir ? Colors.white : const Color(0xFFE4E4E7))
                                         : (item.isDir ? Colors.black87 : Colors.black54),
                                     fontSize: 13,
                                     fontWeight: item.isDir ? FontWeight.bold : FontWeight.normal,

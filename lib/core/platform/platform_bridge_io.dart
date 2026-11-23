@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -30,4 +32,25 @@ Future<void> implTriggerDownload(String url, String filename) async {
 
 VoidCallback implRegisterWebDropAndPaste(void Function(PickedLocalFile file) onFile) {
   return () {};
+}
+
+Future<Uint8List?> implReadLocalFileBytes(String path) async {
+  if (path.trim().isEmpty) return null;
+  try {
+    final file = File(path);
+    if (!await file.exists()) return null;
+    return await file.readAsBytes();
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<void> implDeleteLocalFile(String path) async {
+  if (path.trim().isEmpty) return;
+  try {
+    final file = File(path);
+    if (await file.exists()) {
+      await file.delete();
+    }
+  } catch (_) {}
 }

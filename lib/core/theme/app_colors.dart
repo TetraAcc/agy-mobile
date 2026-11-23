@@ -27,19 +27,19 @@ class AccentThemeOption {
 }
 
 class AppColors {
-  static const Color darkBg = Color(0xFF0B0F19);
-  static const Color darkSurface = Color(0xFF161F30);
-  static const Color darkCard = Color(0xFF1E293B);
-  static const Color darkBorder = Color(0xFF334155);
-  static const Color darkTextPrimary = Color(0xFFF8FAFC);
-  static const Color darkTextSecondary = Color(0xFF94A3B8);
+  static const Color darkBg = Color(0xFF111113);
+  static const Color darkSurface = Color(0xFF18181B);
+  static const Color darkCard = Color(0xFF222226);
+  static const Color darkBorder = Color(0xFF2C2C32);
+  static const Color darkTextPrimary = Color(0xFFF4F4F5);
+  static const Color darkTextSecondary = Color(0xFFA1A1AA);
 
-  static const Color lightBg = Color(0xFFF1F5F9);
-  static const Color lightSurface = Color(0xFFFFFFFF);
-  static const Color lightCard = Color(0xFFF8FAFC);
-  static const Color lightBorder = Color(0xFFE2E8F0);
-  static const Color lightTextPrimary = Color(0xFF0F172A);
-  static const Color lightTextSecondary = Color(0xFF64748B);
+  static const Color lightBg = Color(0xFFFFFFFF);
+  static const Color lightSurface = Color(0xFFF8F8F9);
+  static const Color lightCard = Color(0xFFF2F2F4);
+  static const Color lightBorder = Color(0xFFE4E4E7);
+  static const Color lightTextPrimary = Color(0xFF18181B);
+  static const Color lightTextSecondary = Color(0xFF71717A);
 
   static const Color primarySky = Color(0xFF89B4FA);
   static const Color primaryBlue = Color(0xFF88C0D0);

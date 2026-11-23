@@ -59,11 +59,15 @@ class MessageCard extends StatelessWidget {
       return Align(
         alignment: Alignment.centerRight,
         child: Container(
-          margin: const EdgeInsets.only(bottom: 12, left: 40),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          margin: const EdgeInsets.only(bottom: 18, left: 48),
+          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
           decoration: BoxDecoration(
-            color: const Color(0xFF0284C7),
-            borderRadius: BorderRadius.circular(16).copyWith(bottomRight: const Radius.circular(2)),
+            color: isDark ? const Color(0xFF26262A) : const Color(0xFFF2F2F4),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: isDark ? const Color(0xFF34343B) : const Color(0xFFE4E4E7),
+              width: 0.8,
+            ),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
@@ -72,7 +76,11 @@ class MessageCard extends StatelessWidget {
               if (displayContent.isNotEmpty)
                 SelectableText(
                   displayContent,
-                  style: const TextStyle(color: Colors.white, fontSize: 14, height: 1.4),
+                  style: TextStyle(
+                    color: isDark ? const Color(0xFFF4F4F5) : const Color(0xFF18181B),
+                    fontSize: 14.5,
+                    height: 1.5,
+                  ),
                 ),
               for (final imgPath in imgPaths) _buildUserImagePreview(context, imgPath),
             ],
@@ -89,23 +97,8 @@ class MessageCard extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF161F30) : Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0)),
-        boxShadow: isDark
-            ? null
-            : [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.04),
-                  blurRadius: 4,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-      ),
-      padding: const EdgeInsets.all(14),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 22),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -134,7 +127,7 @@ class MessageCard extends StatelessWidget {
             ),
           if (msg.content.trim().isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.only(top: 6),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
@@ -229,9 +222,9 @@ class MessageCard extends StatelessWidget {
               maxHeight: MediaQuery.of(ctx).size.height * 0.85,
             ),
             decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF0F172A) : Colors.white,
+              color: isDark ? const Color(0xFF18181B) : Colors.white,
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+              border: Border.all(color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
               boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 24, spreadRadius: 4)],
             ),
             clipBehavior: Clip.antiAlias,
@@ -240,7 +233,7 @@ class MessageCard extends StatelessWidget {
               children: [
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+                  color: isDark ? const Color(0xFF222226) : const Color(0xFFF8F8F9),
                   child: Row(
                     children: [
                       Icon(Icons.image_outlined, size: 16, color: Theme.of(context).colorScheme.primary),
@@ -335,18 +328,16 @@ class MessageCard extends StatelessWidget {
           final canOpenDetail = !canOpenDiff && onOpenToolDetail != null;
           final isInteractive = canOpenDiff || canOpenDetail;
           final chip = Container(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
             decoration: BoxDecoration(
               color: canOpenDiff
-                  ? primary.withValues(alpha: isDark ? 0.12 : 0.08)
-                  : (canOpenDetail
-                      ? (isDark ? Colors.white.withValues(alpha: 0.06) : Colors.black.withValues(alpha: 0.05))
-                      : (isDark ? Colors.white.withValues(alpha: 0.04) : Colors.black.withValues(alpha: 0.04))),
-              borderRadius: BorderRadius.circular(4),
+                  ? primary.withValues(alpha: isDark ? 0.10 : 0.08)
+                  : (isDark ? const Color(0xFF18181B) : const Color(0xFFF4F4F5)),
+              borderRadius: BorderRadius.circular(6),
               border: Border.all(
                 color: canOpenDiff
-                    ? primary.withValues(alpha: 0.4)
-                    : (isDark ? Colors.white12 : Colors.black12),
+                    ? primary.withValues(alpha: 0.35)
+                    : (isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
               ),
             ),
             child: Row(
@@ -404,13 +395,16 @@ class MessageCard extends StatelessWidget {
 
   Widget _buildThinkingFold(BuildContext context, String thinkingText) {
     final preview = thinkingText.trim().split('\n').first;
-    final cleanPreview = preview.length > 30 ? '${preview.substring(0, 30)}...' : preview;
+    final cleanPreview = preview.length > 36 ? '${preview.substring(0, 36)}...' : preview;
+    final muted = isDark ? const Color(0xFFA1A1AA) : const Color(0xFF71717A);
 
     return Container(
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF090D16) : const Color(0xFFF3E8FF).withValues(alpha: 0.4),
+        color: isDark ? const Color(0xFF18181B) : const Color(0xFFF8F8F9),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: isDark ? const Color(0xFF2E1065) : const Color(0xFFD8B4FE)),
+        border: Border.all(
+          color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7),
+        ),
       ),
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
@@ -418,19 +412,19 @@ class MessageCard extends StatelessWidget {
           initiallyExpanded: false,
           tilePadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
           childrenPadding: const EdgeInsets.only(left: 10, right: 10, bottom: 10),
-          leading: const Icon(Icons.psychology_outlined, color: Color(0xFFA855F7), size: 18),
+          leading: Icon(Icons.auto_awesome_outlined, color: muted, size: 16),
           title: Text(
-            '思考过程: $cleanPreview',
-            style: const TextStyle(color: Color(0xFFA855F7), fontSize: 12, fontWeight: FontWeight.w500),
+            '思考过程 · $cleanPreview',
+            style: TextStyle(color: muted, fontSize: 12, fontWeight: FontWeight.w500),
             overflow: TextOverflow.ellipsis,
           ),
           children: [
             SelectableText(
               thinkingText,
               style: TextStyle(
-                color: isDark ? const Color(0xFFD8B4FE) : const Color(0xFF6B21A8),
-                fontSize: 12,
-                height: 1.45,
+                color: isDark ? const Color(0xFFD4D4D8) : const Color(0xFF3F3F46),
+                fontSize: 12.5,
+                height: 1.5,
               ),
             ),
           ],
@@ -444,12 +438,12 @@ class MessageCard extends StatelessWidget {
     final fileName = cleanPath.split(RegExp(r'[\\/]')).last;
 
     return Container(
-      margin: const EdgeInsets.only(top: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      margin: const EdgeInsets.only(top: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1)),
+        color: isDark ? const Color(0xFF18181B) : const Color(0xFFF8F8F9),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
       ),
       child: Row(
         children: [

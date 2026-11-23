@@ -101,3 +101,7 @@ VoidCallback implRegisterWebDropAndPaste(void Function(PickedLocalFile file) onF
     web.window.removeEventListener('drop', dropHandler);
   };
 }
+
+Future<Uint8List?> implReadLocalFileBytes(String path) async => null;
+
+Future<void> implDeleteLocalFile(String path) async {}

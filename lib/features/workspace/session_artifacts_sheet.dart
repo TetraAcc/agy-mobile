@@ -38,7 +38,7 @@ class SessionArtifactsSheet extends StatefulWidget {
     return showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+      backgroundColor: isDark ? const Color(0xFF111113) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -221,9 +221,9 @@ class _SessionArtifactsSheetState extends State<SessionArtifactsSheet> {
     return Container(
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF161F30) : const Color(0xFFF8FAFC),
+        color: isDark ? const Color(0xFF18181B) : const Color(0xFFF8F8F9),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0)),
+        border: Border.all(color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -327,7 +327,7 @@ class _ArtifactFeedbackDialogState extends State<_ArtifactFeedbackDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      backgroundColor: widget.isDark ? const Color(0xFF161F30) : Colors.white,
+      backgroundColor: widget.isDark ? const Color(0xFF18181B) : Colors.white,
       title: Text(
         '批注 ${widget.artifactName}',
         style: TextStyle(
@@ -345,7 +345,7 @@ class _ArtifactFeedbackDialogState extends State<_ArtifactFeedbackDialog> {
           hintText: '输入希望 Agent 调整的地方...',
           hintStyle: TextStyle(color: widget.isDark ? Colors.white30 : Colors.black26),
           filled: true,
-          fillColor: widget.isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+          fillColor: widget.isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5),
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
         ),
       ),

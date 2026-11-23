@@ -27,7 +27,7 @@ class ToolDetailSheet extends StatefulWidget {
     return showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+      backgroundColor: isDark ? const Color(0xFF111113) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -159,9 +159,9 @@ class _ToolDetailSheetState extends State<ToolDetailSheet> {
                   margin: const EdgeInsets.only(bottom: 10),
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: isDark ? const Color(0xFF090D16) : const Color(0xFFF1F5F9),
+                    color: isDark ? const Color(0xFF090D16) : const Color(0xFFF4F4F5),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: isDark ? const Color(0xFF23324A) : const Color(0xFFCBD5E1)),
+                    border: Border.all(color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFCBD5E1)),
                   ),
                   child: SelectableText(
                     cmdText,
@@ -180,9 +180,9 @@ class _ToolDetailSheetState extends State<ToolDetailSheet> {
                   margin: const EdgeInsets.only(bottom: 10),
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: isDark ? const Color(0xFF090D16) : const Color(0xFFF1F5F9),
+                    color: isDark ? const Color(0xFF090D16) : const Color(0xFFF4F4F5),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: isDark ? const Color(0xFF23324A) : const Color(0xFFCBD5E1)),
+                    border: Border.all(color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFCBD5E1)),
                   ),
                   child: SingleChildScrollView(
                     child: Column(
@@ -213,9 +213,9 @@ class _ToolDetailSheetState extends State<ToolDetailSheet> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: isDark ? const Color(0xFF090D16) : const Color(0xFFF8FAFC),
+                    color: isDark ? const Color(0xFF090D16) : const Color(0xFFF8F8F9),
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0)),
+                    border: Border.all(color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
                   ),
                   child: _loading
                       ? const Center(child: CircularProgressIndicator())
@@ -243,7 +243,7 @@ class _ToolDetailSheetState extends State<ToolDetailSheet> {
                                       fontFamily: 'monospace',
                                       fontSize: 11.5,
                                       height: 1.45,
-                                      color: isDark ? const Color(0xFFE2E8F0) : const Color(0xFF1E293B),
+                                      color: isDark ? const Color(0xFFE4E4E7) : const Color(0xFF222226),
                                     ),
                                   ),
                                 ),

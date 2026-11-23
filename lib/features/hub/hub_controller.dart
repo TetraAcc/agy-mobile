@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/config/server_config.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/token_store.dart';
+import '../../core/platform/android_native_bridge.dart';
 import '../../core/platform/platform_bridge.dart';
 import '../../core/realtime/node_event_socket.dart';
 import '../../models/models.dart';
@@ -167,6 +168,10 @@ class HubController extends Notifier<HubState> {
   bool _disposed = false;
   DateTime? _pausedAt;
   DateTime? _lastResumedAt;
+  bool _isAppInBackground = false;
+  String _lastNotifiedRunningTitle = '';
+  String _lastNotifiedRunningBody = '';
+  int _lastAskQuestionStep = -1;
 
   @override
   HubState build() {
@@ -174,6 +179,9 @@ class HubController extends Notifier<HubState> {
       _disposed = true;
       _quotaTimer?.cancel();
       _disposeSocketSync();
+      if (AndroidNativeBridge.isAndroidNative) {
+        unawaited(AndroidNativeBridge.stopRunningNotification());
+      }
     });
     return const HubState();
   }
@@ -222,6 +230,12 @@ class HubController extends Notifier<HubState> {
     _quotaTimer?.cancel();
     _quotaTimer = null;
     _disposeSocketSync();
+    _lastNotifiedRunningTitle = '';
+    _lastNotifiedRunningBody = '';
+    _lastAskQuestionStep = -1;
+    if (AndroidNativeBridge.isAndroidNative) {
+      unawaited(AndroidNativeBridge.stopRunningNotification());
+    }
     state = const HubState();
   }
 
@@ -297,10 +311,12 @@ class HubController extends Notifier<HubState> {
   }
 
   void handleAppPaused() {
+    _isAppInBackground = true;
     _pausedAt = DateTime.now();
   }
 
   Future<void> handleAppResumed() async {
+    _isAppInBackground = false;
     if (_disposed || state.selectedNodeId.isEmpty) return;
     final now = DateTime.now();
     if (_lastResumedAt != null && now.difference(_lastResumedAt!) < const Duration(seconds: 2)) {
@@ -317,6 +333,52 @@ class HubController extends Notifier<HubState> {
     unawaited(refreshSessionTree());
     if (state.activeSessionId.isNotEmpty) {
       await _syncActiveSessionSilent();
+    }
+    _syncRunningNotification();
+  }
+
+  void _syncRunningNotification() {
+    if (!AndroidNativeBridge.isAndroidNative || _disposed) return;
+    if (state.isActiveSessionRunning) {
+      if (_isAppInBackground && _lastNotifiedRunningTitle.isEmpty) {
+        return;
+      }
+      final title = state.activeSessionTitle.trim().isNotEmpty
+          ? state.activeSessionTitle.trim()
+          : 'AGY Remote 任务运行中';
+      final focus = state.activeFocusText.trim();
+      final body = focus.isNotEmpty ? focus : 'Agent 正在执行指令...';
+      if (title == _lastNotifiedRunningTitle && body == _lastNotifiedRunningBody) {
+        return;
+      }
+      _lastNotifiedRunningTitle = title;
+      _lastNotifiedRunningBody = body;
+      unawaited(AndroidNativeBridge.updateRunningNotification(title: title, body: body));
+    } else if (_lastNotifiedRunningTitle.isNotEmpty || _lastNotifiedRunningBody.isNotEmpty) {
+      _lastNotifiedRunningTitle = '';
+      _lastNotifiedRunningBody = '';
+      unawaited(AndroidNativeBridge.stopRunningNotification());
+    }
+  }
+
+  void _maybeNotifyAskQuestion(AgentMessage step) {
+    if (!AndroidNativeBridge.isAndroidNative || !_isAppInBackground) return;
+    if (step.stepIndex <= _lastAskQuestionStep) return;
+    for (final tool in step.toolCalls) {
+      if (tool.name == 'ask_question') {
+        final qs = AskQuestionItem.parseFromTool(tool);
+        if (qs.isNotEmpty) {
+          _lastAskQuestionStep = step.stepIndex;
+          unawaited(
+            AndroidNativeBridge.showAlertNotification(
+              title: 'Agent 等待你的确认',
+              body: qs.first.question,
+              id: 2002,
+            ),
+          );
+          return;
+        }
+      }
     }
   }
 
@@ -437,6 +499,7 @@ class HubController extends Notifier<HubState> {
     final nodeId = state.selectedNodeId;
     if (nodeId.isEmpty || session.id.isEmpty) return;
 
+    _lastAskQuestionStep = -1;
     final prevSid = state.activeSessionId;
     if (prevSid.isNotEmpty && prevSid != session.id) {
       _socket?.unsubscribe(prevSid);
@@ -478,6 +541,7 @@ class HubController extends Notifier<HubState> {
 
       final lastStep = page.messages.isNotEmpty ? page.messages.last.stepIndex : null;
       _socket?.subscribe(session.id, sinceStep: lastStep);
+      _syncRunningNotification();
       unawaited(refreshSessionChanges());
       unawaited(refreshSessionQueue());
     } catch (_) {
@@ -563,6 +627,8 @@ class HubController extends Notifier<HubState> {
           }
         }
         state = state.copyWith(messages: updated, runningSessionIds: nextRunning);
+        _syncRunningNotification();
+        _maybeNotifyAskQuestion(event.step);
         if (event.step.toolCalls.any((t) => _editToolNames.contains(t.name))) {
           unawaited(refreshSessionChanges());
         }
@@ -580,7 +646,19 @@ class HubController extends Notifier<HubState> {
           nextRunning.remove(event.sessionId);
         }
         state = state.copyWith(runningSessionIds: nextRunning);
+        _syncRunningNotification();
         if (wasRunning && !event.isRunning) {
+          if (AndroidNativeBridge.isAndroidNative &&
+              _isAppInBackground &&
+              event.sessionId == state.activeSessionId) {
+            unawaited(
+              AndroidNativeBridge.showAlertNotification(
+                title: '任务已完成',
+                body: state.activeSessionTitle,
+                id: 2001,
+              ),
+            );
+          }
           unawaited(refreshSessionTree());
           if (event.sessionId == state.activeSessionId) {
             unawaited(refreshSessionChanges());
@@ -682,6 +760,7 @@ class HubController extends Notifier<HubState> {
       messages: [...state.messages, optimisticMsg],
       runningSessionIds: nextRunning,
     );
+    _syncRunningNotification();
 
     try {
       final (bool ok, String msg) = deliveryMode == 'immediate' && state.isActiveSessionRunning
@@ -727,6 +806,7 @@ class HubController extends Notifier<HubState> {
       if (ok) {
         final next = Set<String>.from(state.runningSessionIds)..remove(sid);
         state = state.copyWith(runningSessionIds: next);
+        _syncRunningNotification();
         if (state.sessionQueue.items.isNotEmpty) {
           unawaited(refreshSessionQueue());
         }
@@ -1163,6 +1243,55 @@ class HubController extends Notifier<HubState> {
       return e.message;
     } catch (e) {
       return '打开媒体失败: $e';
+    }
+  }
+
+  Future<({DownloadedLocalFile? file, String? error})> downloadFileToLocal(
+    String pathOrUri, {
+    String? rootId,
+    String? filename,
+    void Function(int received, int total)? onProgress,
+  }) async {
+    try {
+      final nodeId = state.selectedNodeId;
+      if (nodeId.isEmpty) return (file: null, error: '未选中节点');
+      if (state.cachedRoots.isEmpty) {
+        await refreshFileRoots();
+      }
+      final resolved = resolveRootAndRelPath(pathOrUri, rootId: rootId);
+      if (resolved == null || resolved.relPath.isEmpty) {
+        return (file: null, error: '该文件不在当前受控工作区根目录内，无法下载');
+      }
+      final dir = await AndroidNativeBridge.getDownloadsDir();
+      if (dir == null || dir.isEmpty) {
+        return (file: null, error: '无法访问本地缓存下载目录');
+      }
+      final ticket = await _api.createDownloadTicket(nodeId, resolved.rootId, resolved.relPath);
+      final dlUrl = _api.buildDownloadUrl(nodeId, ticket.ticket);
+      final rawName = (filename != null && filename.trim().isNotEmpty)
+          ? filename.trim()
+          : (ticket.filename.isNotEmpty ? ticket.filename : 'download.bin');
+      final safeName = rawName.replaceAll(RegExp(r'[^a-zA-Z0-9._\-\u4e00-\u9fff]+'), '_');
+      final sep = dir.endsWith('/') || dir.endsWith('\\') ? '' : '/';
+      final savePath = '$dir$sep${DateTime.now().millisecondsSinceEpoch}_$safeName';
+      final bytesCount = await _api.downloadUrlToPath(
+        dlUrl,
+        savePath,
+        onProgress: onProgress,
+      );
+      return (
+        file: DownloadedLocalFile(
+          path: savePath,
+          filename: rawName,
+          sizeBytes: bytesCount,
+          mimeType: AndroidNativeBridge.inferMimeType(rawName),
+        ),
+        error: null,
+      );
+    } on ApiException catch (e) {
+      return (file: null, error: e.message);
+    } catch (e) {
+      return (file: null, error: '下载失败: $e');
     }
   }
 }

@@ -5,6 +5,7 @@ class ContextMenuSheet extends StatelessWidget {
   final bool canWrite;
   final VoidCallback onPickFile;
   final VoidCallback onPickImage;
+  final VoidCallback? onTakePhoto;
   final VoidCallback onRequestGitDiff;
   final VoidCallback onOpenWorkspaceFiles;
   final VoidCallback? onOpenSessionArtifacts;
@@ -15,6 +16,7 @@ class ContextMenuSheet extends StatelessWidget {
     this.canWrite = true,
     required this.onPickFile,
     required this.onPickImage,
+    this.onTakePhoto,
     required this.onRequestGitDiff,
     required this.onOpenWorkspaceFiles,
     this.onOpenSessionArtifacts,
@@ -26,6 +28,7 @@ class ContextMenuSheet extends StatelessWidget {
     bool canWrite = true,
     required VoidCallback onPickFile,
     required VoidCallback onPickImage,
+    VoidCallback? onTakePhoto,
     required VoidCallback onRequestGitDiff,
     required VoidCallback onOpenWorkspaceFiles,
     VoidCallback? onOpenSessionArtifacts,
@@ -33,7 +36,7 @@ class ContextMenuSheet extends StatelessWidget {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: isDark ? const Color(0xFF161F30) : Colors.white,
+      backgroundColor: isDark ? const Color(0xFF18181B) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -42,6 +45,7 @@ class ContextMenuSheet extends StatelessWidget {
         canWrite: canWrite,
         onPickFile: onPickFile,
         onPickImage: onPickImage,
+        onTakePhoto: onTakePhoto,
         onRequestGitDiff: onRequestGitDiff,
         onOpenWorkspaceFiles: onOpenWorkspaceFiles,
         onOpenSessionArtifacts: onOpenSessionArtifacts,
@@ -93,6 +97,17 @@ class ContextMenuSheet extends StatelessWidget {
                     onPickImage();
                   },
                 ),
+                if (onTakePhoto != null)
+                  _buildMenuItem(
+                    context,
+                    icon: Icons.photo_camera_outlined,
+                    title: '拍照上传',
+                    subtitle: '调用系统相机拍照并直接添加为附件',
+                    onTap: () {
+                      Navigator.pop(context);
+                      onTakePhoto!();
+                    },
+                  ),
               ],
               _buildMenuItem(
                 context,

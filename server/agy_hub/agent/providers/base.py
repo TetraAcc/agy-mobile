@@ -392,8 +392,11 @@ class BaseEngineProvider(ABC):
                 general_sessions.append(summary)
 
         for proj_name, items in projects_dict.items():
+            items.sort(key=lambda s: not s.is_pinned)
             if proj_name not in project_latest_time and items:
                 project_latest_time[proj_name] = items[0].updated_at
+
+        general_sessions.sort(key=lambda s: not s.is_pinned)
 
         sorted_names = sorted(
             projects_dict.keys(),

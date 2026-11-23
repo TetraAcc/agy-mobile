@@ -35,8 +35,8 @@ class _SessionChangesBarState extends State<SessionChangesBar> {
 
     final isDark = widget.isDark;
     final primary = Theme.of(context).colorScheme.primary;
-    final borderColor = isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0);
-    final bgColor = isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC);
+    final borderColor = isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7);
+    final bgColor = isDark ? const Color(0xFF111113) : const Color(0xFFF8F8F9);
     final fileNoun = changes.totalFiles == 1 ? 'file changed' : 'files changed';
 
     return Container(
@@ -105,7 +105,7 @@ class _SessionChangesBarState extends State<SessionChangesBar> {
                       ),
                       backgroundColor: widget.pendingCommentCount > 0
                           ? primary.withValues(alpha: 0.14)
-                          : (isDark ? const Color(0xFF161F30) : Colors.white),
+                          : (isDark ? const Color(0xFF18181B) : Colors.white),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
                     ),
                     icon: Icon(

@@ -45,31 +45,34 @@ class MarkdownMessageBody extends StatelessWidget {
       },
       styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
         p: TextStyle(
-          color: isDark ? const Color(0xFFE2E8F0) : const Color(0xFF1E293B),
-          fontSize: 14,
-          height: 1.6,
+          color: isDark ? const Color(0xFFE4E4E7) : const Color(0xFF18181B),
+          fontSize: 15,
+          height: 1.68,
         ),
         h1: TextStyle(
-          color: isDark ? Colors.white : Colors.black87,
-          fontSize: 18,
-          fontWeight: FontWeight.bold,
+          color: isDark ? const Color(0xFFFAFAFA) : const Color(0xFF09090B),
+          fontSize: 19,
+          fontWeight: FontWeight.w700,
+          height: 1.4,
         ),
         h2: TextStyle(
-          color: isDark ? Colors.white : Colors.black87,
-          fontSize: 16,
-          fontWeight: FontWeight.bold,
+          color: isDark ? const Color(0xFFFAFAFA) : const Color(0xFF09090B),
+          fontSize: 17,
+          fontWeight: FontWeight.w600,
+          height: 1.4,
         ),
         h3: TextStyle(
-          color: primary,
-          fontSize: 15,
-          fontWeight: FontWeight.bold,
+          color: isDark ? const Color(0xFFF4F4F5) : const Color(0xFF18181B),
+          fontSize: 15.5,
+          fontWeight: FontWeight.w600,
+          height: 1.4,
         ),
         strong: TextStyle(
-          color: isDark ? Colors.white : Colors.black87,
-          fontWeight: FontWeight.bold,
+          color: isDark ? const Color(0xFFFAFAFA) : const Color(0xFF09090B),
+          fontWeight: FontWeight.w600,
         ),
         em: TextStyle(
-          color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+          color: isDark ? const Color(0xFFA1A1AA) : const Color(0xFF52525B),
           fontStyle: FontStyle.italic,
         ),
         a: TextStyle(
@@ -77,25 +80,30 @@ class MarkdownMessageBody extends StatelessWidget {
           decoration: TextDecoration.underline,
         ),
         listBullet: TextStyle(
-          color: primary,
-          fontSize: 14,
+          color: isDark ? const Color(0xFFA1A1AA) : const Color(0xFF52525B),
+          fontSize: 15,
         ),
         blockquote: TextStyle(
-          color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
-          fontSize: 13.5,
+          color: isDark ? const Color(0xFFD4D4D8) : const Color(0xFF3F3F46),
+          fontSize: 14,
           height: 1.6,
         ),
         blockquotePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         blockquoteDecoration: BoxDecoration(
-          color: isDark ? const Color(0xFF161F30) : const Color(0xFFF1F5F9),
+          color: isDark ? const Color(0xFF18181B) : const Color(0xFFF4F4F5),
           borderRadius: BorderRadius.circular(8),
-          border: Border(left: BorderSide(color: primary, width: 3.5)),
+          border: Border(
+            left: BorderSide(
+              color: isDark ? const Color(0xFF52525B) : const Color(0xFFA1A1AA),
+              width: 3,
+            ),
+          ),
         ),
         code: TextStyle(
-          backgroundColor: isDark ? const Color(0xFF0B0F19) : const Color(0xFFF1F5F9),
-          color: primary,
+          backgroundColor: isDark ? const Color(0xFF222226) : const Color(0xFFF1F1F3),
+          color: isDark ? const Color(0xFFF4F4F5) : const Color(0xFF18181B),
           fontFamily: 'monospace',
-          fontSize: 12,
+          fontSize: 13,
         ),
       ),
     );
@@ -138,7 +146,7 @@ class MarkdownMessageBody extends StatelessWidget {
         return Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+            color: isDark ? const Color(0xFF222226) : const Color(0xFFF4F4F5),
             borderRadius: BorderRadius.circular(8),
             border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
           ),
@@ -200,10 +208,10 @@ class MarkdownMessageBody extends StatelessWidget {
             child: Container(
               constraints: const BoxConstraints(maxHeight: 450),
               decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+                color: isDark ? const Color(0xFF111113) : const Color(0xFFF8F8F9),
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(
-                  color: isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0),
+                  color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7),
                 ),
               ),
               clipBehavior: Clip.antiAlias,
@@ -249,9 +257,9 @@ class MarkdownMessageBody extends StatelessWidget {
               maxHeight: MediaQuery.of(ctx).size.height * 0.85,
             ),
             decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF0F172A) : Colors.white,
+              color: isDark ? const Color(0xFF111113) : Colors.white,
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+              border: Border.all(color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
               boxShadow: const [
                 BoxShadow(color: Colors.black54, blurRadius: 24, spreadRadius: 4),
               ],
@@ -262,7 +270,7 @@ class MarkdownMessageBody extends StatelessWidget {
               children: [
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+                  color: isDark ? const Color(0xFF222226) : const Color(0xFFF8F8F9),
                   child: Row(
                     children: [
                       Icon(Icons.image_outlined, size: 16, color: Theme.of(context).colorScheme.primary),

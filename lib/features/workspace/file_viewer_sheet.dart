@@ -70,7 +70,7 @@ class FileViewerSheet extends StatefulWidget {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+      backgroundColor: isDark ? const Color(0xFF111113) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -344,12 +344,12 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
               child: Container(
                 width: double.infinity,
                 decoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF090D16) : const Color(0xFFF8FAFC),
+                  color: isDark ? const Color(0xFF090D16) : const Color(0xFFF8F8F9),
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(
                     color: _isEditing
                         ? primary.withValues(alpha: 0.6)
-                        : (isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0)),
+                        : (isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
                   ),
                 ),
                 child: _isEditing
@@ -361,7 +361,7 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
                         style: TextStyle(
                           fontFamily: 'monospace',
                           fontSize: 12.5,
-                          color: isDark ? const Color(0xFFE2E8F0) : const Color(0xFF1E293B),
+                          color: isDark ? const Color(0xFFE4E4E7) : const Color(0xFF222226),
                           height: 1.5,
                         ),
                         decoration: const InputDecoration(
@@ -397,7 +397,7 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
                                   style: TextStyle(
                                     fontFamily: 'monospace',
                                     fontSize: 12,
-                                    color: isDark ? const Color(0xFFE2E8F0) : const Color(0xFF1E293B),
+                                    color: isDark ? const Color(0xFFE4E4E7) : const Color(0xFF222226),
                                     height: 1.45,
                                   ),
                                 ),

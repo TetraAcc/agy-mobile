@@ -379,5 +379,18 @@ void main() {
     expect(createdSockets['deck']!.reconnectCount, 1);
     expect(createdSockets['deck']!.currentState, WsConnState.connected);
     expect(state.messages.any((m) => m.content == '后台期间新增回复'), true);
+
+    // 模拟后台期间任务执行中 -> 完成的状态流转安全触发
+    hub.handleAppPaused();
+    createdSockets['deck']!.emitEvent(
+      const WsSessionStatusEvent(sessionId: 'deck-s1', isRunning: true),
+    );
+    await Future<void>.delayed(Duration.zero);
+    createdSockets['deck']!.emitEvent(
+      const WsSessionStatusEvent(sessionId: 'deck-s1', isRunning: false),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(container.read(hubControllerProvider).isActiveSessionRunning, false);
+    await hub.handleAppResumed();
   });
 }

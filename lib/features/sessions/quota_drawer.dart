@@ -70,6 +70,39 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
 
   bool get isDark => widget.isDark;
 
+  List<SessionItem> _sortPinnedFirst(List<SessionItem> items) {
+    if (items.length <= 1) return items;
+    final pinned = <SessionItem>[];
+    final rest = <SessionItem>[];
+    for (final s in items) {
+      if (s.isPinned) {
+        pinned.add(s);
+      } else {
+        rest.add(s);
+      }
+    }
+    if (pinned.isEmpty) return items;
+    return [...pinned, ...rest];
+  }
+
+  List<({SessionItem session, String? projectName})> _collectPinnedEntries() {
+    final seen = <String>{};
+    final out = <({SessionItem session, String? projectName})>[];
+    for (final entry in widget.projects.entries) {
+      for (final s in entry.value) {
+        if (s.isPinned && seen.add(s.id)) {
+          out.add((session: s, projectName: entry.key));
+        }
+      }
+    }
+    for (final s in widget.generalSessions) {
+      if (s.isPinned && seen.add(s.id)) {
+        out.add((session: s, projectName: null));
+      }
+    }
+    return out;
+  }
+
   Widget _buildSearchResults(BuildContext context) {
     final query = _searchQuery.toLowerCase();
     final List<({SessionItem session, String? projectName})> results = [];
@@ -89,6 +122,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
         results.add((session: s, projectName: null));
       }
     }
+    results.sort((a, b) => (b.session.isPinned ? 1 : 0).compareTo(a.session.isPinned ? 1 : 0));
 
     if (results.isEmpty) {
       return Center(
@@ -133,7 +167,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
   @override
   Widget build(BuildContext context) {
     return Drawer(
-      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+      backgroundColor: isDark ? const Color(0xFF111113) : Colors.white,
       child: SafeArea(
         child: Column(
           children: [
@@ -154,7 +188,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                           }
                         : null,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+                      backgroundColor: isDark ? const Color(0xFF222226) : const Color(0xFFF4F4F5),
                       foregroundColor: isDark ? Colors.white : Colors.black87,
                       elevation: 0,
                       minimumSize: const Size(double.infinity, 34),
@@ -170,10 +204,10 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                   Container(
                     height: 32,
                     decoration: BoxDecoration(
-                      color: isDark ? const Color(0xFF161F30) : const Color(0xFFF8FAFC),
+                      color: isDark ? const Color(0xFF18181B) : const Color(0xFFF8F8F9),
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
-                        color: isDark ? const Color(0xFF334155) : const Color(0xFFCBD5E1),
+                        color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFCBD5E1),
                         width: 0.8,
                       ),
                     ),
@@ -217,95 +251,132 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
             Expanded(
               child: _searchQuery.isNotEmpty
                   ? _buildSearchResults(context)
-                  : ListView(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      children: [
-                        if (widget.projects.isNotEmpty) ...[
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                            child: Text(
-                              '项目列表',
-                              style: TextStyle(
-                                color: isDark ? Colors.white38 : Colors.black38,
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                          for (final entry in widget.projects.entries)
-                            Theme(
-                              data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-                              child: ExpansionTile(
-                                initiallyExpanded: entry.value.any((s) => s.id == widget.activeSessionId),
-                                tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 0),
-                                leading: Icon(
-                                  Icons.folder_outlined,
-                                  color: Theme.of(context).colorScheme.primary,
-                                  size: 18,
-                                ),
-                                title: Text(
-                                  entry.key,
-                                  style: TextStyle(
-                                    color: isDark ? Colors.white : Colors.black87,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
+                  : Builder(
+                      builder: (context) {
+                        final pinnedEntries = _collectPinnedEntries();
+                        final sortedGeneral = _sortPinnedFirst(widget.generalSessions);
+                        return ListView(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          children: [
+                            if (pinnedEntries.isNotEmpty) ...[
+                              Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                                child: Row(
                                   children: [
-                                    if (widget.canWrite && entry.value.isNotEmpty)
-                                      IconButton(
-                                        icon: const Icon(Icons.add_circle_outline_rounded, size: 18),
-                                        color: Theme.of(context).colorScheme.primary,
-                                        tooltip: '在此项目内新建会话',
-                                        splashRadius: 16,
-                                        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                                        padding: EdgeInsets.zero,
-                                        onPressed: () {
-                                          final firstWithWs = entry.value.firstWhere(
-                                            (s) => s.workspacePath.isNotEmpty,
-                                            orElse: () => entry.value.first,
-                                          );
-                                          Navigator.pop(context);
-                                          widget.onNewSessionInProject?.call(
-                                            entry.key,
-                                            firstWithWs.workspacePath,
-                                            firstWithWs.rootId,
-                                          );
-                                        },
-                                      ),
-                                    const SizedBox(width: 2),
                                     Icon(
-                                      Icons.expand_more_rounded,
-                                      size: 18,
-                                      color: isDark ? Colors.white54 : Colors.black45,
+                                      Icons.push_pin_rounded,
+                                      size: 12,
+                                      color: Theme.of(context).colorScheme.primary,
+                                    ),
+                                    const SizedBox(width: 5),
+                                    Text(
+                                      '已置顶 (${pinnedEntries.length})',
+                                      style: TextStyle(
+                                        color: isDark ? Colors.white54 : Colors.black54,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                      ),
                                     ),
                                   ],
                                 ),
-                                children: entry.value
-                                    .map((s) => _buildSessionTile(context, s, isIndented: true))
-                                    .toList(),
                               ),
-                            ),
-                          Divider(color: isDark ? Colors.white10 : Colors.black12, height: 16),
-                        ],
-                        if (widget.generalSessions.isNotEmpty) ...[
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                            child: Text(
-                              '会话列表',
-                              style: TextStyle(
-                                color: isDark ? Colors.white38 : Colors.black38,
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
+                              for (final item in pinnedEntries)
+                                _buildSessionTile(
+                                  context,
+                                  item.session,
+                                  isIndented: false,
+                                  projectTag: item.projectName,
+                                ),
+                              Divider(color: isDark ? Colors.white10 : Colors.black12, height: 16),
+                            ],
+                            if (widget.projects.isNotEmpty) ...[
+                              Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                                child: Text(
+                                  '项目列表',
+                                  style: TextStyle(
+                                    color: isDark ? Colors.white38 : Colors.black38,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ),
-                          for (final s in widget.generalSessions)
-                            _buildSessionTile(context, s, isIndented: false),
-                        ],
-                      ],
+                              for (final entry in widget.projects.entries)
+                                Theme(
+                                  data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                                  child: ExpansionTile(
+                                    initiallyExpanded: entry.value.any((s) => s.id == widget.activeSessionId),
+                                    tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 0),
+                                    leading: Icon(
+                                      Icons.folder_outlined,
+                                      color: Theme.of(context).colorScheme.primary,
+                                      size: 18,
+                                    ),
+                                    title: Text(
+                                      entry.key,
+                                      style: TextStyle(
+                                        color: isDark ? Colors.white : Colors.black87,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    trailing: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        if (widget.canWrite && entry.value.isNotEmpty)
+                                          IconButton(
+                                            icon: const Icon(Icons.add_circle_outline_rounded, size: 18),
+                                            color: Theme.of(context).colorScheme.primary,
+                                            tooltip: '在此项目内新建会话',
+                                            splashRadius: 16,
+                                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                                            padding: EdgeInsets.zero,
+                                            onPressed: () {
+                                              final firstWithWs = entry.value.firstWhere(
+                                                (s) => s.workspacePath.isNotEmpty,
+                                                orElse: () => entry.value.first,
+                                              );
+                                              Navigator.pop(context);
+                                              widget.onNewSessionInProject?.call(
+                                                entry.key,
+                                                firstWithWs.workspacePath,
+                                                firstWithWs.rootId,
+                                              );
+                                            },
+                                          ),
+                                        const SizedBox(width: 2),
+                                        Icon(
+                                          Icons.expand_more_rounded,
+                                          size: 18,
+                                          color: isDark ? Colors.white54 : Colors.black45,
+                                        ),
+                                      ],
+                                    ),
+                                    children: _sortPinnedFirst(entry.value)
+                                        .map((s) => _buildSessionTile(context, s, isIndented: true))
+                                        .toList(),
+                                  ),
+                                ),
+                              Divider(color: isDark ? Colors.white10 : Colors.black12, height: 16),
+                            ],
+                            if (sortedGeneral.isNotEmpty) ...[
+                              Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                                child: Text(
+                                  '会话列表',
+                                  style: TextStyle(
+                                    color: isDark ? Colors.white38 : Colors.black38,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                              for (final s in sortedGeneral)
+                                _buildSessionTile(context, s, isIndented: false),
+                            ],
+                          ],
+                        );
+                      },
                     ),
             ),
             Container(
@@ -373,7 +444,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                                   child: Icon(
                                     Icons.check_rounded,
                                     size: 13,
-                                    color: isDark ? const Color(0xFF0F172A) : Colors.white,
+                                    color: isDark ? const Color(0xFF111113) : Colors.white,
                                   ),
                                 )
                               : null,
@@ -487,7 +558,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
       margin: const EdgeInsets.fromLTRB(12, 6, 12, 3),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+        color: isDark ? const Color(0xFF222226) : const Color(0xFFF8F8F9),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: isDark ? Colors.white10 : Colors.black12),
       ),
@@ -528,13 +599,13 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                       margin: const EdgeInsets.symmetric(horizontal: 2),
                       decoration: BoxDecoration(
                         color: isSelected
-                            ? (isDark
-                                ? const Color(0xFF0284C7).withValues(alpha: 0.3)
-                                : const Color(0xFFE0F2FE))
+                            ? Theme.of(context).colorScheme.primary.withValues(alpha: isDark ? 0.16 : 0.10)
                             : Colors.transparent,
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(
-                          color: isSelected ? const Color(0xFF38BDF8) : Colors.transparent,
+                          color: isSelected
+                              ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.45)
+                              : Colors.transparent,
                           width: 1,
                         ),
                       ),
@@ -545,7 +616,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                             isDeck ? Icons.videogame_asset_rounded : Icons.desktop_windows_rounded,
                             size: 13,
                             color: isSelected
-                                ? const Color(0xFF38BDF8)
+                                ? Theme.of(context).colorScheme.primary
                                 : (isDark ? Colors.white60 : Colors.black54),
                           ),
                           const SizedBox(width: 4),
@@ -556,7 +627,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                                 fontSize: 11,
                                 fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                                 color: isSelected
-                                    ? (isDark ? Colors.white : const Color(0xFF0284C7))
+                                    ? (isDark ? Colors.white : Theme.of(context).colorScheme.primary)
                                     : (isDark ? Colors.white70 : Colors.black87),
                               ),
                               overflow: TextOverflow.ellipsis,
@@ -591,9 +662,9 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF161F30) : const Color(0xFFF8FAFC),
+        color: isDark ? const Color(0xFF18181B) : const Color(0xFFF8F8F9),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: isDark ? const Color(0xFF23324A) : const Color(0xFFE2E8F0)),
+        border: Border.all(color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -608,7 +679,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                   Icon(
                     Icons.speed_rounded,
                     size: 14,
-                    color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7),
+                    color: Theme.of(context).colorScheme.primary,
                   ),
                   const SizedBox(width: 5),
                   Text(
@@ -735,7 +806,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
 
       final pctText = foundBucket ? '${(minFraction * 100).toStringAsFixed(1)}%' : '--';
       final badgeColor = minFraction >= 0.5
-          ? (isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7))
+          ? Theme.of(context).colorScheme.primary
           : (minFraction >= 0.2 ? const Color(0xFFFBBF24) : const Color(0xFFF87171));
 
       badges.add(
@@ -813,7 +884,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
     final resetText = _formatResetTime(bucket.resetTime);
 
     final barColor = fraction >= 0.5
-        ? (isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7))
+        ? Theme.of(context).colorScheme.primary
         : (fraction >= 0.2 ? const Color(0xFFFBBF24) : const Color(0xFFF87171));
 
     return Padding(
@@ -851,7 +922,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
             child: LinearProgressIndicator(
               value: fraction,
               minHeight: 4,
-              backgroundColor: isDark ? const Color(0xFF0B0F19) : const Color(0xFFE2E8F0),
+              backgroundColor: isDark ? const Color(0xFF111113) : const Color(0xFFE4E4E7),
               valueColor: AlwaysStoppedAnimation<Color>(barColor),
             ),
           ),
@@ -881,13 +952,13 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
     final isCurrent = s.id == widget.activeSessionId;
     final isRunning = widget.runningSessionIds.contains(s.id) || s.isRunning;
 
-    return Container(
-      margin: EdgeInsets.only(left: isIndented ? 28 : 10, right: 10, bottom: 2),
-      decoration: BoxDecoration(
-        color: isCurrent ? (isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0)) : Colors.transparent,
+    return Padding(
+      padding: EdgeInsets.only(left: isIndented ? 28 : 10, right: 10, bottom: 2),
+      child: Material(
+        color: isCurrent ? (isDark ? const Color(0xFF222226) : const Color(0xFFE4E4E7)) : Colors.transparent,
         borderRadius: BorderRadius.circular(6),
-      ),
-      child: ListTile(
+        clipBehavior: Clip.antiAlias,
+        child: ListTile(
         dense: true,
         visualDensity: const VisualDensity(vertical: -3),
         leading: isRunning
@@ -897,7 +968,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
                   valueColor: AlwaysStoppedAnimation<Color>(
-                    isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7),
+                    Theme.of(context).colorScheme.primary,
                   ),
                 ),
               )
@@ -996,6 +1067,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
           widget.onSwitchSession(s);
         },
       ),
+      ),
     );
   }
 
@@ -1004,7 +1076,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+          backgroundColor: isDark ? const Color(0xFF222226) : Colors.white,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Text('归档并移除会话？', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           content: Text(
