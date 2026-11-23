@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
+import '../../core/utils/latex_math_converter.dart';
 import 'code_block_builder.dart';
 
 class MarkdownMessageBody extends StatelessWidget {
@@ -26,8 +27,9 @@ class MarkdownMessageBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final primary = Theme.of(context).colorScheme.primary;
+    final normalizedText = LatexMathConverter.normalizeMarkdownMath(text);
     return MarkdownBody(
-      data: text,
+      data: normalizedText,
       selectable: true,
       builders: {
         'code': CodeElementBuilder(isDark: isDark),

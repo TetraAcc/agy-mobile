@@ -2,6 +2,7 @@ import 'package:agy_remote/core/platform/android_native_bridge.dart';
 import 'package:agy_remote/core/theme/app_colors.dart';
 import 'package:agy_remote/core/theme/app_fonts.dart';
 import 'package:agy_remote/core/utils/file_utils.dart';
+import 'package:agy_remote/core/utils/latex_math_converter.dart';
 import 'package:agy_remote/models/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -346,6 +347,26 @@ void main() {
       expect(AppFonts.getById('wenkai').remoteFile, 'LXGWWenKaiLite-Regular.ttf');
       expect(AppFonts.getById('serif').remoteFile, 'NotoSerifSC-Regular.ttf');
       expect(AppFonts.getById('unknown').id, 'system');
+    });
+
+    test('LatexMathConverter 转译行内与块级公式并跳过代码块与货币数字', () {
+      const sample = r'「最小化（$\min$）」或「保底条件（$\ge$）」以及 $x_1 + x_2 \le y^2$';
+      expect(
+        LatexMathConverter.normalizeMarkdownMath(sample),
+        '「最小化（min）」或「保底条件（≥）」以及 x₁ + x₂ ≤ y²',
+      );
+
+      const withCode = r'代码 `$HOME` 和 `$\min$` 不变，正文 $\alpha \to \infty$ 转换';
+      expect(
+        LatexMathConverter.normalizeMarkdownMath(withCode),
+        r'代码 `$HOME` 和 `$\min$` 不变，正文 α → ∞ 转换',
+      );
+
+      const withFracAndSub = r'公式 $\frac{a+b}{2}$ 与 $x_{max} + y_{min}$ 以及 $x_{best} + y_{cur}$';
+      expect(
+        LatexMathConverter.normalizeMarkdownMath(withFracAndSub),
+        r'公式 (a+b)/2 与 xₘₐₓ + yₘᵢₙ 以及 x\_best + y\_cur',
+      );
     });
   });
 }
