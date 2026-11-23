@@ -48,11 +48,11 @@ jobs:
           raw_version=$(grep -E '^version:' pubspec.yaml | head -n1 | awk '{print $2}')
           app_version="${raw_version%%+*}"
           if [ -z "$app_version" ]; then
-            app_version="2.1.0"
+            app_version="2.1.2"
           fi
           base_build="${raw_version#*+}"
           if ! [[ "$base_build" =~ ^[0-9]+$ ]]; then
-            base_build=20
+            base_build=5000
           fi
           build_number=$((base_build + GITHUB_RUN_NUMBER))
           echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
@@ -69,16 +69,15 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
-            cat > android/key.properties <<EOF
-          storePassword=$ANDROID_KEYSTORE_PASSWORD
-          keyPassword=$ANDROID_KEY_PASSWORD
-          keyAlias=$ANDROID_KEY_ALIAS
-          storeFile=upload-keystore.jks
-          EOF
+            echo "$ANDROID_KEYSTORE_BASE64" | tr -d ' \t\r\n' | base64 --decode > android/app/upload-keystore.jks
+            printf "storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=upload-keystore.jks\n" \
+              "$ANDROID_KEYSTORE_PASSWORD" \
+              "$ANDROID_KEY_PASSWORD" \
+              "$ANDROID_KEY_ALIAS" > android/key.properties
+            echo "Release signing active with upload-keystore.jks ($(wc -c < android/app/upload-keystore.jks) bytes)"
             echo "signed=release" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::Release signing secrets not configured; falling back to debug signing."
+            echo "::warning::Release signing secrets not configured; falling back to debug signing."
             echo "signed=debug" >> "$GITHUB_OUTPUT"
           fi
 
