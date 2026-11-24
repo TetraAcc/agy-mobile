@@ -134,6 +134,17 @@ def _normalize_tool_args(raw_args: Any) -> dict[str, Any]:
     return {}
 
 
+def _compact_chat_tool_args(args: dict[str, Any], max_str_chars: int = 4000) -> dict[str, Any]:
+    """Bound huge inline file contents inside chat tool_calls while preserving structured fields."""
+    compacted: dict[str, Any] = {}
+    for k, v in args.items():
+        if isinstance(v, str) and len(v) > max_str_chars:
+            compacted[k] = v[:max_str_chars] + "\n... (truncated)"
+        else:
+            compacted[k] = v
+    return compacted
+
+
 def parse_transcript_line(line_str: str) -> TranscriptStep | None:
     """Parse and sanitize a single JSONL transcript line into TranscriptStep."""
     if not line_str or not line_str.strip():
@@ -166,10 +177,10 @@ def parse_transcript_line(line_str: str) -> TranscriptStep | None:
             fn = tc.get("function")
             if isinstance(fn, dict):
                 name = str(fn.get("name", "tool"))
-                args = _normalize_tool_args(fn.get("arguments"))
+                args = _compact_chat_tool_args(_normalize_tool_args(fn.get("arguments")))
             else:
                 name = str(tc.get("name", "tool"))
-                args = _normalize_tool_args(tc.get("args", tc.get("arguments")))
+                args = _compact_chat_tool_args(_normalize_tool_args(tc.get("args", tc.get("arguments"))))
             tool_calls.append(ToolCallItem(name=name, args=args))
 
     if not clean_content and not thinking and not tool_calls and step_type != "USER_INPUT":

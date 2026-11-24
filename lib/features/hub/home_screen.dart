@@ -875,6 +875,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       offset: const Offset(0, 45),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       color: isDark ? const Color(0xFF222226) : Colors.white,
+      onOpened: () => ref.read(hubControllerProvider.notifier).refreshNodes(),
       onSelected: _handleSwitchNode,
       itemBuilder: (context) {
         return hubState.nodes.map((node) {
@@ -1015,6 +1016,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       nodes: hubState.nodes,
       selectedNode: hubState.selectedNodeId,
       onSwitchNode: _handleSwitchNode,
+      onRefreshNodes: () => hubNotifier.refreshNodes(),
       quotaData: hubState.quota,
       isLoadingQuota: hubState.isLoadingQuota,
       onRequestQuota: () => hubNotifier.fetchQuota(),
@@ -1124,7 +1126,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             ? null
             : _buildSidebar(hubState, hubNotifier, themeState, isDark, isPermanent: false),
       onDrawerChanged: (isOpen) {
-        if (isOpen) hubNotifier.fetchQuota();
+        if (isOpen) {
+          hubNotifier.refreshNodes();
+          hubNotifier.fetchQuota();
+        }
       },
       appBar: AppBar(
         backgroundColor: isDark ? AppColors.darkBg : AppColors.lightBg,

@@ -131,6 +131,29 @@ def test_login_rate_limit_lockout(tmp_path: Path) -> None:
     db.close()
 
 
+def test_resolve_client_ip_only_trusts_proxy_headers_on_loopback() -> None:
+    from types import SimpleNamespace
+    from agy_hub.gateway.app import _resolve_client_ip
+
+    loopback_req = SimpleNamespace(
+        client=SimpleNamespace(host="127.0.0.1"),
+        headers={"cf-connecting-ip": "203.0.113.9", "x-forwarded-for": "198.51.100.1, 127.0.0.1"},
+    )
+    assert _resolve_client_ip(loopback_req) == "203.0.113.9"
+
+    xff_req = SimpleNamespace(
+        client=SimpleNamespace(host="::1"),
+        headers={"x-forwarded-for": "198.51.100.7, 10.0.0.1"},
+    )
+    assert _resolve_client_ip(xff_req) == "198.51.100.7"
+
+    direct_req = SimpleNamespace(
+        client=SimpleNamespace(host="198.51.100.55"),
+        headers={"cf-connecting-ip": "1.2.3.4", "x-forwarded-for": "5.6.7.8"},
+    )
+    assert _resolve_client_ip(direct_req) == "198.51.100.55"
+
+
 def test_rbac_node_isolation_and_admin_governance(tmp_path: Path) -> None:
     client, db = _setup_gateway(tmp_path)
     with client:

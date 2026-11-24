@@ -98,3 +98,89 @@ def test_ws_session_isolation_late_file_and_partial_line(tmp_agent_env: dict) ->
                 assert evt_late["type"] == "step_upsert"
                 assert evt_late["session_id"] == sid_late
                 assert evt_late["step"]["content"] == "Late arrived"
+
+
+def test_full_transcript_prevents_content_truncation_in_http_and_ws(tmp_agent_env: dict) -> None:
+    brain_dir: Path = tmp_agent_env["brain_dir"]
+    sid = "ffffffff-ffff-4fff-8fff-fffffffffff6"
+    logs_dir = brain_dir / sid / ".system_generated" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    compact_path = logs_dir / "transcript.jsonl"
+    full_path = logs_dir / "transcript_full.jsonl"
+
+    full_reply_1 = "第一段完整分析。\n" + ("核心细节说明——绝不应被腰斩。" * 120) + "\n最后总结段。"
+    compact_reply_1 = "第一段完整分析。\n<truncated 1209 bytes>\n最后总结段。"
+
+    step1_compact = {
+        "step_index": 1,
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "content": compact_reply_1,
+        "truncated_fields": ["content"],
+    }
+    step1_full = {
+        "step_index": 1,
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "content": full_reply_1,
+    }
+    compact_path.write_text(json.dumps(step1_compact, ensure_ascii=False) + "\n", encoding="utf-8")
+    full_path.write_text(json.dumps(step1_full, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    app = create_agent_app(
+        tmp_agent_env["config"],
+        provider=tmp_agent_env["provider"],
+        registry=tmp_agent_env["registry"],
+    )
+
+    msg_headers = sign_internal_request(
+        TEST_INTERNAL_SECRET,
+        "GET",
+        f"/agent/sessions/{sid}/messages",
+        "ws_tester",
+        '{"can_write":true,"can_delete":false}',
+    )
+
+    with TestClient(app) as client:
+        # 1. HTTP 历史消息应读取 transcript_full.jsonl 中的完整回复而非紧凑截断版
+        resp = client.get(f"/agent/sessions/{sid}/messages", headers=msg_headers)
+        assert resp.status_code == 200
+        msgs = resp.json()["messages"]
+        assert len(msgs) == 1
+        assert "<truncated" not in msgs[0]["content"]
+        assert msgs[0]["content"] == full_reply_1
+
+        # 2. WebSocket 实时订阅新追加的长回复同样返回完整无截断正文
+        with client.websocket_connect("/agent/ws/events", headers=_ws_headers()) as ws:
+            ws.send_json({"type": "subscribe", "session_id": sid})
+            status_evt = ws.receive_json()
+            assert status_evt["type"] == "session_status"
+
+            full_reply_2 = "第二轮开头。\n" + ("完整技术方案展开内容。" * 130) + "\n第二轮收尾。"
+            step2_compact = {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": "第二轮开头。\n<truncated 1500 bytes>\n第二轮收尾。",
+                "truncated_fields": ["content"],
+            }
+            step2_full = {
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": full_reply_2,
+            }
+            with open(compact_path, "a", encoding="utf-8") as fc:
+                fc.write(json.dumps(step2_compact, ensure_ascii=False) + "\n")
+            with open(full_path, "a", encoding="utf-8") as ff:
+                ff.write(json.dumps(step2_full, ensure_ascii=False) + "\n")
+
+            live_evt = ws.receive_json()
+            assert live_evt["type"] == "step_upsert"
+            assert live_evt["step"]["step_index"] == 2
+            assert "<truncated" not in live_evt["step"]["content"]
+            assert live_evt["step"]["content"] == full_reply_2

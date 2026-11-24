@@ -14,6 +14,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocke
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
+from agy_hub import __version__
 from agy_hub.common.schemas import (
     DownloadTicketRequest,
     DownloadTicketResponse,
@@ -48,6 +49,24 @@ _NO_CACHE_CONTROL = "no-cache, no-store, must-revalidate, max-age=0"
 _VERSIONED_FONT_RE = re.compile(r"^assets/fonts/v_[0-9a-f]{12}/MaterialIcons-Regular\.otf$")
 _MATERIAL_FONT_REL = "assets/fonts/MaterialIcons-Regular.otf"
 _SAFE_FONT_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+\.(?:ttf|otf)$")
+
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _resolve_client_ip(request: Request) -> str:
+    """Resolve client IP, trusting Cloudflare/proxy headers only behind a local reverse proxy."""
+    peer_ip = request.client.host if request.client else "unknown"
+    if peer_ip in _LOOPBACK_HOSTS:
+        cf_ip = request.headers.get("cf-connecting-ip", "").strip()
+        if cf_ip:
+            return cf_ip
+        xff = request.headers.get("x-forwarded-for", "").strip()
+        if xff:
+            first_ip = xff.split(",", 1)[0].strip()
+            if first_ip:
+                return first_ip
+    return peer_ip
 
 
 class _StaticFileVersioner:
@@ -118,7 +137,7 @@ def create_gateway_app(
             if owned_db:
                 hub_db.close()
 
-    app = FastAPI(title="AGY Remote Hub Gateway", version="2.0.0", lifespan=lifespan)
+    app = FastAPI(title="AGY Remote Hub Gateway", version=__version__, lifespan=lifespan)
 
     if config.allowed_origins:
         app.add_middleware(
@@ -139,11 +158,11 @@ def create_gateway_app(
 
     @app.get("/api/v2/health")
     async def health() -> dict[str, Any]:
-        return {"status": "healthy", "service": "gateway", "version": "2.0.0"}
+        return {"status": "healthy", "service": "gateway", "version": __version__}
 
     @app.post("/api/v2/auth/login", response_model=LoginResponse)
     async def login(payload: LoginRequest, request: Request, response: Response) -> LoginResponse:
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = _resolve_client_ip(request)
         profile, tokens = auth_service.login(
             username=payload.username,
             password=payload.password,

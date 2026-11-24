@@ -87,6 +87,8 @@ class FakeApiClient extends ApiClient {
   List<FileRootItem>? refreshedFileRoots;
   final List<(String, String)> ticketRequests = [];
   SessionTreeData? customWinTree;
+  List<HostNode>? customNodes;
+  int getNodesCalls = 0;
 
   FakeApiClient()
       : super(
@@ -97,6 +99,10 @@ class FakeApiClient extends ApiClient {
 
   @override
   Future<(List<HostNode>, String)> getNodes() async {
+    getNodesCalls += 1;
+    if (customNodes != null) {
+      return (customNodes!, customNodes!.first.id);
+    }
     return (
       [
         const HostNode(id: 'win', name: 'Windows PC', isOnline: true, engineAlive: true, canWrite: true, canDelete: true),
@@ -638,5 +644,93 @@ void main() {
     await c2.read(hubControllerProvider.notifier).initializeForUser(user);
     await Future<void>.delayed(Duration.zero);
     expect(c2.read(hubControllerProvider).activeSessionId, 'g-latest');
+  });
+
+  test('HubController 切换缓存离线节点前自动实时重探，上线后直接放行无需重登', () async {
+    SharedPreferences.setMockInitialValues({'v2_selected_node': 'deck'});
+    final createdSockets = <String, FakeEventSocket>{};
+    final fakeApi = FakeApiClient()
+      ..customNodes = const [
+        HostNode(id: 'win', name: 'Windows PC', isOnline: false, engineAlive: false, canWrite: true),
+        HostNode(id: 'deck', name: 'Steam Deck', isOnline: true, engineAlive: true, isLocal: true, canWrite: true),
+      ];
+
+    final container = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(fakeApi),
+        tokenStoreProvider.overrideWithValue(MemoryTokenStore(initialAccess: 'tok')),
+        eventSocketFactoryProvider.overrideWithValue(({
+          required ServerConfig serverConfig,
+          required String nodeId,
+          required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
+        }) {
+          final sock = FakeEventSocket(nodeId);
+          createdSockets[nodeId] = sock;
+          return sock;
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const user = UserProfile(
+      id: 1,
+      username: 'tetra',
+      displayName: 'Tetra',
+      role: 'admin',
+      defaultNode: 'win',
+      allowedNodes: ['win', 'deck'],
+      nodePermissions: {
+        'win': UserPermissionGrant(nodeId: 'win', canWrite: true, canDelete: true),
+        'deck': UserPermissionGrant(nodeId: 'deck', canWrite: true, canDelete: true),
+      },
+    );
+
+    final hub = container.read(hubControllerProvider.notifier);
+    await hub.initializeForUser(user);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(container.read(hubControllerProvider).selectedNodeId, 'deck');
+    expect(
+      container.read(hubControllerProvider).nodes.firstWhere((n) => n.id == 'win').isOnline,
+      false,
+    );
+    final initialCalls = fakeApi.getNodesCalls;
+
+    // 远端尚未重启完成时，会先实时重探后再提示离线
+    final stillOfflineErr = await hub.switchNode('win');
+    expect(stillOfflineErr, contains('离线'));
+    expect(fakeApi.getNodesCalls, initialCalls + 1);
+
+    // 模拟 Windows 重启后重新连上网关，此时前端 state.nodes 仍缓存着旧的 isOnline=false
+    fakeApi.customNodes = const [
+      HostNode(id: 'win', name: 'Windows PC', isOnline: true, engineAlive: true, canWrite: true),
+      HostNode(id: 'deck', name: 'Steam Deck', isOnline: true, engineAlive: true, isLocal: true, canWrite: true),
+    ];
+
+    // 直接切换节点应自动重探并放行，无需退出重新登录
+    final switchErr = await hub.switchNode('win');
+    expect(switchErr, isNull);
+    final stateAfterSwitch = container.read(hubControllerProvider);
+    expect(stateAfterSwitch.selectedNodeId, 'win');
+    expect(stateAfterSwitch.nodes.firstWhere((n) => n.id == 'win').isOnline, true);
+    expect(fakeApi.getNodesCalls, greaterThanOrEqualTo(initialCalls + 2));
+
+    // 模拟 WS 断线后自动重连，节点状态应自动刷新（如 deck 下线）
+    fakeApi.customNodes = const [
+      HostNode(id: 'win', name: 'Windows PC', isOnline: true, engineAlive: true, canWrite: true),
+      HostNode(id: 'deck', name: 'Steam Deck', isOnline: false, engineAlive: false, isLocal: true, canWrite: true),
+    ];
+    final callsBeforeReconnect = fakeApi.getNodesCalls;
+    createdSockets['win']!.simulateDisconnect();
+    await Future<void>.delayed(Duration.zero);
+    await createdSockets['win']!.connect();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(fakeApi.getNodesCalls, greaterThan(callsBeforeReconnect));
+    expect(
+      container.read(hubControllerProvider).nodes.firstWhere((n) => n.id == 'deck').isOnline,
+      false,
+    );
   });
 }

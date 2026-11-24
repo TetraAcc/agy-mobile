@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from agy_hub.common.sandbox import BinaryFileError, RootRegistry, SandboxError, is_binary_file
+from agy_hub.common.sandbox import BinaryFileError, RootRegistry, SandboxError, is_binary_file, is_sensitive_path
 from agy_hub.common.security import (
     SecretValidationError,
     hash_password,
@@ -127,6 +127,10 @@ def test_sandbox_traversal_and_sensitive_blocklist(tmp_path: Path) -> None:
     for sens in (".env", "sessions.json", "gateway_config.json", "hub.db", ".ssh/id_rsa"):
         with pytest.raises(SandboxError):
             reg.resolve_in_root("ws", sens)
+
+    assert is_sensitive_path(Path("android/key.properties")) is True
+    assert is_sensitive_path(Path("upload-keystore.jks")) is True
+    assert is_sensitive_path(Path("certs/release.p12")) is True
 
     # Valid read
     content = reg.read_text_file("ws", "hello.py")

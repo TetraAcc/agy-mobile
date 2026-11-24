@@ -173,6 +173,7 @@ class HubController extends Notifier<HubState> {
   String _lastNotifiedRunningTitle = '';
   String _lastNotifiedRunningBody = '';
   int _lastAskQuestionStep = -1;
+  Future<List<HostNode>>? _inFlightRefreshNodes;
 
   @override
   HubState build() {
@@ -227,6 +228,33 @@ class HubController extends Notifier<HubState> {
     } catch (_) {}
   }
 
+  /// 向网关拉取最新节点列表与在线状态；并发调用自动合并为同一请求。
+  Future<List<HostNode>> refreshNodes() async {
+    if (_disposed) return state.nodes;
+    final inFlight = _inFlightRefreshNodes;
+    if (inFlight != null) return inFlight;
+
+    final future = () async {
+      try {
+        final (nodes, _) = await _api.getNodes();
+        if (!_disposed && nodes.isNotEmpty) {
+          state = state.copyWith(nodes: nodes);
+          return nodes;
+        }
+      } catch (_) {}
+      return state.nodes;
+    }();
+
+    _inFlightRefreshNodes = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_inFlightRefreshNodes, future)) {
+        _inFlightRefreshNodes = null;
+      }
+    }
+  }
+
   Future<void> reset() async {
     _quotaTimer?.cancel();
     _quotaTimer = null;
@@ -241,13 +269,35 @@ class HubController extends Notifier<HubState> {
   }
 
   Future<String?> switchNode(String nodeId) async {
-    if (nodeId == state.selectedNodeId) return null;
-    HostNode? target;
-    for (final n in state.nodes) {
-      if (n.id == nodeId) {
-        target = n;
-        break;
+    HostNode? findTarget(List<HostNode> list) {
+      for (final n in list) {
+        if (n.id == nodeId) return n;
       }
+      return null;
+    }
+
+    if (nodeId == state.selectedNodeId) {
+      final current = findTarget(state.nodes);
+      final needsReconnect = current == null ||
+          (!current.isOnline && !current.isLocal) ||
+          state.wsState != WsConnState.connected;
+      if (needsReconnect) {
+        await refreshNodes();
+        unawaited(_socket?.reconnectNow());
+        await Future.wait([
+          refreshSessionTree(autoSelectFirst: state.activeSessionId.isEmpty)
+              .then((_) => refreshFileRoots()),
+          fetchQuota(),
+        ]);
+      }
+      return null;
+    }
+
+    var target = findTarget(state.nodes);
+    if (target == null || (!target.isOnline && !target.isLocal)) {
+      // 缓存显示离线或缺失时向网关实时重探，防止远端重启后前端长期被旧状态锁定
+      final latestNodes = await refreshNodes();
+      target = findTarget(latestNodes);
     }
     if (target == null) return '未找到目标节点';
     if (!target.isOnline && !target.isLocal) {
@@ -271,6 +321,7 @@ class HubController extends Notifier<HubState> {
       clearNextBeforeStep: true,
       clearQuota: true,
       clearSessionChanges: true,
+      clearSessionQueue: true,
       cachedRoots: const [],
       pendingAttachments: const [],
     );
@@ -292,9 +343,25 @@ class HubController extends Notifier<HubState> {
     );
     _socket = socket;
 
+    var hadConnectedOnce = false;
     _wsStateSub = socket.connectionStates.listen((connState) {
       if (_disposed || _socket != socket) return;
+      final prevState = state.wsState;
       state = state.copyWith(wsState: connState);
+      if (connState == WsConnState.connected) {
+        final isReconnect = hadConnectedOnce && prevState != WsConnState.connected;
+        hadConnectedOnce = true;
+        if (isReconnect) {
+          unawaited(refreshNodes());
+          unawaited(refreshSessionTree());
+          if (state.activeSessionId.isNotEmpty) {
+            unawaited(_syncActiveSessionSilent());
+          }
+        }
+      } else if (connState == WsConnState.disconnected &&
+          prevState == WsConnState.connected) {
+        unawaited(refreshNodes());
+      }
     });
     _wsEventSub = socket.events.listen(_onWsEvent);
 
@@ -302,6 +369,7 @@ class HubController extends Notifier<HubState> {
 
     _quotaTimer = Timer.periodic(const Duration(seconds: 60), (_) {
       if (!_disposed && state.selectedNodeId == nodeId) {
+        unawaited(refreshNodes());
         fetchQuota();
       }
     });
@@ -332,6 +400,7 @@ class HubController extends Notifier<HubState> {
     if (socket != null && (socket.currentState != WsConnState.connected || pausedSeconds >= 5)) {
       unawaited(socket.reconnectNow(refreshToken: pausedSeconds >= 60));
     }
+    unawaited(refreshNodes());
     unawaited(refreshSessionTree());
     if (state.activeSessionId.isNotEmpty) {
       await _syncActiveSessionSilent();

@@ -8,6 +8,7 @@ class QuotaDrawer extends StatefulWidget {
   final List<HostNode> nodes;
   final String selectedNode;
   final ValueChanged<String> onSwitchNode;
+  final VoidCallback? onRefreshNodes;
   final QuotaData? quotaData;
   final bool isLoadingQuota;
   final VoidCallback onRequestQuota;
@@ -34,6 +35,7 @@ class QuotaDrawer extends StatefulWidget {
     required this.nodes,
     required this.selectedNode,
     required this.onSwitchNode,
+    this.onRefreshNodes,
     required this.quotaData,
     required this.isLoadingQuota,
     required this.onRequestQuota,
@@ -309,25 +311,45 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                                   ),
                                 ),
                               ),
-                              for (final entry in widget.projects.entries)
-                                Theme(
-                                  data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-                                  child: ExpansionTile(
-                                    initiallyExpanded: entry.value.any((s) => s.id == widget.activeSessionId),
-                                    tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 0),
-                                    leading: Icon(
-                                      Icons.folder_outlined,
-                                      color: Theme.of(context).colorScheme.primary,
-                                      size: 18,
-                                    ),
-                                    title: Text(
-                                      entry.key,
-                                      style: TextStyle(
-                                        color: isDark ? Colors.white : Colors.black87,
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
+                              for (final entry in widget.projects.entries) ...[
+                                Builder(
+                                  builder: (context) {
+                                    final runningCount = entry.value
+                                        .where((s) => widget.runningSessionIds.contains(s.id) || s.isRunning)
+                                        .length;
+                                    return Theme(
+                                      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                                      child: ExpansionTile(
+                                        initiallyExpanded: entry.value.any((s) => s.id == widget.activeSessionId),
+                                        tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 0),
+                                        leading: Icon(
+                                          Icons.folder_outlined,
+                                          color: Theme.of(context).colorScheme.primary,
+                                          size: 18,
+                                        ),
+                                        title: Row(
+                                          children: [
+                                            Flexible(
+                                              child: Text(
+                                                entry.key,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: TextStyle(
+                                                  color: isDark ? Colors.white : Colors.black87,
+                                                  fontSize: 13,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            ),
+                                            if (runningCount > 0) ...[
+                                              const SizedBox(width: 8),
+                                              _ProjectBreathingDot(
+                                                key: ValueKey('proj_breathing_${entry.key}'),
+                                                color: AppColors.statusGreen(isDark),
+                                                count: runningCount,
+                                              ),
+                                            ],
+                                          ],
+                                        ),
                                     trailing: Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
@@ -364,7 +386,10 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                                         .map((s) => _buildSessionTile(context, s, isIndented: true))
                                         .toList(),
                                   ),
+                                );
+                                  },
                                 ),
+                              ],
                               Divider(color: isDark ? Colors.white10 : Colors.black12, height: 16),
                             ],
                             if (sortedGeneral.isNotEmpty) ...[
@@ -534,7 +559,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                   Row(
                     children: [
                       Text(
-                        const String.fromEnvironment('APP_VERSION', defaultValue: 'v2.1.2'),
+                        const String.fromEnvironment('APP_VERSION', defaultValue: 'v2.1.3'),
                         style: TextStyle(
                           fontSize: 10,
                           color: isDark ? Colors.white24 : Colors.black26,
@@ -609,6 +634,24 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                   color: isDark ? Colors.white54 : Colors.black45,
                 ),
               ),
+              if (widget.onRefreshNodes != null) ...[
+                const Spacer(),
+                Tooltip(
+                  message: '刷新节点状态',
+                  child: InkWell(
+                    onTap: widget.onRefreshNodes,
+                    borderRadius: BorderRadius.circular(10),
+                    child: Padding(
+                      padding: const EdgeInsets.all(2),
+                      child: Icon(
+                        Icons.refresh_rounded,
+                        size: 13,
+                        color: isDark ? Colors.white54 : Colors.black45,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
           const SizedBox(height: 4),
@@ -1135,6 +1178,112 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
           ],
         );
       },
+    );
+  }
+}
+
+class _ProjectBreathingDot extends StatefulWidget {
+  final Color color;
+  final int count;
+
+  const _ProjectBreathingDot({
+    super.key,
+    required this.color,
+    this.count = 1,
+  });
+
+  @override
+  State<_ProjectBreathingDot> createState() => _ProjectBreathingDotState();
+}
+
+class _ProjectBreathingDotState extends State<_ProjectBreathingDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: '项目内有 ${widget.count} 个运行中会话',
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedBuilder(
+            animation: _controller,
+            builder: (context, child) {
+              final t = Curves.easeInOut.transform(_controller.value);
+              return SizedBox(
+                width: 14,
+                height: 14,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Transform.scale(
+                      scale: 0.75 + 0.50 * t,
+                      child: Container(
+                        width: 11,
+                        height: 11,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: widget.color.withValues(alpha: 0.42 - 0.28 * t),
+                        ),
+                      ),
+                    ),
+                    child!,
+                  ],
+                ),
+              );
+            },
+            child: Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: widget.color,
+                boxShadow: [
+                  BoxShadow(
+                    color: widget.color.withValues(alpha: 0.45),
+                    blurRadius: 4,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (widget.count > 1) ...[
+            const SizedBox(width: 4),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 0.5),
+              decoration: BoxDecoration(
+                color: widget.color.withValues(alpha: 0.16),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                '${widget.count}',
+                style: TextStyle(
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.w700,
+                  color: widget.color,
+                  height: 1.2,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

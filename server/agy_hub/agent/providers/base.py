@@ -135,8 +135,22 @@ class BaseEngineProvider(ABC):
         return clean
 
     def get_transcript_path(self, session_id: str) -> Path:
+        """Return full un-truncated transcript path when available, falling back to compact."""
         sid = self.validate_session_id(session_id)
-        return self.brain_dir / sid / ".system_generated" / "logs" / "transcript.jsonl"
+        logs_dir = self.brain_dir / sid / ".system_generated" / "logs"
+        full_path = logs_dir / "transcript_full.jsonl"
+        if full_path.exists():
+            return full_path
+        return logs_dir / "transcript.jsonl"
+
+    def get_compact_transcript_path(self, session_id: str) -> Path:
+        """Return compact transcript path for lightweight head/tail metadata probes."""
+        sid = self.validate_session_id(session_id)
+        logs_dir = self.brain_dir / sid / ".system_generated" / "logs"
+        compact_path = logs_dir / "transcript.jsonl"
+        if compact_path.exists():
+            return compact_path
+        return logs_dir / "transcript_full.jsonl"
 
     def _connect_ro(self) -> sqlite3.Connection | None:
         if not self.db_path.exists():
@@ -172,7 +186,7 @@ class BaseEngineProvider(ABC):
         return False
 
     def _extract_fallback_title_sync(self, cid: str) -> str | None:
-        tpath = self.brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
+        tpath = self.get_compact_transcript_path(cid)
         if not tpath.exists():
             return None
         thinking_question: str | None = None
@@ -203,7 +217,7 @@ class BaseEngineProvider(ABC):
         return None
 
     def _read_transcript_tail_status_sync(self, session_id: str) -> bool:
-        tpath = self.get_transcript_path(session_id)
+        tpath = self.get_compact_transcript_path(session_id)
         if not tpath.exists():
             return False
         try:

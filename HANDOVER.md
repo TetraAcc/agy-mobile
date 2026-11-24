@@ -1,34 +1,36 @@
-# AGY Remote Hub (v2.0.0+20) 技术架构与交接开发手册
+# AGY Remote Hub (v2.1.3+5001) 技术架构与交接开发手册
 
-> **版本标识**：`v2.0.0+20`  
-> **交接日期**：2026-11-23  
+> **版本标识**：`v2.1.3+5001`  
+> **更新日期**：2026-11-24  
 > **适用对象**：接手本项目维护、扩展客户端或新增受控节点的研发人员
 
 ---
 
-## 1. 架构总览（v2.0 重构核心变更）
+## 1. 架构总览
 
-v2.0 彻底废弃了 v1.x 的单文件混合服务端（`server_core.py`）、URL 静态明文 Token、全局单会话单例广播、VBS/Watchdog 脚本及 Flutter 伪跨端桥接，拆分为三层正交架构：
+本项目采用三层正交架构，实现手机/平板/浏览器跨网段安全控制多台主机的 Antigravity 会话：
 
 ```text
-Flutter 三端客户端 (Web / Android / iOS)
-   │  HTTPS REST (CRUD / 上传 / 下载 / 文件 / Diff / 配额)
-   │  WSS /ws/v2/nodes/{node_id}/events (仅会话级实时增量事件流)
+Flutter 三端客户端 (Web / iOS PWA / Android 原生)
+   │  HTTPS REST (CRUD / 上传 / 下载 / 文件 / 按轮次 Diff / 配额 / 队列)
+   │  WSS /ws/v2/nodes/{node_id}/events (按会话订阅的增量事件流)
    ▼
 Edge Gateway (server/agy_hub/gateway/, 默认端口 8768)
-   ├── hub.db (SQLite WAL): scrypt 多用户、Refresh 轮换会话、登录防爆破、节点 RBAC
+   ├── hub.db (SQLite WAL): scrypt 多用户、Refresh 轮换会话、登录防爆破（含回环反代真实 IP 解析）、节点 RBAC
    ├── NodeRegistryManager: 异步 /internal/health 探活，按租户过滤节点视图
    ├── 统一路由反代器: /api/v2/nodes/{node_id}/* 与 /ws/v2/nodes/{node_id}/events
    │   (校验权限后注入 HMAC-SHA256 签名头转发，剥离客户端 Cookie/Authorization；内置高延迟超时/GET 重试与 Content-Length 透传)
-   └── 静态前端托管: 自动定位 ../build/web，HTML/bootstrap/FontManifest 禁缓存，MaterialIcons 路径版本化防陈旧，wasm/js 强缓存
+   └── 静态前端托管: 自动定位 ../build/web，HTML/bootstrap/manifest/apple-touch-icon/FontManifest 禁缓存，
+   │                 MaterialIcons 路径按 SHA-256 版本化防陈旧，static-fonts 与 js 强缓存
    │
    ├──► Node Agent: Deck 本地 (127.0.0.1:8769)
    └──► Node Agent: Windows / 远程主机 (内网 / Tailscale, 默认 8765)
             ├── SessionEventHub: Per-Connection 订阅制 + 无持久化句柄字节偏移追踪
-            ├── RootRegistry: 受控 root_id 路径沙箱 + 敏感黑名单 + 二进制 415 嗅探
+            ├── RootRegistry: 受控 root_id 路径沙箱（保留映射盘符显示路径 _client_paths）+ 敏感黑名单 + 二进制 415 嗅探
+            ├── SessionMessageQueueManager: 持久化每会话 FIFO 待发消息队列
             └── EngineProvider:
                   • 官方 conversation_summaries.db 严格只读 (?mode=ro)
-                  • WindowsEngineProvider: 异步 Connect-RPC 发消息/打断/配额
+                  • WindowsEngineProvider: 异步 Connect-RPC 发消息/打断/配额 + agentapi 新建会话
                   • DeckEngineProvider: 托管子进程组 (PGID) + systemd-run Keyring 配额
 ```
 
@@ -38,45 +40,41 @@ Edge Gateway (server/agy_hub/gateway/, 默认端口 8768)
 
 ### 2.1 多用户认证与双通道鉴权
 - **密码存储**：`server/agy_hub/common/security.py` 使用 Python 标准库 `hashlib.scrypt`（每用户 16B 随机盐）和 `hmac.compare_digest` 校验；拒绝明文或无盐 SHA256。
-- **防爆破限流**：`hub.db` 表 `login_attempts` 按 `ip:username` 记录失败次数，连续失败达到阈值（默认 5 次）返回 HTTP 429 并锁定（默认 900 秒）。
+- **防爆破限流与真实 IP 提取**：`hub.db` 表 `login_attempts` 按 `<ip>:<username>` 记录失败次数，连续失败达到阈值（默认 5 次）返回 HTTP 429 并锁定（默认 900 秒）。`gateway/app.py` 的 `_resolve_client_ip()` 仅在请求来自本机回环反代（`127.0.0.1` / `::1`）时解析 `CF-Connecting-IP` 与 `X-Forwarded-For`，避免不同外网用户共用同机隧道限流桶的同时防止直连伪造头部。
 - **令牌双通道**：
-  - **Web 端**：网关签发 `HttpOnly; SameSite=Lax` Cookie（`agy_access` 作用域 `/`；`agy_refresh` 作用域 `/api/v2/auth`），前端使用 `BrowserHttpClientAdapter(withCredentials: true)` 自动携 Cookie，前端 JS 与存储零接触凭证。
-  - **Android / iOS 原生端**：`Refresh Token` 存入系统安全存储（`FlutterSecureStorage`），请求通过 `Authorization: Bearer <access_token>` 鉴权，遇到 401 时由 `ApiClient` 互斥拦截器自动调用 `/api/v2/auth/refresh` 轮换并重放原请求。
-  - **复用检测**：已撤销的 `Refresh Token` 若再次被提交刷新，网关立即撤销该用户全部活跃会话。
-- **内部通信与文件下载**：
+  - **Web / iOS PWA**：网关签发 `HttpOnly; SameSite=Lax` Cookie（`agy_access` 作用域 `/`；`agy_refresh` 作用域 `/api/v2/auth`），前端使用 `BrowserHttpClientAdapter(withCredentials: true)` 自动携带。
+  - **Android / iOS 原生端**：`Refresh Token` 存入系统安全存储（`FlutterSecureStorage`），请求通过 `Authorization: Bearer <access_token>` 鉴权，遇到 401 时由 `ApiClient` 互斥拦截器自动轮换并重放原请求。
+  - **复用检测**：已撤销的 `Refresh Token` 若再次提交刷新，网关立即撤销该用户全部活跃会话。
+- **内部通信与签名 Ticket**：
   - 网关向节点发出的全部 HTTP/WS 请求附带 `X-Hub-Timestamp`、`X-Hub-Nonce`、`X-Hub-User`、`X-Hub-Permissions`、`X-Hub-Signature`（允许 60s 时间窗防重放）。
-  - 外部浏览器下载或打开原图使用 `POST /api/v2/nodes/{node_id}/files/ticket` 签发 **60 秒有效、绑定单节点与单文件** 的签名 Ticket。
-- **配置强制校验**：`GatewayConfig` 与 `AgentConfig` 在加载时校验 `signing_secret` / `internal_secret` 长度至少 24 字符且不含占位符，`allowed_origins` 严禁配置通配符 `*`。
+  - 外部下载器、Android `DownloadManager` 与流式媒体播放器使用 `POST /api/v2/nodes/{node_id}/files/ticket` 签发 **600 秒有效、绑定单节点与单文件** 的签名 Ticket。
+- **沙箱密钥黑名单**：`common/sandbox.py` 的 `SENSITIVE_PATTERNS` 除常规 `.ssh`、`.env`、`*_config.json`、`hub.db` 外，已显式拦截 `key.properties`、`*.jks`、`*.keystore`、`*.pfx`、`*.p12`。
 
-### 2.2 官方数据库与进程边界
-- **只读约定**：`BaseEngineProvider._connect_ro()` 以 `?mode=ro` 只读打开 `conversation_summaries.db`；磁盘已删的孤儿会话仅在内存中过滤。归档删除（`DELETE /agent/sessions/{sid}`）写入独立 `archive_file` 清单，不会向官方 SQLite 主库写 `DELETE`。
-- **子代理与工程分组**：过滤 `parent_conversation_id`、`nesting_depth`、`agent_name`，结合 `conversations_fts`、`project_id` 与 `workspace_uris`（兼容 `Z:\` 等 Windows 盘符根）对齐桌面端分组与排序。
+### 2.2 官方数据库与 Windows 映射驱动器边界
+- **只读约定**：`BaseEngineProvider._connect_ro()` 以 `?mode=ro` 只读打开 `conversation_summaries.db`；磁盘已删孤儿会话仅在内存中过滤，归档写入独立 `archive_file`。
+- **映射网络驱动器保留（`_client_paths`）**：Windows 下 RaiDrive 等映射盘符（如 `Z:\`）在经过 `Path.resolve()` 后会变成底层 UNC 路径（如 `\\RaiDrive-Tetra\WebDAV\`）。`RootRegistry` 内部仍以 `resolve()` 后的物理路径做沙箱边界判断，同时通过 `_client_paths` 向客户端展示原始盘符路径 `z:\`，保证消息内的 `file:///Z:/...` 链接能正确匹配并下载。
 - **真实打断**：
   - Windows：`WindowsEngineProvider.stop_session()` 异步调用 `CancelCascadeInvocation(killBackgroundTasks=true)` 与 `ForceStopCascadeTree`。
   - Deck：`DeckEngineProvider.stop_session()` 对托管子进程组发送 `SIGTERM`（3 秒超时升 `SIGKILL`）。
 
-### 2.3 WebSocket 实时事件契约
-- 连接端点：`WSS /ws/v2/nodes/{node_id}/events`
-- 客户端控制帧：`subscribe(session_id, since_step?)`、`unsubscribe(session_id)`、`ping`
-- 服务端推送帧：`step_upsert`、`session_status`、`session_tree_changed`、`node_status`、`pong`、`error`
-- `SessionEventHub` 每次轮询仅打开检查字节偏移并立即关闭句柄，且仅读取完整 `\n` 结尾的行，消除跨会话串屏、半行 JSON 报错与 `NoneType.readline` 崩溃。
-
-### 2.4 新增桌面级对等接口与高延迟反代加固
-- **代码审查、产物与轻量编辑**：新增 `/agent/sessions/{sid}/changes`、`/agent/sessions/{sid}/artifacts`、`/agent/sessions/{sid}/steps/{step_index}/tool-output`、`/agent/git/repos` 及 `PUT /agent/files/content`（校验受控沙箱与文件 `mtime`，冲突返回 409）。
-- **持久化消息队列**：新增 `/agent/sessions/{sid}/queue*`（支持 `GET`/`POST`/`PUT`/`DELETE` 与 `send-now` 插队发送），支持每会话 `queue`（排队入列）与 `immediate`（立即发送）双模式。
-- **跨区高延迟代理与缓存控制**：Gateway 对 HTTP 代理采用长连接读超时、针对 `RemoteProtocolError`/`ConnectTimeout` 的 GET 单次重试以及非压缩响应 `Content-Length` 透传；静态资源托管对 `FontManifest.json` 禁用缓存并将 `MaterialIcons-Regular.otf` 动态改写为带 SHA-256 摘要的 `assets/fonts/v_<sha256[:12]>/MaterialIcons-Regular.otf` 路径，防止 CDN/浏览器命中旧版树摇字体文件。
+### 2.3 WebSocket 与按轮次 Diff 契约
+- **WS 订阅流**：`WSS /ws/v2/nodes/{node_id}/events`，支持 `subscribe(session_id, since_step?)`、`unsubscribe(session_id)`、`ping`；`SessionEventHub` 每次轮询仅打开检查字节偏移并立即关闭句柄。
+- **四维 Diff 提取 (`common/session_diff.py`)**：
+  - `GET /agent/sessions/{sid}/changes` 支持 `scope=all|latest_turn`、`step_index` 与 `turn_id` 筛选；
+  - 响应内始终附带轻量级 `turns: list[SessionTurnChangeSummary]`，供客户端在每轮对话末尾内嵌 `本轮修改` 卡片，同时顶部/底部悬浮栏聚焦 `最新修改`，评审面板可随时在四档范围间切换。
 
 ---
 
-## 3. 前端关键架构与预置模型
+## 3. 客户端关键模块（Flutter & Native）
 
-- **核心层 (`lib/core/`)**：`ServerConfig`、`TokenStore`、`ApiClient`、`NodeEventSocket`、`PlatformBridge`（基于 `file_picker`、`url_launcher`、`package:web`）、`AppColors`、`FileUtils`。
-- **模型层 (`lib/models/`)**：全部对齐后端 Pydantic snake_case 契约（如 `QuotaBucket.remaining_fraction`、`ToolCallItem.args`、`SessionItem.is_pinned` 与 `root_id`）。
-- **预置模型矩阵 (`lib/models/official_model.dart`)**：
-  - `gemini-3.8-flash-high` / `gemini-3.8-flash-medium` / `gemini-3.8-flash-low`
-  - `claude-sonnet-4-6` / `claude-opus-4-6-thinking`
-  - `gpt-oss-120b-medium` / `gemini-2.5-pro`
-- **交互简化与桌面级工作流**：已移除基于 `Timer` 模拟的假打字机效果，`MarkdownMessageBody` 直接渲染高亮代码块与带认证头的代理图片；新增 `SessionChangesBar` / `ChangeReviewSheet`（CJK 行内对比与 Comment 审查）、`SessionStepsBar`、`SessionArtifactsSheet`、`ToolDetailSheet`、`SessionQueueBar`、`ComposerPrefs`、通用设置弹窗，以及支持明暗双模式自适应的 Catppuccin / Nord 主题调色板。
+- **核心层 (`lib/core/`)**：
+  - `ServerConfig` / `ComposerPrefs` / `ResponsiveLayout`（平板 `600dp`/`900dp` 断点）
+  - `ApiClient` / `NodeEventSocket` / `PlatformBridge` / `AndroidNativeBridge`
+  - `AppColors` / `AppFonts` / `FontLoaderService`（4 款按需字体 + 6 套双模式配色）
+  - `LatexMathConverter`（在 `MarkdownMessageBody` 渲染前预处理 LaTeX 公式为可读 Unicode，跳过代码块/行内代码/纯货币）
+- **原生与 PWA 适配**：
+  - **Android Kotlin (`MainActivity.kt` & `AgentStatusService.kt`)**：支持系统 `DownloadManager`（`setAllowedOverRoaming(true)`）、流式 `openRemoteMedia` 拉起系统视频/音频播放器、`FileProvider` 打开本地文件与系统相册、前台运行通知、系统分享接收及相机直拍（已在 `AndroidManifest.xml` `<queries>` 声明 `IMAGE_CAPTURE`）。
+  - **iOS PWA (`web/`)**：提供 `180×180` 纯白底 `apple-touch-icon.png`、跟随系统明暗色启动过渡页、`viewport-fit=cover`、`orientation: any` 与 Safari 同手势帧防弹窗拦截打开。
 
 ---
 
@@ -98,15 +96,8 @@ python server.py user passwd --db hub.db --username alice --password "NewStrongP
 python server.py user list --db hub.db
 ```
 
-### 4.2 部署与托管
-- **Windows**：先按 `agent_config.example.json` 建好 `server/agent_config.json`，运行 `powershell -ExecutionPolicy Bypass -File server\deploy\install_windows_task.ps1` 注册计划任务（自带崩溃重启与 `PYTHONIOENCODING=utf-8`；脚本默认绑定 `127.0.0.1`，如需向远端 Gateway 暴露请显式传入 `-BindHost <Tailscale_IP>`）。
-- **Steam Deck / Linux**：将 `server/deploy/agy-agent-deck.service` 与 `server/deploy/agy-gateway.service` 复制到 `~/.config/systemd/user/` 并启用 `systemctl --user enable --now agy-agent-deck.service agy-gateway.service`。
-- **Web 前端更新**：在项目根目录执行 `flutter build web --release` 后，直接把 `build/web/` 同步至网关部署目录或由同机 Gateway 直接加载 `../build/web`。
-
----
-
-## 5. 接手人员后续演进建议
-
-1. **Android / iOS 正式签名与发布配置**：当前已按真三端插件完成接口适配与单元测试验证，正式打包 APK/IPA 前需在目标构建机配置好 Android SDK / Xcode 及正式应用签名证书（并替换 `android/app/build.gradle.kts` 中的 debug 签名配置）。
-2. **线上代理反向 HTTPS 强制校验**：对外网提供服务时务必保持 `gateway_config.json` 中 `cookie_secure: true`，并通过 Cloudflare Tunnel / Caddy / Nginx 终止 TLS。
-3. **管理员 Web 控制台**：后端已提供 `/api/v2/admin/users` 全套管理接口，后续如有需要可直接在 Flutter 侧边栏追加管理员用户管理弹窗。
+### 4.2 部署与更新
+- **Windows Node Agent**：按 `agent_config.example.json` 配置 `server/agent_config.json`，运行 `powershell -ExecutionPolicy Bypass -File server\deploy\install_windows_task.ps1` 注册单实例守护计划任务 `AGY_NodeAgent_v2`（对外暴露 Tailscale IP 时传入 `-BindHost <Tailscale_IP>`）。
+- **Steam Deck / Linux**：将 `server/deploy/agy-agent-deck.service` 与 `server/deploy/agy-gateway.service` 部署到 `~/.config/systemd/user/` 并启用 `systemctl --user enable --now agy-agent-deck.service agy-gateway.service`。
+- **Web / PWA 更新**：根目录执行 `flutter build web --release --no-tree-shake-icons` 后同步 `build/web/` 至网关并重启 `agy-gateway.service`（`main.dart.js` 与字体均带哈希参数击穿缓存）。
+- **Android APK 构建**：推送至 GitHub 后在 Actions 运行 `Build Android APK`，流水线默认采用 Secrets 正式签名并按 `5000 + GITHUB_RUN_NUMBER` 自动递增版本号，产出单一 `android-arm64` 安装包。

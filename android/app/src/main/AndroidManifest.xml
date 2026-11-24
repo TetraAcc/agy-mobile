@@ -89,6 +89,9 @@
             <data android:mimeType="text/plain"/>
         </intent>
         <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE"/>
+        </intent>
+        <intent>
             <action android:name="android.intent.action.VIEW"/>
             <data android:scheme="https"/>
         </intent>

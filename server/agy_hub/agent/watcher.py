@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -27,28 +28,53 @@ logger = logging.getLogger(__name__)
 class _SessionWatchState:
     session_id: str
     subscribers: set[WebSocket] = field(default_factory=set)
+    watched_path: Path | None = None
     byte_offset: int = 0
+    last_step_index: int = -1
     last_running: bool | None = None
     task: asyncio.Task[None] | None = None
 
 
-def _compute_complete_tail_offset(path: Path) -> int:
-    """Return byte offset immediately after the last complete newline."""
+def _compute_complete_tail_offset_and_step(path: Path) -> tuple[int, int]:
+    """Return (byte offset immediately after last complete newline, last seen step_index)."""
     if not path.exists() or not path.is_file():
-        return 0
+        return 0, -1
     size = path.stat().st_size
     if size == 0:
-        return 0
-    # Scan backwards in small chunks up to 64KB to find the last newline
-    chunk_size = min(size, 65536)
+        return 0, -1
+    chunk_size = 65536
+    pos = size
+    tail_offset = 0
+    last_step = -1
     with open(path, "rb") as f:
-        f.seek(size - chunk_size)
-        data = f.read(chunk_size)
-    last_nl = data.rfind(b"\n")
-    if last_nl == -1:
-        # Either single partial line or very long line without trailing newline
-        return 0 if size == chunk_size else size
-    return (size - chunk_size) + last_nl + 1
+        while pos > 0:
+            read_len = min(chunk_size, pos)
+            pos -= read_len
+            f.seek(pos)
+            data = f.read(read_len)
+            last_nl = data.rfind(b"\n")
+            if last_nl != -1:
+                tail_offset = pos + last_nl + 1
+                prefix = data[:last_nl].decode("utf-8", errors="replace")
+                for raw_line in reversed(prefix.splitlines()):
+                    stripped = raw_line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        obj = json.loads(stripped)
+                        if isinstance(obj, dict) and "step_index" in obj:
+                            last_step = int(obj.get("step_index", -1) or -1)
+                            break
+                    except Exception:
+                        continue
+                break
+    return tail_offset, last_step
+
+
+def _compute_complete_tail_offset(path: Path) -> int:
+    """Return byte offset immediately after the last complete newline."""
+    offset, _ = _compute_complete_tail_offset_and_step(path)
+    return offset
 
 
 def _read_new_complete_steps(path: Path, offset: int) -> tuple[int, list[TranscriptStep]]:
@@ -81,15 +107,14 @@ def _read_new_complete_steps(path: Path, offset: int) -> tuple[int, list[Transcr
     return new_offset, steps
 
 
+def _read_steps_since_with_offset(path: Path, since_step: int) -> tuple[int, list[TranscriptStep]]:
+    """Read complete JSONL lines from start of path and return (tail_offset, steps > since_step)."""
+    new_offset, all_steps = _read_new_complete_steps(path, 0)
+    return new_offset, [s for s in all_steps if s.step_index > since_step]
+
+
 def _read_steps_since(path: Path, since_step: int) -> list[TranscriptStep]:
-    if not path.exists() or not path.is_file():
-        return []
-    steps: list[TranscriptStep] = []
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            parsed = parse_transcript_line(line)
-            if parsed is not None and parsed.step_index > since_step:
-                steps.append(parsed)
+    _, steps = _read_steps_since_with_offset(path, since_step)
     return steps
 
 
@@ -112,11 +137,20 @@ class SessionEventHub:
         tpath = self.provider.get_transcript_path(sid)
         state = self._sessions.get(sid)
         if state is None:
-            initial_offset = await asyncio.to_thread(_compute_complete_tail_offset, tpath)
+            if tpath.exists():
+                initial_offset, initial_step = await asyncio.to_thread(
+                    _compute_complete_tail_offset_and_step, tpath
+                )
+                watched_path: Path | None = tpath
+            else:
+                initial_offset, initial_step = 0, -1
+                watched_path = None
             initial_running = await self.provider.is_session_running(sid)
             state = _SessionWatchState(
                 session_id=sid,
+                watched_path=watched_path,
                 byte_offset=initial_offset,
+                last_step_index=initial_step,
                 last_running=initial_running,
             )
             self._sessions[sid] = state
@@ -209,11 +243,26 @@ class SessionEventHub:
                     break
 
                 tpath = self.provider.get_transcript_path(session_id)
-                new_offset, steps = await asyncio.to_thread(_read_new_complete_steps, tpath, state.byte_offset)
+                if state.watched_path != tpath:
+                    if not tpath.exists():
+                        new_offset, steps = 0, []
+                    elif state.watched_path is None:
+                        new_offset, steps = await asyncio.to_thread(_read_new_complete_steps, tpath, 0)
+                        state.watched_path = tpath
+                    else:
+                        new_offset, steps = await asyncio.to_thread(
+                            _read_steps_since_with_offset, tpath, state.last_step_index
+                        )
+                        state.watched_path = tpath
+                else:
+                    new_offset, steps = await asyncio.to_thread(
+                        _read_new_complete_steps, tpath, state.byte_offset
+                    )
                 state.byte_offset = new_offset
 
                 is_running = await self.provider.is_session_running(session_id)
                 if steps:
+                    state.last_step_index = max(state.last_step_index, steps[-1].step_index)
                     for step in steps:
                         if session_id not in self._sessions:
                             return

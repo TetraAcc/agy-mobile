@@ -1179,4 +1179,62 @@ void main() {
     expect(find.textContaining('新段落A'), findsOneWidget);
     expect(find.textContaining('新段落B'), findsOneWidget);
   });
+
+  testWidgets('QuotaDrawer 折叠项目内存在运行中会话时展示项目旁呼吸灯提示', (tester) async {
+    var refreshNodesCalls = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 320,
+            child: QuotaDrawer(
+              nodes: const [
+                HostNode(id: 'win', name: 'Windows PC', isOnline: true, engineAlive: true),
+              ],
+              selectedNode: 'win',
+              onSwitchNode: (_) {},
+              onRefreshNodes: () => refreshNodesCalls += 1,
+              quotaData: null,
+              isLoadingQuota: false,
+              onRequestQuota: () {},
+              onNewSession: () {},
+              projects: const {
+                'RunningProj': [
+                  SessionItem(id: 's-run-1', title: '正在生成的代码任务'),
+                  SessionItem(id: 's-run-2', title: '后台测试任务', isRunning: true),
+                ],
+                'IdleProj': [
+                  SessionItem(id: 's-idle-1', title: '已结束的历史任务'),
+                ],
+              },
+              generalSessions: const [
+                SessionItem(id: 'g-active', title: '当前通用对话'),
+              ],
+              activeSessionId: 'g-active',
+              runningSessionIds: const {'s-run-1'},
+              onSwitchSession: (_) {},
+              onDeleteSession: (_) {},
+              isDark: true,
+              onToggleTheme: (_) {},
+              onSelectAccentTheme: (_) {},
+              isPermanentSidebar: true,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    // RunningProj 与 IdleProj 均处于折叠态，但仅有前者显示呼吸灯与并发数字角标 2
+    expect(find.byKey(const ValueKey('proj_breathing_RunningProj')), findsOneWidget);
+    expect(find.byKey(const ValueKey('proj_breathing_IdleProj')), findsNothing);
+    expect(find.text('2'), findsOneWidget);
+
+    // 点击节点标题栏上的手动刷新按钮可触发刷新回调
+    await tester.tap(find.byTooltip('刷新节点状态'));
+    await tester.pump();
+    expect(refreshNodesCalls, 1);
+  });
 }

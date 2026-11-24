@@ -35,6 +35,8 @@ SENSITIVE_PATTERNS: list[str] = [
     r"(?:^|[\\/])hub\.db(?:-wal|-shm)?$",
     r"(?:^|[\\/])etc[\\/](?:shadow|passwd)$",
     r"(?:^|[\\/])Windows[\\/]System32[\\/]config(?:[\\/]|$)",
+    r"(?:^|[\\/])key\.properties$",
+    r"\.(?:jks|keystore|pfx|p12)$",
 ]
 
 BINARY_EXTENSIONS: set[str] = {

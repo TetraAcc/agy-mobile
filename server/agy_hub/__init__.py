@@ -1,3 +1,3 @@
-"""AGY Remote Hub v2.0 package."""
+"""AGY Remote Hub package."""
 
-__version__ = "2.0.0"
+__version__ = "2.1.3"

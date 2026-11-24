@@ -14,6 +14,7 @@ from typing import Any, Literal
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse
 
+from agy_hub import __version__
 from agy_hub.agent.auth import (
     GatewayCaller,
     require_delete_caller,
@@ -87,7 +88,7 @@ def create_agent_app(
             await event_hub.shutdown()
             await engine_provider.aclose()
 
-    app = FastAPI(title="AGY Remote Node Agent", version="2.0.0", lifespan=lifespan)
+    app = FastAPI(title="AGY Remote Node Agent", version=__version__, lifespan=lifespan)
     app.state.internal_secret = config.internal_secret
     app.state.provider = engine_provider
     app.state.registry = root_registry
