@@ -670,6 +670,25 @@ class ApiClient {
     );
   }
 
+  Future<({List<OfficialModelOption> models, String defaultModel})> getModels(String nodeId) async {
+    return _exec(
+      () => _dio.get<dynamic>('/api/v2/nodes/$nodeId/models'),
+      (data) {
+        final map = Map<String, dynamic>.from(data as Map);
+        final raw = map['models'] as List<dynamic>? ?? const [];
+        final models = raw
+            .whereType<Map>()
+            .map((e) => OfficialModelOption.fromJson(Map<String, dynamic>.from(e)))
+            .where((m) => m.id.isNotEmpty)
+            .toList();
+        return (
+          models: models,
+          defaultModel: map['default_model']?.toString() ?? '',
+        );
+      },
+    );
+  }
+
   Future<int> downloadUrlToPath(
     String fullUrl,
     String savePath, {

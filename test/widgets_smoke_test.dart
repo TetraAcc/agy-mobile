@@ -12,6 +12,7 @@ import 'package:agy_remote/features/chat/bottom_input_bar.dart';
 import 'package:agy_remote/features/chat/context_menu_sheet.dart';
 import 'package:agy_remote/features/chat/markdown_message_body.dart';
 import 'package:agy_remote/features/chat/message_card.dart';
+import 'package:agy_remote/features/chat/model_picker_sheet.dart';
 import 'package:agy_remote/features/chat/offline_outbox_bar.dart';
 import 'package:agy_remote/features/chat/quick_commands_sheet.dart';
 import 'package:agy_remote/features/chat/session_queue_bar.dart';
@@ -1387,5 +1388,154 @@ void main() {
     await tester.tap(find.text('同步发布'));
     await tester.pumpAndSettle();
     expect(filledPrompt, '请提交代码并打包更新到 Deck');
+  });
+
+  testWidgets('MessageCard 渲染 ERROR_MESSAGE 额度超限错误卡片', (tester) async {
+    const msg = AgentMessage(
+      stepIndex: 68,
+      source: 'SYSTEM',
+      msgType: 'ERROR_MESSAGE',
+      status: 'ERROR',
+      content: 'RESOURCE_EXHAUSTED (code 429): Third-party quota reached. Resets in 50m3s.\n模型: claude-sonnet-5-5-medium',
+      thinking: '',
+      toolCalls: [],
+      timestamp: '2026-11-25T02:24:49Z',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MessageCard(
+            msg: msg,
+            isDark: true,
+            resolveMediaUrl: (p) => p,
+            onDownloadFile: (_, {filename}) {},
+            onOpenUrl: (_) {},
+            turnDuration: const Duration(seconds: 12),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('模型额度已用尽'), findsOneWidget);
+    expect(find.textContaining('RESOURCE_EXHAUSTED (code 429)'), findsOneWidget);
+    expect(find.textContaining('Resets in 50m3s.'), findsOneWidget);
+    expect(find.text('耗时 12s'), findsOneWidget);
+    expect(find.text('复制错误'), findsOneWidget);
+  });
+
+  testWidgets('BottomInputBar 模型胶囊、ModelPickerSheet 搜索切换与 MessageCard 模型展示/429换模型', (tester) async {
+    final controller = TextEditingController();
+    addTearDown(controller.dispose);
+    var switchFromErrorTapped = false;
+    String? pickedModel;
+
+    const catalog = [
+      OfficialModelOption(
+        id: 'gemini-4-neon-high',
+        displayName: 'Gemini 4 Neon (High)',
+        group: 'Gemini',
+        thinkingBadge: 'New',
+        remainingFraction: 0.82,
+      ),
+      OfficialModelOption(
+        id: 'claude-sonnet-5-5-medium',
+        displayName: 'Claude Sonnet 5.5 (Medium)',
+        group: 'Claude',
+        thinkingBadge: 'New',
+        remainingFraction: 0.48,
+      ),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              MessageCard(
+                msg: const AgentMessage(
+                  stepIndex: 2,
+                  source: 'MODEL',
+                  msgType: 'PLANNER_RESPONSE',
+                  status: 'DONE',
+                  content: '普通回复内容',
+                  thinking: '',
+                  toolCalls: [],
+                  timestamp: '',
+                  model: 'gemini-4-neon-high',
+                ),
+                isDark: true,
+                resolveMediaUrl: (p) => p,
+                onDownloadFile: (_, {filename}) {},
+                onOpenUrl: (_) {},
+                modelLabel: 'Gemini 4 Neon (High)',
+              ),
+              MessageCard(
+                msg: const AgentMessage(
+                  stepIndex: 3,
+                  source: 'SYSTEM',
+                  msgType: 'ERROR_MESSAGE',
+                  status: 'ERROR',
+                  content: 'RESOURCE_EXHAUSTED (code 429): Third-party quota reached.',
+                  thinking: '',
+                  toolCalls: [],
+                  timestamp: '',
+                ),
+                isDark: true,
+                resolveMediaUrl: (p) => p,
+                onDownloadFile: (_, {filename}) {},
+                onOpenUrl: (_) {},
+                onSwitchModel: () => switchFromErrorTapped = true,
+              ),
+              Builder(
+                builder: (ctx) => BottomInputBar(
+                  inputController: controller,
+                  isConnected: true,
+                  isThinking: false,
+                  canWrite: true,
+                  isDark: true,
+                  pendingAttachments: const [],
+                  onRemoveAttachment: (_) {},
+                  onShowAddContext: () {},
+                  onSendMessage: () {},
+                  onStopTask: () {},
+                  activeModelLabel: 'Gemini 4 Neon (High)',
+                  isModelSwitchPending: false,
+                  onPickModel: () => ModelPickerSheet.show(
+                    ctx,
+                    isDark: true,
+                    models: catalog,
+                    activeModel: 'gemini-4-neon-high',
+                    pendingModel: '',
+                    onSelectModel: (id) => pickedModel = id,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    // 1. 普通消息底部与输入栏胶囊展示模型名，429 卡片展示切换模型按钮
+    expect(find.text('Gemini 4 Neon (High)'), findsNWidgets(2));
+    expect(find.text('切换模型'), findsOneWidget);
+    await tester.tap(find.text('切换模型'));
+    await tester.pump();
+    expect(switchFromErrorTapped, true);
+
+    // 2. 点击输入栏模型胶囊，弹出选择器，搜索并选择 Claude Sonnet 5.5
+    await tester.tap(find.text('Gemini 4 Neon (High)').last);
+    await tester.pumpAndSettle();
+    expect(find.text('切换当前会话模型'), findsOneWidget);
+    expect(find.text('82%'), findsOneWidget);
+    expect(find.text('48%'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField).last, 'claude');
+    await tester.pumpAndSettle();
+    expect(find.text('Claude Sonnet 5.5 (Medium)'), findsOneWidget);
+    await tester.tap(find.text('Claude Sonnet 5.5 (Medium)'));
+    await tester.pumpAndSettle();
+    expect(pickedModel, 'claude-sonnet-5-5-medium');
   });
 }

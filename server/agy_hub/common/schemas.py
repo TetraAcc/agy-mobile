@@ -120,6 +120,7 @@ class TranscriptStep(BaseModel):
     thinking: str = ""
     tool_calls: list[ToolCallItem] = Field(default_factory=list)
     timestamp: str = ""
+    model: str = ""
 
 
 class SessionMessagesResponse(BaseModel):
@@ -128,6 +129,7 @@ class SessionMessagesResponse(BaseModel):
     has_more: bool = False
     next_before_step: int | None = None
     is_running: bool = False
+    active_model: str = ""
 
 
 class CreateSessionRequest(BaseModel):
@@ -372,6 +374,22 @@ class QuotaGroup(BaseModel):
 class QuotaResponse(BaseModel):
     groups: list[QuotaGroup] = Field(default_factory=list)
     description: str = ""
+
+
+class ModelOption(BaseModel):
+    id: str
+    label: str
+    group: str = ""
+    tag: str = ""
+    remaining_fraction: float | None = None
+    reset_time: str = ""
+    is_default: bool = False
+
+
+class ModelsResponse(BaseModel):
+    models: list[ModelOption] = Field(default_factory=list)
+    default_model: str = ""
+    supports_mid_session_switch: bool = True
 
 
 class WsSubscribeCmd(BaseModel):

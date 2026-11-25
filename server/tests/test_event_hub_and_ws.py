@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from pathlib import Path
 
@@ -184,3 +185,114 @@ def test_full_transcript_prevents_content_truncation_in_http_and_ws(tmp_agent_en
             assert live_evt["step"]["step_index"] == 2
             assert "<truncated" not in live_evt["step"]["content"]
             assert live_evt["step"]["content"] == full_reply_2
+
+
+def _make_quota_429_pb_payload(message: str, model: str = "claude-sonnet-5-5-medium") -> bytes:
+    def _varint(v: int) -> bytes:
+        out = bytearray()
+        while True:
+            b = v & 0x7F
+            v >>= 7
+            out.append(b | (0x80 if v else 0))
+            if not v:
+                return bytes(out)
+
+    def _fbytes(fn: int, data: bytes) -> bytes:
+        return _varint((fn << 3) | 2) + _varint(len(data)) + data
+
+    err_info = json.dumps({"metadata": {"model": model}})
+    inner_24_3 = (
+        _fbytes(1, message.encode("utf-8"))
+        + _fbytes(2, f"RESOURCE_EXHAUSTED (code 429): {message}".encode("utf-8"))
+        + _fbytes(10, err_info.encode("utf-8"))
+    )
+    msg_5 = _fbytes(1, _varint((1 << 3) | 0) + _varint(1795573489))
+    return _varint((1 << 3) | 0) + _varint(17) + _fbytes(5, msg_5) + _fbytes(24, _fbytes(3, inner_24_3))
+
+
+def test_http_and_ws_surface_conversation_db_quota_error_without_duplication(tmp_agent_env: dict) -> None:
+    brain_dir: Path = tmp_agent_env["brain_dir"]
+    db_path: Path = tmp_agent_env["db_path"]
+    sid = "cccccccc-cccc-4ccc-8ccc-ccccccccccc9"
+
+    write_transcript_step(
+        brain_dir,
+        sid,
+        {"step_index": 1, "source": "USER", "type": "USER_INPUT", "status": "DONE", "content": "继续写第2章"},
+    )
+    # Transcript already has step_index=2 as ERROR_MESSAGE, conv DB also has step 2 and later gets step 3
+    write_transcript_step(
+        brain_dir,
+        sid,
+        {
+            "step_index": 2,
+            "source": "SYSTEM",
+            "type": "ERROR_MESSAGE",
+            "status": "DONE",
+            "error": "API error (attempt 1): UNAVAILABLE (code 503): No capacity",
+        },
+    )
+
+    conv_dir = db_path.parent / "conversations"
+    conv_dir.mkdir(parents=True, exist_ok=True)
+    conv_db = conv_dir / f"{sid}.db"
+    conn = sqlite3.connect(conv_db)
+    conn.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)")
+    conn.execute(
+        "INSERT INTO steps (idx, step_type, step_payload) VALUES (2, 17, ?)",
+        (_make_quota_429_pb_payload("Duplicate step 2"),),
+    )
+    conn.commit()
+    conn.close()
+
+    app = create_agent_app(
+        tmp_agent_env["config"],
+        provider=tmp_agent_env["provider"],
+        registry=tmp_agent_env["registry"],
+    )
+    msg_headers = sign_internal_request(
+        TEST_INTERNAL_SECRET,
+        "GET",
+        f"/agent/sessions/{sid}/messages",
+        "ws_tester",
+        '{"can_write":true,"can_delete":false}',
+    )
+
+    with TestClient(app) as client:
+        # 1. HTTP history merges step 2 once without duplicating conv DB step 2
+        resp = client.get(f"/agent/sessions/{sid}/messages", headers=msg_headers)
+        assert resp.status_code == 200
+        msgs = resp.json()["messages"]
+        assert [m["step_index"] for m in msgs] == [1, 2]
+        assert msgs[1]["status"] == "ERROR"
+        assert "UNAVAILABLE (code 503)" in msgs[1]["content"]
+
+        # 2. Live WS pushes newly written step_type=17 quota error from conv DB
+        with client.websocket_connect("/agent/ws/events", headers=_ws_headers()) as ws:
+            ws.send_json({"type": "subscribe", "session_id": sid})
+            status_evt = ws.receive_json()
+            assert status_evt["type"] == "session_status"
+
+            conn = sqlite3.connect(conv_db)
+            conn.execute(
+                "INSERT INTO steps (idx, step_type, step_payload) VALUES (3, 17, ?)",
+                (_make_quota_429_pb_payload("Third-party quota reached. Resets in 50m3s."),),
+            )
+            conn.commit()
+            conn.close()
+
+            evt = ws.receive_json()
+            assert evt["type"] == "step_upsert"
+            assert evt["session_id"] == sid
+            assert evt["step"]["step_index"] == 3
+            assert evt["step"]["msg_type"] == "ERROR_MESSAGE"
+            assert evt["step"]["status"] == "ERROR"
+            assert "RESOURCE_EXHAUSTED (code 429)" in evt["step"]["content"]
+            assert "claude-sonnet-5-5-medium" in evt["step"]["content"]
+
+        # 3. Subsequent HTTP GET includes step 3
+        resp2 = client.get(f"/agent/sessions/{sid}/messages", headers=msg_headers)
+        assert resp2.status_code == 200
+        msgs2 = resp2.json()["messages"]
+        assert [m["step_index"] for m in msgs2] == [1, 2, 3]
+        assert "Resets in 50m3s." in msgs2[2]["content"]

@@ -58,6 +58,9 @@ class HubState {
   final List<UploadedAttachment> pendingAttachments;
   final String selectedMode;
   final String selectedModel;
+  final List<OfficialModelOption> availableModels;
+  final String activeSessionModel;
+  final String pendingSwitchModel;
   final List<FileRootItem> cachedRoots;
   final SessionChangesData sessionChanges;
   final SessionQueueData sessionQueue;
@@ -83,13 +86,22 @@ class HubState {
     this.isLoadingQuota = false,
     this.pendingAttachments = const [],
     this.selectedMode = 'auto',
-    this.selectedModel = 'gemini-3.8-flash-high',
+    this.selectedModel = 'gemini-4-neon-high',
+    this.availableModels = kAllOfficialModels,
+    this.activeSessionModel = '',
+    this.pendingSwitchModel = '',
     this.cachedRoots = const [],
     this.sessionChanges = const SessionChangesData(),
     this.sessionQueue = const SessionQueueData(),
     this.offlineOutbox = const [],
     this.isFlushingOutbox = false,
   });
+
+  String get effectiveSessionModel =>
+      pendingSwitchModel.isNotEmpty ? pendingSwitchModel : activeSessionModel;
+
+  bool get hasPendingModelSwitch =>
+      pendingSwitchModel.isNotEmpty && pendingSwitchModel != activeSessionModel;
 
   HostNode? get currentNode {
     if (selectedNodeId.isEmpty || nodes.isEmpty) return null;
@@ -139,6 +151,10 @@ class HubState {
     List<UploadedAttachment>? pendingAttachments,
     String? selectedMode,
     String? selectedModel,
+    List<OfficialModelOption>? availableModels,
+    String? activeSessionModel,
+    String? pendingSwitchModel,
+    bool clearPendingSwitchModel = false,
     List<FileRootItem>? cachedRoots,
     SessionChangesData? sessionChanges,
     bool clearSessionChanges = false,
@@ -167,6 +183,9 @@ class HubState {
       pendingAttachments: pendingAttachments ?? this.pendingAttachments,
       selectedMode: selectedMode ?? this.selectedMode,
       selectedModel: selectedModel ?? this.selectedModel,
+      availableModels: availableModels ?? this.availableModels,
+      activeSessionModel: activeSessionModel ?? this.activeSessionModel,
+      pendingSwitchModel: clearPendingSwitchModel ? '' : (pendingSwitchModel ?? this.pendingSwitchModel),
       cachedRoots: cachedRoots ?? this.cachedRoots,
       sessionChanges: clearSessionChanges ? const SessionChangesData() : (sessionChanges ?? this.sessionChanges),
       sessionQueue: clearSessionQueue ? const SessionQueueData() : (sessionQueue ?? this.sessionQueue),
@@ -346,6 +365,8 @@ class HubController extends Notifier<HubState> {
       hasMoreMessages: false,
       clearNextBeforeStep: true,
       clearQuota: true,
+      activeSessionModel: '',
+      clearPendingSwitchModel: true,
       clearSessionChanges: true,
       clearSessionQueue: true,
       cachedRoots: const [],
@@ -406,6 +427,7 @@ class HubController extends Notifier<HubState> {
     await Future.wait([
       refreshSessionTree(autoSelectFirst: true).then((_) => refreshFileRoots()),
       fetchQuota(),
+      fetchModels(),
     ]);
   }
 
@@ -486,6 +508,14 @@ class HubController extends Notifier<HubState> {
     }
   }
 
+  String _extractLatestModel(List<AgentMessage> messages, [String fallback = '']) {
+    for (var i = messages.length - 1; i >= 0; i--) {
+      final m = messages[i].model.trim();
+      if (m.isNotEmpty) return m;
+    }
+    return fallback;
+  }
+
   Future<void> _syncActiveSessionSilent() async {
     final nodeId = state.selectedNodeId;
     final sid = state.activeSessionId;
@@ -517,9 +547,15 @@ class HubController extends Notifier<HubState> {
       } else {
         nextRunning.remove(sid);
       }
+      final detectedModel = page.activeModel.isNotEmpty
+          ? page.activeModel
+          : _extractLatestModel(merged, state.activeSessionModel);
       state = state.copyWith(
         messages: merged,
         runningSessionIds: nextRunning,
+        activeSessionModel: detectedModel,
+        clearPendingSwitchModel:
+            detectedModel.isNotEmpty && state.pendingSwitchModel == detectedModel,
       );
     } catch (_) {}
     unawaited(refreshSessionQueue());
@@ -649,6 +685,8 @@ class HubController extends Notifier<HubState> {
       messages: const [],
       hasMoreMessages: false,
       clearNextBeforeStep: true,
+      activeSessionModel: '',
+      clearPendingSwitchModel: true,
       clearSessionChanges: true,
       clearSessionQueue: true,
       isLoadingMessages: true,
@@ -666,6 +704,9 @@ class HubController extends Notifier<HubState> {
       } else {
         nextRunning.remove(session.id);
       }
+      final detectedModel = page.activeModel.isNotEmpty
+          ? page.activeModel
+          : _extractLatestModel(page.messages);
 
       state = state.copyWith(
         messages: page.messages,
@@ -674,6 +715,7 @@ class HubController extends Notifier<HubState> {
         clearNextBeforeStep: page.nextBeforeStep == null,
         isLoadingMessages: false,
         runningSessionIds: nextRunning,
+        activeSessionModel: detectedModel,
       );
 
       final lastStep = page.messages.isNotEmpty ? page.messages.last.stepIndex : null;
@@ -763,7 +805,14 @@ class HubController extends Notifier<HubState> {
             }
           }
         }
-        state = state.copyWith(messages: updated, runningSessionIds: nextRunning);
+        final stepModel = event.step.model.trim();
+        state = state.copyWith(
+          messages: updated,
+          runningSessionIds: nextRunning,
+          activeSessionModel: stepModel.isNotEmpty ? stepModel : state.activeSessionModel,
+          clearPendingSwitchModel:
+              stepModel.isNotEmpty && state.pendingSwitchModel == stepModel,
+        );
         _syncRunningNotification();
         _maybeNotifyAskQuestion(event.step);
         if (event.step.toolCalls.any((t) => _editToolNames.contains(t.name))) {
@@ -901,6 +950,9 @@ class HubController extends Notifier<HubState> {
       return null;
     }
 
+    final String? modelToSend =
+        state.pendingSwitchModel.isNotEmpty ? state.pendingSwitchModel : null;
+
     final shouldQueue =
         !interrupt &&
         deliveryMode == 'queue' &&
@@ -913,7 +965,7 @@ class HubController extends Notifier<HubState> {
           nodeId,
           sid,
           content: finalText,
-          model: state.selectedModel,
+          model: modelToSend,
           deliveryMode: 'queue',
         );
         if (!res.ok) {
@@ -1002,7 +1054,7 @@ class HubController extends Notifier<HubState> {
                 nodeId,
                 sid,
                 content: finalText,
-                model: state.selectedModel,
+                model: modelToSend,
                 deliveryMode: 'immediate',
                 interrupt: interrupt,
               );
@@ -1012,7 +1064,7 @@ class HubController extends Notifier<HubState> {
               nodeId,
               sid,
               content: finalText,
-              model: state.selectedModel,
+              model: modelToSend,
             );
       if (!ok) {
         rollbackOptimistic();
@@ -1179,7 +1231,11 @@ class HubController extends Notifier<HubState> {
             item.nodeId,
             item.sessionId,
             content: item.content,
-            model: state.selectedModel,
+            model: (item.nodeId == state.selectedNodeId &&
+                    item.sessionId == state.activeSessionId &&
+                    state.pendingSwitchModel.isNotEmpty)
+                ? state.pendingSwitchModel
+                : null,
             deliveryMode: item.deliveryMode,
           );
           if (_disposed) break;
@@ -1305,6 +1361,9 @@ class HubController extends Notifier<HubState> {
                 workspacePath: workspacePath ?? '',
               ),
         );
+        if (!_disposed && state.activeSessionId == newSid && state.activeSessionModel.isEmpty) {
+          state = state.copyWith(activeSessionModel: model);
+        }
       }
       return null;
     } on ApiException catch (e) {
@@ -1331,6 +1390,8 @@ class HubController extends Notifier<HubState> {
           messages: const [],
           hasMoreMessages: false,
           clearNextBeforeStep: true,
+          activeSessionModel: '',
+          clearPendingSwitchModel: true,
         );
       }
       await refreshSessionTree(autoSelectFirst: state.activeSessionId.isEmpty);
@@ -1396,6 +1457,35 @@ class HubController extends Notifier<HubState> {
     } catch (_) {
       if (_disposed) return;
       state = state.copyWith(isLoadingQuota: false);
+    }
+  }
+
+  Future<void> fetchModels() async {
+    final nodeId = state.selectedNodeId;
+    if (nodeId.isEmpty) return;
+    try {
+      final res = await _api.getModels(nodeId);
+      if (_disposed || state.selectedNodeId != nodeId) return;
+      if (res.models.isEmpty) return;
+      var nextSelected = state.selectedModel;
+      if (!res.models.any((m) => m.id == nextSelected)) {
+        nextSelected = res.defaultModel.isNotEmpty ? res.defaultModel : res.models.first.id;
+      }
+      state = state.copyWith(
+        availableModels: res.models,
+        selectedModel: nextSelected,
+      );
+    } catch (_) {
+      // Fallback gracefully to cached / built-in models on older nodes
+    }
+  }
+
+  void setSessionPendingModel(String? modelId) {
+    final clean = (modelId ?? '').trim();
+    if (clean.isEmpty || clean == state.activeSessionModel) {
+      state = state.copyWith(clearPendingSwitchModel: true);
+    } else {
+      state = state.copyWith(pendingSwitchModel: clean);
     }
   }
 

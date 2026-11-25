@@ -91,6 +91,23 @@ class FakeApiClient extends ApiClient {
   int getNodesCalls = 0;
   final List<({String nodeId, String sessionId, String content, String deliveryMode, bool interrupt})>
       modeMessages = [];
+  final List<String?> sentModels = [];
+  String pageActiveModel = '';
+  List<OfficialModelOption> fakeModels = const [
+    OfficialModelOption(
+      id: 'gemini-4-neon-high',
+      displayName: 'Gemini 4 Neon (High)',
+      group: 'Gemini',
+      remainingFraction: 0.82,
+      isDefault: true,
+    ),
+    OfficialModelOption(
+      id: 'claude-sonnet-5-5-medium',
+      displayName: 'Claude Sonnet 5.5 (Medium)',
+      group: 'Claude',
+      remainingFraction: 0.48,
+    ),
+  ];
   bool throwNetworkErrorOnSend = false;
   bool messagesIsRunning = false;
 
@@ -191,6 +208,15 @@ class FakeApiClient extends ApiClient {
       hasMore: sessionId == 's1',
       nextBeforeStep: sessionId == 's1' ? 10 : null,
       isRunning: messagesIsRunning,
+      activeModel: pageActiveModel,
+    );
+  }
+
+  @override
+  Future<({List<OfficialModelOption> models, String defaultModel})> getModels(String nodeId) async {
+    return (
+      models: fakeModels,
+      defaultModel: fakeModels.isNotEmpty ? fakeModels.first.id : '',
     );
   }
 
@@ -200,6 +226,7 @@ class FakeApiClient extends ApiClient {
       throw const ApiException(502, 'Node unavailable: connection timed out');
     }
     sentMessages.add('$nodeId/$sessionId:$content');
+    sentModels.add(model);
     return (true, 'ok');
   }
 
@@ -215,6 +242,7 @@ class FakeApiClient extends ApiClient {
     if (throwNetworkErrorOnSend) {
       throw const ApiException(502, 'Node unavailable: connection timed out');
     }
+    sentModels.add(model);
     modeMessages.add((
       nodeId: nodeId,
       sessionId: sessionId,
@@ -886,5 +914,89 @@ void main() {
     curState = container.read(hubControllerProvider);
     expect(curState.activeSessionOutbox, isEmpty);
     expect(fakeApi.modeMessages.any((m) => m.content == '改好的离线补发指令'), true);
+  });
+
+  test('HubController 自动识别会话当前模型、默认不覆写，手动切换后透传模型并在新回复同步清空', () async {
+    final fakeApi = FakeApiClient()..pageActiveModel = 'gemini-4-neon-high';
+    final createdSockets = <String, FakeEventSocket>{};
+
+    final container = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(fakeApi),
+        tokenStoreProvider.overrideWithValue(MemoryTokenStore(initialAccess: 'tok')),
+        eventSocketFactoryProvider.overrideWithValue(({
+          required ServerConfig serverConfig,
+          required String nodeId,
+          required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
+        }) {
+          final sock = FakeEventSocket(nodeId);
+          createdSockets[nodeId] = sock;
+          return sock;
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const user = UserProfile(
+      id: 1,
+      username: 'tetra',
+      displayName: 'Tetra',
+      role: 'admin',
+      defaultNode: 'win',
+      allowedNodes: ['win'],
+      nodePermissions: {
+        'win': UserPermissionGrant(nodeId: 'win', canWrite: true, canDelete: true),
+      },
+    );
+
+    final hub = container.read(hubControllerProvider.notifier);
+    await hub.initializeForUser(user);
+    await Future<void>.delayed(Duration.zero);
+
+    var state = container.read(hubControllerProvider);
+    expect(state.availableModels.length, 2);
+    expect(state.activeSessionModel, 'gemini-4-neon-high');
+    expect(state.hasPendingModelSwitch, false);
+
+    // 1. 未手动切换时发送消息，model 为 null（保持会话原模型，不误覆盖）
+    final err1 = await hub.sendMessage('继续沿用原模型', deliveryMode: 'immediate');
+    expect(err1, isNull);
+    expect(fakeApi.sentModels.last, isNull);
+
+    // 2. 手动选择切换为 claude-sonnet-5-5-medium，下一条发送携带该 model
+    hub.setSessionPendingModel('claude-sonnet-5-5-medium');
+    state = container.read(hubControllerProvider);
+    expect(state.hasPendingModelSwitch, true);
+    expect(state.effectiveSessionModel, 'claude-sonnet-5-5-medium');
+
+    final err2 = await hub.sendMessage('切到 Claude 回复', deliveryMode: 'immediate');
+    expect(err2, isNull);
+    expect(fakeApi.sentModels.last, 'claude-sonnet-5-5-medium');
+
+    // 3. 收到新模型回复的 WS 事件后，activeSessionModel 更新为新模型并清空待切换标记
+    createdSockets['win']!.emitEvent(
+      const WsStepUpsertEvent(
+        sessionId: 's1',
+        isRunning: false,
+        step: AgentMessage(
+          stepIndex: 11,
+          source: 'MODEL',
+          msgType: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          content: '已用 Claude 回复',
+          thinking: '',
+          toolCalls: [],
+          timestamp: '2026-11-25T04:00:00Z',
+          model: 'claude-sonnet-5-5-medium',
+        ),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    state = container.read(hubControllerProvider);
+    expect(state.activeSessionModel, 'claude-sonnet-5-5-medium');
+    expect(state.pendingSwitchModel, isEmpty);
+    expect(state.hasPendingModelSwitch, false);
   });
 }

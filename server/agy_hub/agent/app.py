@@ -40,6 +40,7 @@ from agy_hub.common.schemas import (
     GitDiffResponse,
     GitRepoItem,
     GitReposResponse,
+    ModelsResponse,
     QueuePauseRequest,
     QuotaResponse,
     SendMessageRequest,
@@ -623,6 +624,10 @@ def create_agent_app(
     @app.get("/agent/quota", response_model=QuotaResponse)
     async def get_quota(_caller: GatewayCaller = Depends(require_gateway_signature)) -> QuotaResponse:
         return await engine_provider.fetch_quota()
+
+    @app.get("/agent/models", response_model=ModelsResponse)
+    async def get_models(_caller: GatewayCaller = Depends(require_gateway_signature)) -> ModelsResponse:
+        return await engine_provider.fetch_models()
 
     @app.websocket("/agent/ws/events")
     async def ws_events(websocket: WebSocket) -> None:

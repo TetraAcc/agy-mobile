@@ -9,9 +9,24 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('v2 模型与官方配置测试', () {
-    test('官方模型矩阵完整性', () {
+    test('官方模型矩阵完整性与动态解析格式化', () {
       final modelIds = kAllOfficialModels.map((m) => m.id).toList();
-      expect(modelIds, containsAll(['gemini-3.8-flash-high', 'claude-sonnet-4-6', 'gemini-2.5-pro']));
+      expect(
+        modelIds,
+        containsAll(['gemini-4-neon-high', 'claude-sonnet-5-5-medium', 'gemini-3.8-flash-high']),
+      );
+      final parsed = OfficialModelOption.fromJson({
+        'id': 'gemini-4-carbon-high',
+        'label': 'Gemini 4 Carbon (High)',
+        'group': 'Gemini',
+        'tag': 'New',
+        'remaining_fraction': 0.82,
+        'is_default': true,
+      });
+      expect(parsed.displayName, 'Gemini 4 Carbon (High)');
+      expect(parsed.remainingFraction, closeTo(0.82, 1e-6));
+      expect(parsed.isDefault, true);
+      expect(formatModelDisplayName('claude-opus-5-5-high', const []), 'Claude Opus 5.5 (High)');
     });
 
     test('SessionChangesData、GitRepoItem 与 ReviewCommentItem 解析与格式化', () {

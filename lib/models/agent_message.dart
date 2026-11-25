@@ -40,6 +40,7 @@ class AgentMessage {
   final String thinking;
   final List<ToolCallItem> toolCalls;
   final String timestamp;
+  final String model;
 
   const AgentMessage({
     required this.stepIndex,
@@ -50,6 +51,7 @@ class AgentMessage {
     required this.thinking,
     required this.toolCalls,
     required this.timestamp,
+    this.model = '',
   });
 
   bool get isUser => source == 'USER_EXPLICIT' || msgType == 'USER_INPUT';
@@ -88,6 +90,7 @@ class AgentMessage {
       thinking: json['thinking']?.toString() ?? '',
       toolCalls: parsedTools,
       timestamp: json['timestamp']?.toString() ?? '',
+      model: json['model']?.toString() ?? '',
     );
   }
 }
@@ -98,6 +101,7 @@ class SessionMessagesPage {
   final bool hasMore;
   final int? nextBeforeStep;
   final bool isRunning;
+  final String activeModel;
 
   const SessionMessagesPage({
     required this.sessionId,
@@ -105,6 +109,7 @@ class SessionMessagesPage {
     this.hasMore = false,
     this.nextBeforeStep,
     this.isRunning = false,
+    this.activeModel = '',
   });
 
   factory SessionMessagesPage.fromJson(Map<String, dynamic> json) {
@@ -118,6 +123,7 @@ class SessionMessagesPage {
       hasMore: json['has_more'] == true,
       nextBeforeStep: (json['next_before_step'] as num?)?.toInt(),
       isRunning: json['is_running'] == true,
+      activeModel: json['active_model']?.toString() ?? '',
     );
   }
 }

@@ -27,6 +27,9 @@ class BottomInputBar extends StatefulWidget {
   final VoidCallback onSendMessage;
   final VoidCallback onStopTask;
   final ValueChanged<PickedLocalFile>? onInsertRichContent;
+  final String activeModelLabel;
+  final bool isModelSwitchPending;
+  final VoidCallback? onPickModel;
 
   const BottomInputBar({
     super.key,
@@ -47,6 +50,9 @@ class BottomInputBar extends StatefulWidget {
     required this.onSendMessage,
     required this.onStopTask,
     this.onInsertRichContent,
+    this.activeModelLabel = '',
+    this.isModelSwitchPending = false,
+    this.onPickModel,
   });
 
   @override
@@ -250,7 +256,91 @@ class _BottomInputBarState extends State<BottomInputBar> {
                               ),
                             ),
                           ),
-                          const Spacer(),
+                          if (widget.onPickModel != null && widget.isConnected) ...[
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: Tooltip(
+                                  message: widget.isModelSwitchPending
+                                      ? '下一条消息将切换为 ${widget.activeModelLabel}'
+                                      : (widget.activeModelLabel.isNotEmpty
+                                          ? '当前模型：${widget.activeModelLabel}（点击切换）'
+                                          : '选择或切换会话模型'),
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(14),
+                                    onTap: widget.onPickModel,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(14),
+                                        color: widget.isModelSwitchPending
+                                            ? primary.withValues(alpha: isDark ? 0.16 : 0.10)
+                                            : (isDark
+                                                ? Colors.white.withValues(alpha: 0.05)
+                                                : Colors.black.withValues(alpha: 0.04)),
+                                        border: Border.all(
+                                          color: widget.isModelSwitchPending
+                                              ? primary.withValues(alpha: 0.5)
+                                              : (isDark
+                                                  ? Colors.white.withValues(alpha: 0.10)
+                                                  : Colors.black.withValues(alpha: 0.09)),
+                                          width: 0.8,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            widget.isModelSwitchPending
+                                                ? Icons.swap_horiz_rounded
+                                                : Icons.auto_awesome_outlined,
+                                            size: 13,
+                                            color: widget.isModelSwitchPending
+                                                ? primary
+                                                : (isDark ? Colors.white60 : Colors.black54),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Flexible(
+                                            child: Text(
+                                              widget.isModelSwitchPending
+                                                  ? '切换→ ${widget.activeModelLabel}'
+                                                  : (widget.activeModelLabel.isNotEmpty
+                                                      ? widget.activeModelLabel
+                                                      : '切换模型'),
+                                              style: TextStyle(
+                                                fontSize: 11.5,
+                                                fontWeight: widget.isModelSwitchPending
+                                                    ? FontWeight.w600
+                                                    : FontWeight.w500,
+                                                color: widget.isModelSwitchPending
+                                                    ? primary
+                                                    : (isDark
+                                                        ? const Color(0xFFD4D4D8)
+                                                        : const Color(0xFF3F3F46)),
+                                              ),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 2),
+                                          Icon(
+                                            Icons.keyboard_arrow_down_rounded,
+                                            size: 14,
+                                            color: widget.isModelSwitchPending
+                                                ? primary
+                                                : (isDark ? Colors.white38 : Colors.black38),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                          ] else
+                            const Spacer(),
                           ValueListenableBuilder<TextEditingValue>(
                             valueListenable: widget.inputController,
                             builder: (_, val, __) {

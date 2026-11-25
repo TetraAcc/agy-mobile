@@ -386,3 +386,116 @@ def test_send_message_interrupt_stops_running_and_bypasses_queue(tmp_agent_env: 
         assert q_resp.status_code == 200
         assert q_resp.json()["paused"] is False
         assert len(q_resp.json()["items"]) == 1
+
+
+async def test_windows_provider_models_and_mid_session_switch(tmp_path: Path, tmp_agent_env: dict) -> None:
+    import httpx
+    from agy_hub.agent.config import AgentConfig
+    from agy_hub.agent.providers.windows import WindowsEngineProvider
+    from agy_hub.common.sandbox import RootRegistry
+
+    daemon_dir = tmp_path / "daemon"
+    daemon_dir.mkdir()
+    (daemon_dir / "hub_456.json").write_text(
+        json.dumps({"httpPort": 54322, "csrfToken": "csrf-model-test"}),
+        encoding="utf-8",
+    )
+
+    sent_rpc_payloads: list[dict] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        body = json.loads(request.content.decode("utf-8") or "{}")
+        if method == "GetCascadeModelConfigData":
+            return httpx.Response(
+                200,
+                json={
+                    "defaultOverrideModelConfig": {"modelOrAlias": {"model": "MODEL_PLACEHOLDER_M532"}},
+                    "clientModelConfigs": [
+                        {
+                            "label": "Gemini 4 Neon (High)",
+                            "modelId": "gemini-4-neon-high",
+                            "modelOrAlias": {"model": "MODEL_PLACEHOLDER_M532"},
+                            "tagTitle": "New",
+                            "quotaInfo": {"remainingFraction": 0.82, "resetTime": "2026-11-25T07:04:11Z"},
+                        },
+                        {
+                            "label": "Claude Sonnet 5.5 (Medium)",
+                            "modelId": "claude-sonnet-5-5-medium",
+                            "modelOrAlias": {"model": "MODEL_PLACEHOLDER_M404"},
+                            "tagTitle": "New",
+                            "quotaInfo": {"remainingFraction": 0.48, "resetTime": "2026-11-25T08:00:00Z"},
+                        },
+                    ],
+                },
+            )
+        if method == "SendUserCascadeMessage":
+            sent_rpc_payloads.append(body)
+            return httpx.Response(200, json={})
+        return httpx.Response(200, json={})
+
+    transport = httpx.MockTransport(_handler)
+    async with httpx.AsyncClient(transport=transport) as mock_client:
+        cfg = AgentConfig(
+            platform="windows",
+            internal_secret=TEST_INTERNAL_SECRET,
+            brain_dir=str(tmp_path / "brain"),
+            db_path=str(tmp_path / "db.sqlite"),
+            default_workspace=str(tmp_path),
+            daemon_dir=str(daemon_dir),
+        )
+        provider = WindowsEngineProvider(cfg, RootRegistry(), http_client=mock_client)
+
+        models_resp = await provider.fetch_models()
+        assert models_resp.default_model == "gemini-4-neon-high"
+        assert len(models_resp.models) == 2
+        assert models_resp.models[0].group == "Gemini"
+        assert models_resp.models[0].is_default is True
+        assert abs((models_resp.models[0].remaining_fraction or 0) - 0.82) < 1e-6
+        assert models_resp.models[1].id == "claude-sonnet-5-5-medium"
+        assert models_resp.models[1].group == "Claude"
+
+        sid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"
+        # 1. Without model override, do not send cascadeConfig (preserve session model)
+        ack1 = await provider.send_message(sid, "keep current model", model=None)
+        assert ack1.ok is True
+        assert "cascadeConfig" not in sent_rpc_payloads[-1]
+
+        # 2. With explicit model, resolve modelId -> modelOrAlias and pass cascadeConfig.plannerConfig.requestedModel
+        ack2 = await provider.send_message(sid, "switch to claude", model="claude-sonnet-5-5-medium")
+        assert ack2.ok is True
+        assert sent_rpc_payloads[-1]["cascadeConfig"] == {
+            "plannerConfig": {"requestedModel": {"model": "MODEL_PLACEHOLDER_M404"}}
+        }
+
+    # Verify /agent/models endpoint and SessionMessagesResponse.active_model
+    brain_dir: Path = tmp_agent_env["brain_dir"]
+    sid_m = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"
+    write_transcript_step(
+        brain_dir,
+        sid_m,
+        {
+            "step_index": 9,
+            "source": "MODEL",
+            "type": "PLANNER_RESPONSE",
+            "status": "DONE",
+            "content": "使用新模型回复",
+            "model": "gemini-4-hydrogen-low",
+        },
+    )
+    app = create_agent_app(
+        tmp_agent_env["config"],
+        provider=tmp_agent_env["provider"],
+        registry=tmp_agent_env["registry"],
+    )
+    with TestClient(app) as client:
+        m_resp = client.get("/agent/models", headers=_signed_headers("GET", "/agent/models"))
+        assert m_resp.status_code == 200
+        m_body = m_resp.json()
+        assert m_body["supports_mid_session_switch"] is True
+        assert any(m["id"] == "gemini-4-hydrogen-low" for m in m_body["models"])
+
+        msg_path = f"/agent/sessions/{sid_m}/messages"
+        msgs_resp = client.get(msg_path, headers=_signed_headers("GET", msg_path))
+        assert msgs_resp.status_code == 200
+        assert msgs_resp.json()["active_model"] == "gemini-4-hydrogen-low"

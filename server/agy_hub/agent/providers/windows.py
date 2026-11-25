@@ -20,6 +20,8 @@ from agy_hub.common.sandbox import RootRegistry
 from agy_hub.common.schemas import (
     ActionAckResponse,
     CreateSessionResponse,
+    ModelOption,
+    ModelsResponse,
     QuotaBucket,
     QuotaGroup,
     QuotaResponse,
@@ -65,6 +67,9 @@ class WindowsEngineProvider(BaseEngineProvider):
         self._http_client = http_client or httpx.AsyncClient(timeout=6.0)
         self._hub_cache: dict[str, Any] | None = None
         self._hub_cache_ts: float = 0.0
+        self._model_catalog_cache: ModelsResponse | None = None
+        self._model_id_to_alias: dict[str, dict[str, Any]] = {}
+        self._last_models_sync: float = 0.0
         super().__init__(config, registry)
 
     @property
@@ -174,6 +179,119 @@ class WindowsEngineProvider(BaseEngineProvider):
             pass
         return set()
 
+    async def _sync_model_catalog(self, force: bool = False) -> ModelsResponse | None:
+        now = time.time()
+        if not force and self._model_catalog_cache and (now - self._last_models_sync) < 120.0:
+            return self._model_catalog_cache
+
+        try:
+            data = await self._rpc_post("GetCascadeModelConfigData", {}, timeout=5.0)
+        except Exception as exc:
+            logger.debug("GetCascadeModelConfigData failed: %s", exc)
+            return self._model_catalog_cache
+
+        if not isinstance(data, dict):
+            return self._model_catalog_cache
+
+        raw_configs = data.get("clientModelConfigs", [])
+        if not isinstance(raw_configs, list) or not raw_configs:
+            return self._model_catalog_cache
+
+        default_moa = (data.get("defaultOverrideModelConfig") or {}).get("modelOrAlias")
+        default_moa_key = default_moa.get("model") if isinstance(default_moa, dict) else None
+
+        models: list[ModelOption] = []
+        id_to_alias: dict[str, dict[str, Any]] = {}
+        default_model_id = ""
+        seen_ids: set[str] = set()
+
+        for cfg in raw_configs:
+            if not isinstance(cfg, dict):
+                continue
+            moa = cfg.get("modelOrAlias")
+            moa_dict = moa if isinstance(moa, dict) and moa else None
+            raw_moa_val = str(moa_dict.get("model") or moa_dict.get("alias") or "").strip() if moa_dict else ""
+            model_id = str(cfg.get("modelId") or "").strip() or raw_moa_val
+            if not model_id or model_id in seen_ids:
+                continue
+            seen_ids.add(model_id)
+
+            label = str(cfg.get("label") or "").strip() or self.prettify_model_id(model_id)
+            tag = str(cfg.get("tagTitle") or "").strip()
+            quota_info = cfg.get("quotaInfo") if isinstance(cfg.get("quotaInfo"), dict) else {}
+            rem_raw = quota_info.get("remainingFraction")
+            rem_frac: float | None = None
+            if isinstance(rem_raw, (int, float)):
+                rem_frac = float(rem_raw)
+            reset_time = str(quota_info.get("resetTime") or "").strip()
+
+            is_default = bool(default_moa_key and raw_moa_val == default_moa_key)
+            if is_default and not default_model_id:
+                default_model_id = model_id
+
+            if moa_dict:
+                id_to_alias[model_id.lower()] = moa_dict
+                id_to_alias[label.lower()] = moa_dict
+                if raw_moa_val:
+                    id_to_alias[raw_moa_val.lower()] = moa_dict
+
+            models.append(
+                ModelOption(
+                    id=model_id,
+                    label=label,
+                    group=self.infer_model_group(model_id, label),
+                    tag=tag,
+                    remaining_fraction=rem_frac,
+                    reset_time=reset_time,
+                    is_default=is_default,
+                )
+            )
+
+        if not models:
+            return self._model_catalog_cache
+
+        if not default_model_id:
+            default_model_id = models[0].id
+            models[0].is_default = True
+
+        catalog = ModelsResponse(
+            models=models,
+            default_model=default_model_id,
+            supports_mid_session_switch=True,
+        )
+        self._model_catalog_cache = catalog
+        self._model_id_to_alias = id_to_alias
+        self._last_models_sync = now
+        return catalog
+
+    async def _resolve_model_or_alias(self, model: str | None) -> dict[str, Any] | None:
+        raw = (model or "").strip()
+        if not raw:
+            return None
+        mapped = _MODEL_ALIAS_MAP.get(raw.lower(), raw)
+        key = mapped.lower()
+
+        cached = self._model_id_to_alias.get(key) or self._model_id_to_alias.get(raw.lower())
+        if cached:
+            return cached
+
+        should_refresh = not self._model_id_to_alias or (time.time() - self._last_models_sync) > 10.0
+        if should_refresh:
+            await self._sync_model_catalog(force=True)
+            cached = self._model_id_to_alias.get(key) or self._model_id_to_alias.get(raw.lower())
+            if cached:
+                return cached
+
+        if raw.startswith("MODEL_"):
+            return {"model": raw}
+        return None
+
+    async def fetch_models(self) -> ModelsResponse:
+        catalog = await self._sync_model_catalog()
+        if catalog and catalog.models:
+            return catalog
+        return await super().fetch_models()
+
     async def send_message(
         self,
         session_id: str,
@@ -182,17 +300,36 @@ class WindowsEngineProvider(BaseEngineProvider):
         workspace_path: str | None = None,
     ) -> ActionAckResponse:
         sid = self.validate_session_id(session_id)
+        base_payload: dict[str, Any] = {
+            "cascadeId": sid,
+            "messageText": content,
+            "items": [{"text": content}],
+        }
+        requested_model = await self._resolve_model_or_alias(model) if (model and model.strip()) else None
+        payload = dict(base_payload)
+        if requested_model:
+            payload["cascadeConfig"] = {
+                "plannerConfig": {
+                    "requestedModel": requested_model,
+                }
+            }
         try:
-            await self._rpc_post(
-                "SendUserCascadeMessage",
-                {
-                    "cascadeId": sid,
-                    "messageText": content,
-                    "items": [{"text": content}],
-                },
-                timeout=5.0,
-            )
-            return ActionAckResponse(ok=True, session_id=sid, message="Sent via Connect-RPC")
+            await self._rpc_post("SendUserCascadeMessage", payload, timeout=5.0)
+            msg = f"Sent via Connect-RPC (model={model.strip()})" if requested_model and model else "Sent via Connect-RPC"
+            return ActionAckResponse(ok=True, session_id=sid, message=msg)
+        except httpx.HTTPStatusError as exc:
+            if requested_model and 400 <= exc.response.status_code < 500:
+                logger.warning(
+                    "SendUserCascadeMessage rejected cascadeConfig (%s), retrying without model override",
+                    exc,
+                )
+                try:
+                    await self._rpc_post("SendUserCascadeMessage", base_payload, timeout=5.0)
+                    return ActionAckResponse(ok=True, session_id=sid, message="Sent via Connect-RPC")
+                except Exception as retry_exc:
+                    logger.warning("SendUserCascadeMessage retry failed (%s), falling back to agentapi", retry_exc)
+            else:
+                logger.warning("SendUserCascadeMessage failed (%s), falling back to agentapi", exc)
         except Exception as exc:
             logger.warning("SendUserCascadeMessage failed (%s), falling back to agentapi", exc)
 

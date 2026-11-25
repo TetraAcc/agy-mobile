@@ -20,6 +20,7 @@ import '../auth/auth_controller.dart';
 import '../chat/bottom_input_bar.dart';
 import '../chat/context_menu_sheet.dart';
 import '../chat/message_card.dart';
+import '../chat/model_picker_sheet.dart';
 import '../chat/offline_outbox_bar.dart';
 import '../chat/quick_commands_sheet.dart';
 import '../chat/session_queue_bar.dart';
@@ -310,12 +311,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       }
     }
 
+    final modelOptions =
+        hubState.availableModels.isNotEmpty ? hubState.availableModels : kAllOfficialModels;
+    final initialModel = modelOptions.any((m) => m.id == hubState.selectedModel)
+        ? hubState.selectedModel
+        : modelOptions.first.id;
+
     showDialog(
       context: context,
       builder: (ctx) => NewSessionDialog(
         initialMode: hubState.selectedMode,
-        initialModel: hubState.selectedModel,
-        models: kAllOfficialModels,
+        initialModel: initialModel,
+        models: modelOptions,
         availableProjects: projectMap,
         initialProjectName: initialProjectName,
         onStart: (prompt, mode, model, wsPath, rootId) async {
@@ -331,6 +338,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           }
         },
       ),
+    );
+  }
+
+  void _showModelPicker(HubState hubState, HubController hubNotifier, bool isDark) {
+    final models = hubState.availableModels.isNotEmpty ? hubState.availableModels : kAllOfficialModels;
+    unawaited(hubNotifier.fetchModels());
+    ModelPickerSheet.show(
+      context,
+      isDark: isDark,
+      models: models,
+      activeModel: hubState.activeSessionModel,
+      pendingModel: hubState.pendingSwitchModel,
+      onSelectModel: (selectedId) {
+        hubNotifier.setSessionPendingModel(selectedId);
+        if (selectedId == null ||
+            selectedId.trim().isEmpty ||
+            selectedId == hubState.activeSessionModel) {
+          _showSnack('已恢复沿用当前会话模型');
+        } else {
+          final label = formatModelDisplayName(selectedId, models);
+          _showSnack('下一条消息将切换为 $label');
+        }
+      },
     );
   }
 
@@ -1390,6 +1420,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                       onSubmitQuickReply: _submitAskQuestionReply,
                                       turnChanges: msgTurnChanges,
                                       turnDuration: turnDurationsByMsgIdx[msgIdx],
+                                      modelLabel: msg.model.isNotEmpty
+                                          ? formatModelDisplayName(msg.model, hubState.availableModels)
+                                          : '',
+                                      onSwitchModel: hubState.canWrite
+                                          ? () => _showModelPicker(hubState, hubNotifier, isDark)
+                                          : null,
                                       onOpenTurnReview: msgTurnChanges == null
                                           ? null
                                           : () => _openChangeReview(
@@ -1576,6 +1612,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             onSendMessage: _handleSendMessage,
             onStopTask: _handleStopTask,
             onInsertRichContent: _onPickedLocalFile,
+            activeModelLabel: hubState.effectiveSessionModel.isNotEmpty
+                ? formatModelDisplayName(
+                    hubState.effectiveSessionModel,
+                    hubState.availableModels,
+                  )
+                : '',
+            isModelSwitchPending: hubState.hasPendingModelSwitch,
+            onPickModel: (hubState.activeSessionId.isNotEmpty && hubState.canWrite)
+                ? () => _showModelPicker(hubState, hubNotifier, isDark)
+                : null,
           ),
               ],
             ),

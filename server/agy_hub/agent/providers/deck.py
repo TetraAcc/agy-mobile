@@ -9,6 +9,7 @@ import re
 import shutil
 import signal
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agy_hub.agent.config import AgentConfig
@@ -20,6 +21,7 @@ from agy_hub.common.schemas import (
     QuotaBucket,
     QuotaGroup,
     QuotaResponse,
+    TranscriptStep,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,7 @@ class DeckEngineProvider(BaseEngineProvider):
         self._agy_bin = Path(os.path.expanduser(config.agy_bin or default_bin))
         self._running_procs: dict[str, asyncio.subprocess.Process] = {}
         self._anonymous_procs: set[asyncio.subprocess.Process] = set()
+        self._recent_cli_errors: dict[str, tuple[str, str]] = {}
         self._cached_quota: QuotaResponse | None = None
         self._last_quota_sync: float = 0.0
         super().__init__(config, registry)
@@ -72,11 +75,60 @@ class DeckEngineProvider(BaseEngineProvider):
 
     async def _reap_managed_process(self, key: str | None, proc: asyncio.subprocess.Process) -> None:
         try:
-            await proc.wait()
+            stdout_b, stderr_b = await proc.communicate()
+            stopped_codes = {0, None}
+            if hasattr(signal, "SIGTERM"):
+                stopped_codes.add(-int(signal.SIGTERM))
+            if hasattr(signal, "SIGKILL"):
+                stopped_codes.add(-int(signal.SIGKILL))
+            if proc.returncode not in stopped_codes:
+                raw_err = (stderr_b or b"").decode("utf-8", errors="replace").strip() or (
+                    stdout_b or b""
+                ).decode("utf-8", errors="replace").strip()
+                summary = raw_err[-600:].strip() if raw_err else f"agy CLI exited with code {proc.returncode}"
+                logger.warning("Deck CLI exited abnormally (session=%s rc=%s): %s", key, proc.returncode, summary)
+                if key and summary:
+                    if key in self._recent_cli_errors:
+                        self._recent_cli_errors.pop(key, None)
+                    elif len(self._recent_cli_errors) >= 32:
+                        oldest_key = next(iter(self._recent_cli_errors))
+                        self._recent_cli_errors.pop(oldest_key, None)
+                    iso_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    self._recent_cli_errors[key] = (iso_ts, summary)
+        except Exception as exc:
+            logger.debug("Error reaping Deck CLI process (session=%s): %s", key, exc)
         finally:
             if key and self._running_procs.get(key) is proc:
                 self._running_procs.pop(key, None)
             self._anonymous_procs.discard(proc)
+
+    def get_synthetic_error_steps(
+        self,
+        session_id: str,
+        *,
+        max_existing_step: int = -1,
+        existing_error_steps: set[int] | None = None,
+    ) -> list[TranscriptStep]:
+        sid = self.validate_session_id(session_id)
+        entry = self._recent_cli_errors.get(sid)
+        if not entry:
+            return []
+        iso_ts, summary = entry
+        next_idx = max(0, max_existing_step) + 1
+        while existing_error_steps and next_idx in existing_error_steps:
+            next_idx += 1
+        return [
+            TranscriptStep(
+                step_index=next_idx,
+                source="SYSTEM",
+                msg_type="ERROR_MESSAGE",
+                status="ERROR",
+                content=f"Deck CLI 执行失败:\n{summary}",
+                thinking="",
+                tool_calls=[],
+                timestamp=iso_ts,
+            )
+        ]
 
     async def send_message(
         self,
@@ -86,6 +138,7 @@ class DeckEngineProvider(BaseEngineProvider):
         workspace_path: str | None = None,
     ) -> ActionAckResponse:
         sid = self.validate_session_id(session_id)
+        self._recent_cli_errors.pop(sid, None)
         if not self._agy_bin.exists():
             return ActionAckResponse(ok=False, session_id=sid, message=f"agy CLI not found: {self._agy_bin}")
 
@@ -100,8 +153,8 @@ class DeckEngineProvider(BaseEngineProvider):
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(target_cwd) if target_cwd.exists() else None,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
             self._running_procs[sid] = proc
@@ -131,8 +184,8 @@ class DeckEngineProvider(BaseEngineProvider):
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(target_cwd) if target_cwd.exists() else None,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
             self._anonymous_procs.add(proc)

@@ -20,6 +20,8 @@ class MessageCard extends StatelessWidget {
   final Future<String?> Function(String replyText)? onSubmitQuickReply;
   final SessionTurnChange? turnChanges;
   final Duration? turnDuration;
+  final String modelLabel;
+  final VoidCallback? onSwitchModel;
   final VoidCallback? onOpenTurnReview;
   final ValueChanged<SessionFileChange>? onOpenTurnFile;
 
@@ -37,6 +39,8 @@ class MessageCard extends StatelessWidget {
     this.onSubmitQuickReply,
     this.turnChanges,
     this.turnDuration,
+    this.modelLabel = '',
+    this.onSwitchModel,
     this.onOpenTurnReview,
     this.onOpenTurnFile,
   });
@@ -99,6 +103,11 @@ class MessageCard extends StatelessWidget {
       );
     }
 
+    final isErrorMessage = msg.msgType == 'ERROR_MESSAGE' || msg.status.toUpperCase() == 'ERROR';
+    if (isErrorMessage && msg.content.trim().isNotEmpty) {
+      return _buildErrorCard(context);
+    }
+
     final askQuestions = _askQuestions;
     final hasTurnChanges = turnChanges != null && turnChanges!.totalFiles > 0 && turnChanges!.files.isNotEmpty;
     if (msg.content.trim().isEmpty &&
@@ -153,26 +162,47 @@ class MessageCard extends StatelessWidget {
               builder: (context) {
                 final durationLabel =
                     turnDuration != null ? formatTaskDuration(turnDuration!) : '';
+                final cleanModel = modelLabel.trim();
                 final mutedColor = isDark ? Colors.white38 : Colors.black45;
+                final hasLeftMeta = durationLabel.isNotEmpty || cleanModel.isNotEmpty;
                 return Padding(
                   padding: const EdgeInsets.only(top: 6),
                   child: Row(
-                    mainAxisAlignment: durationLabel.isNotEmpty
+                    mainAxisAlignment: hasLeftMeta
                         ? MainAxisAlignment.spaceBetween
                         : MainAxisAlignment.end,
                     children: [
-                      if (durationLabel.isNotEmpty)
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.schedule_rounded, size: 11, color: mutedColor),
-                            const SizedBox(width: 3),
-                            Text(
-                              '耗时 $durationLabel',
-                              style: TextStyle(fontSize: 10.5, color: mutedColor),
-                            ),
-                          ],
+                      if (hasLeftMeta)
+                        Expanded(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (durationLabel.isNotEmpty) ...[
+                                Icon(Icons.schedule_rounded, size: 11, color: mutedColor),
+                                const SizedBox(width: 3),
+                                Text(
+                                  '耗时 $durationLabel',
+                                  style: TextStyle(fontSize: 10.5, color: mutedColor),
+                                ),
+                              ],
+                              if (durationLabel.isNotEmpty && cleanModel.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 5),
+                                  child: Text('·', style: TextStyle(fontSize: 10.5, color: mutedColor)),
+                                ),
+                              if (cleanModel.isNotEmpty)
+                                Flexible(
+                                  child: Text(
+                                    cleanModel,
+                                    style: TextStyle(fontSize: 10.5, color: mutedColor),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                            ],
+                          ),
                         ),
+                      if (hasLeftMeta) const SizedBox(width: 8),
                       _miniActionButton(
                         icon: Icons.copy_rounded,
                         label: '复制 Markdown',
@@ -433,6 +463,114 @@ class MessageCard extends StatelessWidget {
             child: chip,
           );
         }).toList(),
+      ),
+    );
+  }
+
+  (String, IconData) _resolveErrorPresentation(String text) {
+    final lower = text.toLowerCase();
+    if (lower.contains('429') ||
+        lower.contains('resource_exhausted') ||
+        lower.contains('quota') ||
+        lower.contains('额度')) {
+      return ('模型额度已用尽', Icons.hourglass_disabled_rounded);
+    }
+    if (lower.contains('503') ||
+        lower.contains('unavailable') ||
+        lower.contains('no capacity')) {
+      return ('模型服务暂不可用', Icons.cloud_off_rounded);
+    }
+    if (lower.contains('timeout') || lower.contains('deadline exceeded')) {
+      return ('请求超时', Icons.timer_off_rounded);
+    }
+    return ('执行出错', Icons.error_outline_rounded);
+  }
+
+  Widget _buildErrorCard(BuildContext context) {
+    final errorText = msg.content.trim();
+    final (title, icon) = _resolveErrorPresentation(errorText);
+    final bgColor = isDark ? const Color(0xFF2B181A) : const Color(0xFFFEF2F2);
+    final borderColor = isDark ? const Color(0xFF6E2930) : const Color(0xFFFECACA);
+    final accentColor = isDark ? const Color(0xFFFCA5A5) : const Color(0xFFB91C1C);
+    final bodyColor = isDark ? const Color(0xFFFEE2E2) : const Color(0xFF7F1D1D);
+    final mutedColor = isDark ? const Color(0xFFFCA5A5).withValues(alpha: 0.72) : const Color(0xFF991B1B);
+    final durationLabel = turnDuration != null ? formatTaskDuration(turnDuration!) : '';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 18),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 17, color: accentColor),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: accentColor,
+                  ),
+                ),
+              ),
+              if (durationLabel.isNotEmpty)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.schedule_rounded, size: 11, color: mutedColor),
+                    const SizedBox(width: 3),
+                    Text(
+                      '耗时 $durationLabel',
+                      style: TextStyle(fontSize: 10.5, color: mutedColor),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          SelectableText(
+            errorText,
+            style: TextStyle(
+              fontSize: 13,
+              height: 1.48,
+              color: bodyColor,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              if (onSwitchModel != null &&
+                  (errorText.toLowerCase().contains('429') ||
+                      errorText.toLowerCase().contains('quota') ||
+                      errorText.toLowerCase().contains('resource_exhausted') ||
+                      errorText.toLowerCase().contains('503') ||
+                      errorText.contains('额度'))) ...[
+                _miniActionButton(
+                  icon: Icons.swap_horiz_rounded,
+                  label: '切换模型',
+                  color: accentColor,
+                  onTap: onSwitchModel!,
+                ),
+                const SizedBox(width: 10),
+              ],
+              _miniActionButton(
+                icon: Icons.copy_rounded,
+                label: '复制错误',
+                color: mutedColor,
+                onTap: () => _copyMessage(context, errorText),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

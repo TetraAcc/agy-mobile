@@ -32,7 +32,19 @@ class _SessionWatchState:
     byte_offset: int = 0
     last_step_index: int = -1
     last_running: bool | None = None
+    last_conv_db_mtime_ns: int = -1
+    last_conv_db_size: int = -1
+    emitted_error_steps: set[int] = field(default_factory=set)
+    emitted_error_sigs: set[str] = field(default_factory=set)
     task: asyncio.Task[None] | None = None
+
+
+def _stat_file_sig(path: Path) -> tuple[int, int]:
+    try:
+        st = path.stat()
+        return st.st_mtime_ns, st.st_size
+    except OSError:
+        return -1, -1
 
 
 def _compute_complete_tail_offset_and_step(path: Path) -> tuple[int, int]:
@@ -145,6 +157,13 @@ class SessionEventHub:
             else:
                 initial_offset, initial_step = 0, -1
                 watched_path = None
+            conv_path = self.provider.get_conversation_db_path(sid)
+            conv_mtime_ns, conv_size = await asyncio.to_thread(_stat_file_sig, conv_path)
+            init_errs = await asyncio.to_thread(self.provider.read_supplemental_error_steps_sync, sid)
+            emitted_error_steps = {s.step_index for s in init_errs}
+            emitted_error_sigs = {f"{s.timestamp}|{s.content}" for s in init_errs}
+            if emitted_error_steps:
+                initial_step = max(initial_step, max(emitted_error_steps))
             initial_running = await self.provider.is_session_running(sid)
             state = _SessionWatchState(
                 session_id=sid,
@@ -152,6 +171,10 @@ class SessionEventHub:
                 byte_offset=initial_offset,
                 last_step_index=initial_step,
                 last_running=initial_running,
+                last_conv_db_mtime_ns=conv_mtime_ns,
+                last_conv_db_size=conv_size,
+                emitted_error_steps=emitted_error_steps,
+                emitted_error_sigs=emitted_error_sigs,
             )
             self._sessions[sid] = state
             state.task = asyncio.create_task(self._watch_session(sid))
@@ -161,8 +184,25 @@ class SessionEventHub:
 
         if since_step is not None:
             replay_steps = await asyncio.to_thread(_read_steps_since, tpath, since_step)
+            replay_err_ids = {
+                s.step_index
+                for s in replay_steps
+                if s.msg_type == "ERROR_MESSAGE" or s.status.upper() == "ERROR"
+            }
+            max_replay_step = max((s.step_index for s in replay_steps), default=since_step)
+            supp_replay = await asyncio.to_thread(
+                self.provider.read_supplemental_error_steps_sync,
+                sid,
+                min_step_index=since_step,
+                existing_error_steps=replay_err_ids,
+                max_existing_step=max_replay_step,
+            )
+            for s in supp_replay:
+                state.emitted_error_steps.add(s.step_index)
+                state.emitted_error_sigs.add(f"{s.timestamp}|{s.content}")
+            combined_replay = sorted(replay_steps + supp_replay, key=lambda s: s.step_index)
             is_running_now = await self.provider.is_session_running(sid)
-            for step in replay_steps:
+            for step in combined_replay:
                 await self._send_safe(
                     ws,
                     WsEventStepUpsert(
@@ -260,7 +300,47 @@ class SessionEventHub:
                     )
                 state.byte_offset = new_offset
 
+                for s in steps:
+                    if s.msg_type == "ERROR_MESSAGE" or s.status.upper() == "ERROR":
+                        state.emitted_error_steps.add(s.step_index)
+                        state.emitted_error_sigs.add(f"{s.timestamp}|{s.content}")
+
                 is_running = await self.provider.is_session_running(session_id)
+
+                conv_path = self.provider.get_conversation_db_path(session_id)
+                conv_mtime_ns, conv_size = await asyncio.to_thread(_stat_file_sig, conv_path)
+                conv_changed = (conv_mtime_ns, conv_size) != (state.last_conv_db_mtime_ns, state.last_conv_db_size)
+                just_finished = state.last_running is True and not is_running
+                max_seen_step = max(state.last_step_index, max((s.step_index for s in steps), default=-1))
+                syn_candidates = self.provider.get_synthetic_error_steps(
+                    session_id,
+                    max_existing_step=max_seen_step,
+                    existing_error_steps=state.emitted_error_steps,
+                )
+                has_new_synthetic = any(
+                    f"{s.timestamp}|{s.content}" not in state.emitted_error_sigs for s in syn_candidates
+                )
+                if conv_changed or just_finished or has_new_synthetic:
+                    state.last_conv_db_mtime_ns = conv_mtime_ns
+                    state.last_conv_db_size = conv_size
+                    supp_steps = await asyncio.to_thread(
+                        self.provider.read_supplemental_error_steps_sync,
+                        session_id,
+                        existing_error_steps=state.emitted_error_steps,
+                        max_existing_step=max_seen_step,
+                    )
+                    added_supp = False
+                    for supp in supp_steps:
+                        sig = f"{supp.timestamp}|{supp.content}"
+                        if supp.step_index in state.emitted_error_steps or sig in state.emitted_error_sigs:
+                            continue
+                        state.emitted_error_steps.add(supp.step_index)
+                        state.emitted_error_sigs.add(sig)
+                        steps.append(supp)
+                        added_supp = True
+                    if added_supp:
+                        steps.sort(key=lambda item: item.step_index)
+
                 if steps:
                     state.last_step_index = max(state.last_step_index, steps[-1].step_index)
                     for step in steps:

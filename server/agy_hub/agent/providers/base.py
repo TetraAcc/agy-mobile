@@ -19,6 +19,8 @@ from agy_hub.common.schemas import (
     ActionAckResponse,
     CreateSessionResponse,
     DeleteSessionResponse,
+    ModelOption,
+    ModelsResponse,
     QuotaResponse,
     SessionMessagesResponse,
     SessionSummary,
@@ -30,6 +32,7 @@ from agy_hub.common.transcript import (
     parse_all_workspace_paths,
     parse_project_name_and_path,
     parse_transcript_line,
+    read_conversation_db_error_steps,
 )
 
 logger = logging.getLogger(__name__)
@@ -151,6 +154,69 @@ class BaseEngineProvider(ABC):
         if compact_path.exists():
             return compact_path
         return logs_dir / "transcript_full.jsonl"
+
+    def get_conversation_db_path(self, session_id: str) -> Path:
+        """Return Antigravity per-conversation SQLite DB path for supplemental step extraction."""
+        sid = self.validate_session_id(session_id)
+        primary = self.db_path.parent / "conversations" / f"{sid}.db"
+        if primary.exists():
+            return primary
+        if self.brain_dir.parent != self.db_path.parent:
+            alt = self.brain_dir.parent / "conversations" / f"{sid}.db"
+            if alt.exists():
+                return alt
+        return primary
+
+    def get_synthetic_error_steps(
+        self,
+        session_id: str,
+        *,
+        max_existing_step: int = -1,
+        existing_error_steps: set[int] | None = None,
+    ) -> list[TranscriptStep]:
+        """Override in subclasses that capture out-of-band CLI process errors."""
+        return []
+
+    def read_supplemental_error_steps_sync(
+        self,
+        session_id: str,
+        *,
+        min_step_index: int | None = None,
+        existing_error_steps: set[int] | None = None,
+        max_existing_step: int = -1,
+    ) -> list[TranscriptStep]:
+        """Collect error steps stored outside transcript JSONL (per-conversation DB & CLI stderr)."""
+        sid = self.validate_session_id(session_id)
+        seen = set(existing_error_steps or ())
+        collected: list[TranscriptStep] = []
+        max_step = max_existing_step
+
+        db_steps = read_conversation_db_error_steps(
+            self.get_conversation_db_path(sid),
+            min_step_index=min_step_index,
+        )
+        for step in db_steps:
+            if step.step_index not in seen:
+                seen.add(step.step_index)
+                collected.append(step)
+            if step.step_index > max_step:
+                max_step = step.step_index
+
+        if not collected:
+            syn_steps = self.get_synthetic_error_steps(
+                sid,
+                max_existing_step=max_step,
+                existing_error_steps=seen,
+            )
+            for step in syn_steps:
+                if min_step_index is not None and step.step_index <= min_step_index:
+                    continue
+                if step.step_index not in seen:
+                    seen.add(step.step_index)
+                    collected.append(step)
+
+        collected.sort(key=lambda s: s.step_index)
+        return collected
 
     def _connect_ro(self) -> sqlite3.Connection | None:
         if not self.db_path.exists():
@@ -470,26 +536,40 @@ class BaseEngineProvider(ABC):
         sid = self.validate_session_id(session_id)
         tpath = self.get_transcript_path(sid)
         is_running = self._is_session_running_sync(sid)
-        if not tpath.exists():
-            return SessionMessagesResponse(
-                session_id=sid,
-                messages=[],
-                has_more=False,
-                next_before_step=None,
-                is_running=is_running,
-            )
 
-        steps: list[TranscriptStep] = []
-        with open(tpath, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                evt = parse_transcript_line(line)
-                if evt is not None:
-                    if before_step is not None and evt.step_index >= before_step:
-                        continue
-                    steps.append(evt)
+        all_steps: list[TranscriptStep] = []
+        if tpath.exists():
+            with open(tpath, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    evt = parse_transcript_line(line)
+                    if evt is not None:
+                        all_steps.append(evt)
 
-        has_more = len(steps) > limit
-        sliced = steps[-limit:] if limit > 0 else steps
+        existing_error_steps = {
+            s.step_index
+            for s in all_steps
+            if s.msg_type == "ERROR_MESSAGE" or s.status.upper() == "ERROR"
+        }
+        max_existing_step = max((s.step_index for s in all_steps), default=-1)
+        supp_steps = self.read_supplemental_error_steps_sync(
+            sid,
+            existing_error_steps=existing_error_steps,
+            max_existing_step=max_existing_step,
+        )
+
+        merged = all_steps + supp_steps
+        merged.sort(key=lambda s: s.step_index)
+        active_model = ""
+        for step in reversed(merged):
+            if step.model:
+                active_model = step.model
+                break
+
+        if before_step is not None:
+            merged = [s for s in merged if s.step_index < before_step]
+
+        has_more = len(merged) > limit
+        sliced = merged[-limit:] if limit > 0 else merged
         next_before = sliced[0].step_index if (has_more and sliced) else None
 
         return SessionMessagesResponse(
@@ -498,6 +578,7 @@ class BaseEngineProvider(ABC):
             has_more=has_more,
             next_before_step=next_before,
             is_running=is_running,
+            active_model=active_model,
         )
 
     def _archive_session_sync(self, session_id: str, purge_disk: bool = False) -> DeleteSessionResponse:
@@ -571,3 +652,144 @@ class BaseEngineProvider(ABC):
     @abstractmethod
     async def fetch_quota(self) -> QuotaResponse:
         """Retrieve current model quota summary."""
+
+    @staticmethod
+    def infer_model_group(model_id: str, label: str = "") -> str:
+        text = f"{model_id} {label}".lower()
+        if "orchestrator" in text:
+            return "Orchestrator"
+        if "claude" in text or "sonnet" in text or "opus" in text:
+            return "Claude"
+        if "gpt" in text or "openai" in text:
+            return "GPT"
+        if "gemini" in text:
+            return "Gemini"
+        return "Other"
+
+    @staticmethod
+    def prettify_model_id(model_id: str) -> str:
+        raw = model_id.strip()
+        if not raw:
+            return ""
+        parts = raw.split("-")
+        tier_map = {
+            "xhigh": "XHigh",
+            "high": "High",
+            "medium": "Medium",
+            "low": "Low",
+            "thinking": "Thinking",
+            "tiered": "Tiered",
+        }
+        badge_parts: list[str] = []
+        name_parts: list[str] = []
+        for idx, part in enumerate(parts):
+            low = part.lower()
+            if idx == len(parts) - 1 and low in tier_map:
+                badge_parts.append(tier_map[low])
+            elif low == "gpt":
+                name_parts.append("GPT")
+            elif low == "oss":
+                name_parts.append("OSS")
+            elif low.endswith("b") and low[:-1].isdigit():
+                name_parts.append(low.upper())
+            else:
+                name_parts.append(part.capitalize())
+        # Collapse numeric minor version like Claude Sonnet 5 5 -> 5.5
+        collapsed: list[str] = []
+        i = 0
+        while i < len(name_parts):
+            if (
+                i + 1 < len(name_parts)
+                and name_parts[i].isdigit()
+                and name_parts[i + 1].isdigit()
+                and len(name_parts[i + 1]) == 1
+            ):
+                collapsed.append(f"{name_parts[i]}.{name_parts[i + 1]}")
+                i += 2
+            else:
+                collapsed.append(name_parts[i])
+                i += 1
+        title = " ".join(collapsed)
+        if badge_parts:
+            return f"{title} ({' '.join(badge_parts)})"
+        return title
+
+    def _scan_recent_transcript_models_sync(self, max_sessions: int = 20) -> list[str]:
+        if not self.brain_dir.exists():
+            return []
+        candidates: list[tuple[float, Path]] = []
+        try:
+            for child in self.brain_dir.iterdir():
+                if not child.is_dir():
+                    continue
+                tpath = child / ".system_generated" / "logs" / "transcript.jsonl"
+                if not tpath.exists():
+                    tpath = child / ".system_generated" / "logs" / "transcript_full.jsonl"
+                if tpath.exists():
+                    try:
+                        candidates.append((tpath.stat().st_mtime, tpath))
+                    except OSError:
+                        continue
+        except OSError:
+            return []
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        seen: list[str] = []
+        seen_set: set[str] = set()
+        for _, tpath in candidates[:max_sessions]:
+            try:
+                size = tpath.stat().st_size
+                read_from = max(0, size - 32768)
+                with open(tpath, "rb") as f:
+                    f.seek(read_from)
+                    raw = f.read()
+                lines = raw.decode("utf-8", errors="replace").splitlines()
+                if read_from > 0 and lines:
+                    lines = lines[1:]
+                for line in reversed(lines):
+                    if '"model"' not in line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    m = str(obj.get("model", "") or "").strip()
+                    if m and m not in seen_set:
+                        seen_set.add(m)
+                        seen.append(m)
+            except OSError:
+                continue
+        return seen
+
+    async def fetch_models(self) -> ModelsResponse:
+        """Fallback dynamic model catalog built from recent transcripts and default presets."""
+        recent_ids = await asyncio.to_thread(self._scan_recent_transcript_models_sync)
+        fallback_defaults = [
+            ("gemini-4-neon-high", "Gemini 4 Neon (High)"),
+            ("gemini-4-hydrogen-medium", "Gemini 4 Hydrogen (Medium)"),
+            ("gemini-4-hydrogen-low", "Gemini 4 Hydrogen (Low)"),
+            ("claude-sonnet-5-5-medium", "Claude Sonnet 5.5 (Medium)"),
+            ("claude-opus-5-5-medium", "Claude Opus 5.5 (Medium)"),
+            ("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
+            ("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"),
+        ]
+        fallback_labels = dict(fallback_defaults)
+        ordered_ids: list[str] = []
+        for mid in recent_ids + [x[0] for x in fallback_defaults]:
+            if mid and mid not in ordered_ids:
+                ordered_ids.append(mid)
+
+        options = [
+            ModelOption(
+                id=mid,
+                label=fallback_labels.get(mid) or self.prettify_model_id(mid),
+                group=self.infer_model_group(mid, fallback_labels.get(mid, "")),
+                is_default=(idx == 0),
+            )
+            for idx, mid in enumerate(ordered_ids)
+        ]
+        return ModelsResponse(
+            models=options,
+            default_model=options[0].id if options else "",
+            supports_mid_session_switch=True,
+        )
