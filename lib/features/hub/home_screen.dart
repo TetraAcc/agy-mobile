@@ -13,12 +13,15 @@ import '../../core/platform/platform_bridge.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_fonts.dart';
 import '../../core/theme/theme_provider.dart';
+import '../../core/utils/duration_utils.dart';
 import '../../core/utils/file_utils.dart';
 import '../../models/models.dart';
 import '../auth/auth_controller.dart';
 import '../chat/bottom_input_bar.dart';
 import '../chat/context_menu_sheet.dart';
 import '../chat/message_card.dart';
+import '../chat/offline_outbox_bar.dart';
+import '../chat/quick_commands_sheet.dart';
 import '../chat/session_queue_bar.dart';
 import '../chat/session_steps_bar.dart';
 import '../sessions/new_session_dialog.dart';
@@ -423,6 +426,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       _scrollToBottom();
     }
     return err;
+  }
+
+  Future<String?> _submitAskQuestionReply(String prompt) async {
+    final err = await ref.read(hubControllerProvider.notifier).sendMessage(
+          prompt,
+          deliveryMode: 'immediate',
+          interrupt: true,
+        );
+    if (err == null && mounted) {
+      _scrollToBottom();
+    }
+    return err;
+  }
+
+  void _openQuickCommandsSheet() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    QuickCommandsSheet.show(
+      context,
+      isDark: isDark,
+      onFillPrompt: (prompt) {
+        final cur = _inputController.text.trim();
+        _inputController.text = cur.isEmpty ? prompt : '$cur\n$prompt';
+        _inputController.selection = TextSelection.collapsed(
+          offset: _inputController.text.length,
+        );
+      },
+      onSendPrompt: _sendPromptDirect,
+    );
   }
 
   void _openSessionArtifacts() {
@@ -972,39 +1003,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     );
   }
 
-  Widget _buildThinkingIndicator(BuildContext context, bool isDark, String focusText) {
-    final label = focusText.trim().isNotEmpty ? focusText.trim() : '正在思考并执行...';
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16, top: 2),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(
-            width: 13,
-            height: 13,
-            child: CircularProgressIndicator(
-              strokeWidth: 1.8,
-              valueColor: AlwaysStoppedAnimation<Color>(Theme.of(context).colorScheme.primary),
-            ),
-          ),
-          const SizedBox(width: 9),
-          Flexible(
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 12.5,
-                fontWeight: FontWeight.w500,
-                color: isDark ? const Color(0xFFA1A1AA) : const Color(0xFF71717A),
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildSidebar(
     HubState hubState,
     HubController hubNotifier,
@@ -1086,6 +1084,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             messages,
             hubState.sessionChanges.turns,
           );
+    final turnDurationsByMsgIdx = isFilteringMessages
+        ? const <int, Duration>{}
+        : computeTurnDurationsByMsgIdx(messages);
+    final activeTurnStartedAt = findActiveTurnStartTime(allMessages);
     final hasThinking = hubState.isActiveSessionRunning && !isFilteringMessages;
     final hasLoadMore = hubState.hasMoreMessages && !isFilteringMessages;
     final totalItems = messages.length + (hasThinking ? 1 : 0) + (hasLoadMore ? 1 : 0);
@@ -1358,7 +1360,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                 if (hasThinking && idx == 0) {
                                   rowChild = Align(
                                     alignment: Alignment.centerLeft,
-                                    child: _buildThinkingIndicator(context, isDark, activeFocus),
+                                    child: _LiveThinkingIndicator(
+                                      isDark: isDark,
+                                      focusText: activeFocus,
+                                      startedAt: activeTurnStartedAt,
+                                    ),
                                   );
                                 } else {
                                   final shiftedIdx = hasThinking ? idx - 1 : idx;
@@ -1381,8 +1387,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                         initialScope: 'step',
                                       ),
                                       onOpenToolDetail: _openToolDetail,
-                                      onSubmitQuickReply: _sendPromptDirect,
+                                      onSubmitQuickReply: _submitAskQuestionReply,
                                       turnChanges: msgTurnChanges,
+                                      turnDuration: turnDurationsByMsgIdx[msgIdx],
                                       onOpenTurnReview: msgTurnChanges == null
                                           ? null
                                           : () => _openChangeReview(
@@ -1526,6 +1533,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                     },
                   )
                 : null,
+            outboxBar: hubState.activeSessionOutbox.isNotEmpty
+                ? OfflineOutboxBar(
+                    items: hubState.activeSessionOutbox,
+                    isDark: isDark,
+                    isFlushing: hubState.isFlushingOutbox,
+                    onRetryAll: () async {
+                      final err = await hubNotifier.flushOfflineOutbox(manual: true);
+                      if (err != null) _showSnack(err, isError: true);
+                    },
+                    onRetryItem: (itemId) async {
+                      final err = await hubNotifier.flushOfflineOutbox(
+                        manual: true,
+                        onlyItemId: itemId,
+                      );
+                      if (err != null) _showSnack(err, isError: true);
+                    },
+                    onEditItem: (itemId, newContent) =>
+                        hubNotifier.editOfflineOutboxItem(itemId, newContent),
+                    onDeleteItem: (itemId) => hubNotifier.removeOfflineOutboxItem(itemId),
+                    onClearAll: () => hubNotifier.clearActiveOfflineOutbox(),
+                  )
+                : null,
             pendingAttachments: hubState.pendingAttachments,
             onRemoveAttachment: (idx) => hubNotifier.removePendingAttachment(idx),
             onShowAddContext: () {
@@ -1541,6 +1570,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 onRequestGitDiff: () => _openChangeReview(),
                 onOpenWorkspaceFiles: _openWorkspaceFilePicker,
                 onOpenSessionArtifacts: hubState.activeSessionId.isEmpty ? null : _openSessionArtifacts,
+                onOpenQuickCommands: _openQuickCommandsSheet,
               );
             },
             onSendMessage: _handleSendMessage,
@@ -1867,11 +1897,60 @@ class _GeneralSettingsDialog extends ConsumerStatefulWidget {
 
 class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> {
   late final TextEditingController _urlController;
+  bool _loadingNotifyStatus = true;
+  bool _discordConfigured = false;
+  double _notifyMinRunSeconds = 15;
+  double _notifyAskDelaySeconds = 10;
+  bool _sendingTestNotify = false;
 
   @override
   void initState() {
     super.initState();
     _urlController = TextEditingController(text: widget.currentUrl);
+    _loadNotifyStatus();
+  }
+
+  Future<void> _loadNotifyStatus() async {
+    try {
+      final st = await ref.read(apiClientProvider).getNotificationStatus();
+      if (!mounted) return;
+      setState(() {
+        _discordConfigured = st.discordConfigured;
+        _notifyMinRunSeconds = st.minRunSeconds;
+        _notifyAskDelaySeconds = st.askQuestionDelaySeconds;
+        _loadingNotifyStatus = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingNotifyStatus = false);
+    }
+  }
+
+  Future<void> _sendTestNotification() async {
+    if (_sendingTestNotify) return;
+    setState(() => _sendingTestNotify = true);
+    try {
+      final (ok, msg) = await ref.read(apiClientProvider).sendTestNotification();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(msg.isNotEmpty ? msg : (ok ? '测试通知已发送' : '测试通知发送失败')),
+          backgroundColor: ok ? null : Colors.redAccent.shade700,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('测试通知失败: $e'),
+          backgroundColor: Colors.redAccent.shade700,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _sendingTestNotify = false);
+      }
+    }
   }
 
   @override
@@ -2110,6 +2189,73 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
               const SizedBox(height: 16),
               Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
               const SizedBox(height: 12),
+              Row(
+                children: [
+                  Text(
+                    'Discord 离线通知',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
+                  ),
+                  const Spacer(),
+                  if (_loadingNotifyStatus)
+                    const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(strokeWidth: 1.6),
+                    )
+                  else
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: (_discordConfigured
+                                ? AppColors.statusGreen(isDark)
+                                : (isDark ? Colors.white30 : Colors.black26))
+                            .withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        _discordConfigured ? '已在网关启用' : '未配置 Webhook',
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                          color: _discordConfigured
+                              ? AppColors.statusGreen(isDark)
+                              : (isDark ? Colors.white54 : Colors.black45),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                _discordConfigured
+                    ? '离线或无活跃连接时，运行 >= ${_notifyMinRunSeconds.toInt()}s 完成、报错或 ask_question 超过 ${_notifyAskDelaySeconds.toInt()}s 未确认会自动推送至 Discord。'
+                    : '在网关 gateway_config.json 中填写 discord_webhook_url 后重启网关即可启用。',
+                style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black54),
+              ),
+              if (_discordConfigured && ref.watch(authControllerProvider).user?.role == 'admin') ...[
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: OutlinedButton.icon(
+                    onPressed: _sendingTestNotify ? null : _sendTestNotification,
+                    icon: _sendingTestNotify
+                        ? const SizedBox(
+                            width: 13,
+                            height: 13,
+                            child: CircularProgressIndicator(strokeWidth: 1.8),
+                          )
+                        : const Icon(Icons.notifications_active_outlined, size: 15),
+                    label: Text(
+                      _sendingTestNotify ? '发送中...' : '发送测试通知',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 16),
+              Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
+              const SizedBox(height: 12),
               Text(
                 '网关连接',
                 style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
@@ -2174,6 +2320,97 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
           ),
         ],
       ],
+    );
+  }
+}
+
+class _LiveThinkingIndicator extends StatefulWidget {
+  final bool isDark;
+  final String focusText;
+  final DateTime? startedAt;
+
+  const _LiveThinkingIndicator({
+    required this.isDark,
+    required this.focusText,
+    required this.startedAt,
+  });
+
+  @override
+  State<_LiveThinkingIndicator> createState() => _LiveThinkingIndicatorState();
+}
+
+class _LiveThinkingIndicatorState extends State<_LiveThinkingIndicator> {
+  Timer? _ticker;
+  late DateTime _anchorTime;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncAnchor();
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _LiveThinkingIndicator oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.startedAt != widget.startedAt) {
+      _syncAnchor();
+    }
+  }
+
+  void _syncAnchor() {
+    final s = widget.startedAt;
+    if (s != null && !DateTime.now().difference(s).isNegative) {
+      _anchorTime = s;
+    } else {
+      _anchorTime = DateTime.now();
+    }
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final baseLabel =
+        widget.focusText.trim().isNotEmpty ? widget.focusText.trim() : '正在思考并执行...';
+    final elapsed = DateTime.now().difference(_anchorTime);
+    final elapsedText = formatLiveElapsed(elapsed);
+    final mutedColor = widget.isDark ? const Color(0xFFA1A1AA) : const Color(0xFF71717A);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16, top: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 13,
+            height: 13,
+            child: CircularProgressIndicator(
+              strokeWidth: 1.8,
+              valueColor: AlwaysStoppedAnimation<Color>(Theme.of(context).colorScheme.primary),
+            ),
+          ),
+          const SizedBox(width: 9),
+          Flexible(
+            child: Text(
+              '$baseLabel · $elapsedText',
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w500,
+                color: mutedColor,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

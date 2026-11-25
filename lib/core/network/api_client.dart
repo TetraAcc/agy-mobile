@@ -226,6 +226,32 @@ class ApiClient {
     );
   }
 
+  Future<({bool discordConfigured, double minRunSeconds, double askQuestionDelaySeconds})>
+      getNotificationStatus() async {
+    return _exec(
+      () => _dio.get<dynamic>('/api/v2/notifications/status'),
+      (data) {
+        final map = Map<String, dynamic>.from(data as Map);
+        return (
+          discordConfigured: map['discord_configured'] == true,
+          minRunSeconds: (map['min_run_seconds'] as num?)?.toDouble() ?? 15.0,
+          askQuestionDelaySeconds:
+              (map['ask_question_delay_seconds'] as num?)?.toDouble() ?? 10.0,
+        );
+      },
+    );
+  }
+
+  Future<(bool ok, String message)> sendTestNotification() async {
+    return _exec(
+      () => _dio.post<dynamic>('/api/v2/notifications/test'),
+      (data) {
+        final map = Map<String, dynamic>.from(data as Map);
+        return (map['ok'] == true, map['message']?.toString() ?? '');
+      },
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Nodes
   // ---------------------------------------------------------------------------
@@ -329,6 +355,7 @@ class ApiClient {
     required String content,
     String? model,
     String deliveryMode = 'queue',
+    bool interrupt = false,
   }) async {
     return _exec(
       () => _dio.post<dynamic>(
@@ -337,6 +364,7 @@ class ApiClient {
           'content': content,
           if (model != null && model.isNotEmpty) 'model': model,
           'delivery_mode': deliveryMode,
+          if (interrupt) 'interrupt': true,
         },
       ),
       (data) {

@@ -30,6 +30,7 @@ from agy_hub.common.security import issue_file_ticket, verify_file_ticket
 from agy_hub.gateway.auth import REFRESH_COOKIE_NAME, AuthService
 from agy_hub.gateway.config import GatewayConfig, resolve_web_dir
 from agy_hub.gateway.db import HubDatabase
+from agy_hub.gateway.notifier import DiscordNotificationMonitor
 from agy_hub.gateway.proxy import proxy_http_to_node, proxy_ws_to_node
 from agy_hub.gateway.registry import NodeRegistryManager
 
@@ -119,6 +120,11 @@ def create_gateway_app(
         http_client=client,
         probe_interval_seconds=config.probe_interval_seconds,
     )
+    notifier = DiscordNotificationMonitor(
+        config=config,
+        registry=registry,
+        http_client=client,
+    )
 
     server_dir = Path(__file__).resolve().parents[2]
     web_dir = resolve_web_dir(config.web_dir, server_dir)
@@ -128,9 +134,12 @@ def create_gateway_app(
         if enable_monitor:
             await registry.probe_all()
             registry.start()
+            if notifier.is_enabled:
+                notifier.start()
         try:
             yield
         finally:
+            await notifier.stop()
             await registry.stop()
             if owned_client:
                 await client.aclose()
@@ -199,6 +208,19 @@ def create_gateway_app(
             await registry.probe_all()
         visible = registry.get_visible_nodes(user)
         return NodesResponse(nodes=visible, default_node=user.default_node)
+
+    @app.get("/api/v2/notifications/status")
+    async def notification_status(_user: UserProfile = Depends(get_current_user)) -> dict[str, Any]:
+        return {
+            "discord_configured": notifier.is_enabled,
+            "min_run_seconds": config.notify_min_run_seconds,
+            "ask_question_delay_seconds": config.notify_ask_question_delay_seconds,
+        }
+
+    @app.post("/api/v2/notifications/test")
+    async def send_test_notification(_admin: UserProfile = Depends(require_admin)) -> dict[str, Any]:
+        ok, message = await notifier.send_test_notification()
+        return {"ok": ok, "message": message}
 
     # Admin user governance endpoints
     @app.get("/api/v2/admin/users")
@@ -329,6 +351,8 @@ def create_gateway_app(
             perms=perms,
             internal_secret=config.internal_secret,
             ws_connector=ws_connector,
+            node_id=node_id,
+            on_session_subscription_change=notifier.on_ws_subscription_change,
         )
 
     # Self-hosted optional UI fonts (persisted outside build/web so web deploys keep them)

@@ -7,6 +7,7 @@ import glob
 import json
 import logging
 import os
+import socket
 import time
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,14 @@ class WindowsEngineProvider(BaseEngineProvider):
         if self._owned_client:
             await self._http_client.aclose()
 
+    @staticmethod
+    def _is_port_reachable(port: int, timeout: float = 0.08) -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
     def _discover_hub_sync(self) -> dict[str, Any] | None:
         now = time.time()
         if self._hub_cache and (now - self._hub_cache_ts) < 3.0:
@@ -91,19 +100,36 @@ class WindowsEngineProvider(BaseEngineProvider):
             self._hub_cache = None
             return None
         files.sort(key=os.path.getmtime, reverse=True)
+        first_valid: dict[str, Any] | None = None
         for fpath in files:
             try:
                 data = json.loads(Path(fpath).read_text(encoding="utf-8"))
                 port = data.get("httpPort") or data.get("port")
                 csrf = data.get("csrfToken") or data.get("csrf_token")
                 if port and csrf:
-                    self._hub_cache = {"port": int(port), "csrf_token": str(csrf), "pid": data.get("pid")}
-                    self._hub_cache_ts = now
-                    return self._hub_cache
+                    candidate = {"port": int(port), "csrf_token": str(csrf), "pid": data.get("pid")}
+                    if first_valid is None:
+                        first_valid = candidate
+                    if self._is_port_reachable(candidate["port"]):
+                        self._hub_cache = candidate
+                        self._hub_cache_ts = now
+                        return candidate
             except Exception:
                 continue
+        if first_valid is not None:
+            self._hub_cache = first_valid
+            self._hub_cache_ts = now
+            return first_valid
         self._hub_cache = None
         return None
+
+    def _build_agentapi_env(self, hub: dict[str, Any] | None) -> dict[str, str]:
+        env = os.environ.copy()
+        if hub and hub.get("port"):
+            env["ANTIGRAVITY_LS_ADDRESS"] = f"localhost:{hub['port']}"
+        if hub and hub.get("csrf_token"):
+            env["ANTIGRAVITY_CSRF_TOKEN"] = str(hub["csrf_token"])
+        return env
 
     async def _rpc_post(self, method_name: str, payload: dict[str, Any], timeout: float = 5.0) -> dict[str, Any] | None:
         hub = await asyncio.to_thread(self._discover_hub_sync)
@@ -171,6 +197,8 @@ class WindowsEngineProvider(BaseEngineProvider):
             logger.warning("SendUserCascadeMessage failed (%s), falling back to agentapi", exc)
 
         if self._ls_exe.exists():
+            hub = await asyncio.to_thread(self._discover_hub_sync)
+            sub_env = self._build_agentapi_env(hub)
             proc = await asyncio.create_subprocess_exec(
                 str(self._ls_exe),
                 "agentapi",
@@ -178,6 +206,7 @@ class WindowsEngineProvider(BaseEngineProvider):
                 "--title=AGY Web",
                 sid,
                 content,
+                env=sub_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -203,6 +232,15 @@ class WindowsEngineProvider(BaseEngineProvider):
         if not self._ls_exe.exists():
             return CreateSessionResponse(ok=False, session_id="", message="language_server.exe not found")
 
+        hub = await asyncio.to_thread(self._discover_hub_sync)
+        sub_env = self._build_agentapi_env(hub)
+        if not sub_env.get("ANTIGRAVITY_LS_ADDRESS"):
+            return CreateSessionResponse(
+                ok=False,
+                session_id="",
+                message="未检测到运行中的 Antigravity 主进程，请先在电脑上打开 Antigravity",
+            )
+
         raw_model = (model or "gemini-3.8-flash-high").strip().lower()
         model_flag = _MODEL_ALIAS_MAP.get(raw_model, raw_model)
 
@@ -216,6 +254,7 @@ class WindowsEngineProvider(BaseEngineProvider):
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(target_cwd) if target_cwd.exists() else None,
+            env=sub_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

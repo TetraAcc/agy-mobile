@@ -89,6 +89,10 @@ class FakeApiClient extends ApiClient {
   SessionTreeData? customWinTree;
   List<HostNode>? customNodes;
   int getNodesCalls = 0;
+  final List<({String nodeId, String sessionId, String content, String deliveryMode, bool interrupt})>
+      modeMessages = [];
+  bool throwNetworkErrorOnSend = false;
+  bool messagesIsRunning = false;
 
   FakeApiClient()
       : super(
@@ -186,14 +190,39 @@ class FakeApiClient extends ApiClient {
       ],
       hasMore: sessionId == 's1',
       nextBeforeStep: sessionId == 's1' ? 10 : null,
-      isRunning: false,
+      isRunning: messagesIsRunning,
     );
   }
 
   @override
   Future<(bool, String)> sendMessage(String nodeId, String sessionId, {required String content, String? model}) async {
+    if (throwNetworkErrorOnSend) {
+      throw const ApiException(502, 'Node unavailable: connection timed out');
+    }
     sentMessages.add('$nodeId/$sessionId:$content');
     return (true, 'ok');
+  }
+
+  @override
+  Future<({bool ok, String message, bool queued, int queuePosition})> sendMessageWithMode(
+    String nodeId,
+    String sessionId, {
+    required String content,
+    String? model,
+    String deliveryMode = 'queue',
+    bool interrupt = false,
+  }) async {
+    if (throwNetworkErrorOnSend) {
+      throw const ApiException(502, 'Node unavailable: connection timed out');
+    }
+    modeMessages.add((
+      nodeId: nodeId,
+      sessionId: sessionId,
+      content: content,
+      deliveryMode: deliveryMode,
+      interrupt: interrupt,
+    ));
+    return (ok: true, message: 'ok', queued: false, queuePosition: 0);
   }
 
   @override
@@ -732,5 +761,130 @@ void main() {
       container.read(hubControllerProvider).nodes.firstWhere((n) => n.id == 'deck').isOnline,
       false,
     );
+  });
+
+  test('HubController ask_question 交互回复走 immediate+interrupt 直发，不进队列', () async {
+    final createdSockets = <String, FakeEventSocket>{};
+    final fakeApi = FakeApiClient()
+      ..messagesIsRunning = true
+      ..customWinTree = const SessionTreeData(
+        generalSessions: [
+          SessionItem(id: 's-run', title: '交互等待会话', isRunning: true),
+        ],
+        runningSessionIds: {'s-run'},
+        engineAlive: true,
+      );
+
+    final container = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(fakeApi),
+        tokenStoreProvider.overrideWithValue(MemoryTokenStore(initialAccess: 'tok')),
+        eventSocketFactoryProvider.overrideWithValue(({
+          required ServerConfig serverConfig,
+          required String nodeId,
+          required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
+        }) {
+          final sock = FakeEventSocket(nodeId);
+          createdSockets[nodeId] = sock;
+          return sock;
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const user = UserProfile(
+      id: 1,
+      username: 'tetra',
+      displayName: 'Tetra',
+      role: 'admin',
+      defaultNode: 'win',
+      allowedNodes: ['win'],
+      nodePermissions: {
+        'win': UserPermissionGrant(nodeId: 'win', canWrite: true, canDelete: true),
+      },
+    );
+
+    final hub = container.read(hubControllerProvider.notifier);
+    await hub.initializeForUser(user);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(container.read(hubControllerProvider).isActiveSessionRunning, true);
+
+    final err = await hub.sendMessage(
+      '[选择回复]\n1. 测试方案\n   选择: 方案 A',
+      deliveryMode: 'immediate',
+      interrupt: true,
+    );
+    expect(err, isNull);
+    expect(fakeApi.modeMessages.length, 1);
+    expect(fakeApi.modeMessages.first.deliveryMode, 'immediate');
+    expect(fakeApi.modeMessages.first.interrupt, true);
+    expect(fakeApi.modeMessages.first.content, contains('[选择回复]'));
+  });
+
+  test('HubController 弱网发送纯文本自动离线暂存并在 WS 重连后按序补发清空', () async {
+    final createdSockets = <String, FakeEventSocket>{};
+    final fakeApi = FakeApiClient();
+
+    final container = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(fakeApi),
+        tokenStoreProvider.overrideWithValue(MemoryTokenStore(initialAccess: 'tok')),
+        eventSocketFactoryProvider.overrideWithValue(({
+          required ServerConfig serverConfig,
+          required String nodeId,
+          required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
+        }) {
+          final sock = FakeEventSocket(nodeId);
+          createdSockets[nodeId] = sock;
+          return sock;
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const user = UserProfile(
+      id: 1,
+      username: 'tetra',
+      displayName: 'Tetra',
+      role: 'admin',
+      defaultNode: 'win',
+      allowedNodes: ['win'],
+      nodePermissions: {
+        'win': UserPermissionGrant(nodeId: 'win', canWrite: true, canDelete: true),
+      },
+    );
+
+    final hub = container.read(hubControllerProvider.notifier);
+    await hub.initializeForUser(user);
+    await Future<void>.delayed(Duration.zero);
+
+    // 1. 断网 / 502 发送纯文本消息，不丢失、不阻塞且不留下假已发用户气泡
+    fakeApi.throwNetworkErrorOnSend = true;
+    final sendErr = await hub.sendMessage('地铁里发的第一条离线指令');
+    expect(sendErr, isNull);
+
+    var curState = container.read(hubControllerProvider);
+    expect(curState.activeSessionOutbox.length, 1);
+    expect(curState.activeSessionOutbox.first.content, '地铁里发的第一条离线指令');
+    expect(curState.messages.any((m) => m.content == '地铁里发的第一条离线指令'), false);
+
+    // 2. 支持编辑离线暂存条目
+    final outboxId = curState.activeSessionOutbox.first.id;
+    await hub.editOfflineOutboxItem(outboxId, '改好的离线补发指令');
+    expect(container.read(hubControllerProvider).activeSessionOutbox.first.content, '改好的离线补发指令');
+
+    // 3. 恢复网络并触发 WS 重连，自动补发并清空待发区
+    fakeApi.throwNetworkErrorOnSend = false;
+    createdSockets['win']!.simulateDisconnect();
+    await Future<void>.delayed(Duration.zero);
+    await createdSockets['win']!.connect();
+    await Future<void>.delayed(Duration.zero);
+
+    curState = container.read(hubControllerProvider);
+    expect(curState.activeSessionOutbox, isEmpty);
+    expect(fakeApi.modeMessages.any((m) => m.content == '改好的离线补发指令'), true);
   });
 }

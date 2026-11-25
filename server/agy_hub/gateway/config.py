@@ -40,6 +40,19 @@ class GatewayConfig(BaseModel):
     max_login_failures: int = Field(default=5, ge=1, le=50)
     lockout_seconds: int = Field(default=900, ge=10, le=86400)
     probe_interval_seconds: float = Field(default=5.0, ge=1.0, le=300.0)
+    discord_webhook_url: str = ""
+    notify_min_run_seconds: float = Field(default=15.0, ge=0.0, le=3600.0)
+    notify_ask_question_delay_seconds: float = Field(default=10.0, ge=1.0, le=600.0)
+    notify_poll_interval_seconds: float = Field(default=4.0, ge=0.5, le=60.0)
+    public_base_url: str = ""
+
+    @field_validator("discord_webhook_url")
+    @classmethod
+    def _check_discord_webhook_url(cls, value: str) -> str:
+        cleaned = (value or "").strip()
+        if cleaned and not (cleaned.startswith("https://") or cleaned.startswith("http://")):
+            raise ValueError("discord_webhook_url must start with https:// or http://")
+        return cleaned
 
     @field_validator("signing_secret")
     @classmethod

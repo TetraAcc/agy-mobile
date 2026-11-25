@@ -11,6 +11,10 @@
   "access_token_ttl_seconds": 1800,
   "refresh_token_ttl_seconds": 2592000,
   "web_dir": null,
+  "discord_webhook_url": "",
+  "notify_min_run_seconds": 15.0,
+  "notify_ask_question_delay_seconds": 10.0,
+  "public_base_url": "",
   "nodes": {
     "deck": {
       "name": "Steam Deck",

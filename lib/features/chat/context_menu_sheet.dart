@@ -11,6 +11,7 @@ class ContextMenuSheet extends StatelessWidget {
   final VoidCallback onRequestGitDiff;
   final VoidCallback onOpenWorkspaceFiles;
   final VoidCallback? onOpenSessionArtifacts;
+  final VoidCallback? onOpenQuickCommands;
 
   const ContextMenuSheet({
     super.key,
@@ -22,6 +23,7 @@ class ContextMenuSheet extends StatelessWidget {
     required this.onRequestGitDiff,
     required this.onOpenWorkspaceFiles,
     this.onOpenSessionArtifacts,
+    this.onOpenQuickCommands,
   });
 
   static void show(
@@ -34,6 +36,7 @@ class ContextMenuSheet extends StatelessWidget {
     required VoidCallback onRequestGitDiff,
     required VoidCallback onOpenWorkspaceFiles,
     VoidCallback? onOpenSessionArtifacts,
+    VoidCallback? onOpenQuickCommands,
   }) {
     showModalBottomSheet(
       context: context,
@@ -52,6 +55,7 @@ class ContextMenuSheet extends StatelessWidget {
         onRequestGitDiff: onRequestGitDiff,
         onOpenWorkspaceFiles: onOpenWorkspaceFiles,
         onOpenSessionArtifacts: onOpenSessionArtifacts,
+        onOpenQuickCommands: onOpenQuickCommands,
       ),
     );
   }
@@ -79,6 +83,17 @@ class ContextMenuSheet extends StatelessWidget {
                 ),
               ),
               Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
+              if (canWrite && onOpenQuickCommands != null)
+                _buildMenuItem(
+                  context,
+                  icon: Icons.bolt_rounded,
+                  title: '快捷指令',
+                  subtitle: '选用、管理或一键发送常用 Prompt 指令',
+                  onTap: () {
+                    Navigator.pop(context);
+                    onOpenQuickCommands!();
+                  },
+                ),
               if (canWrite) ...[
                 _buildMenuItem(
                   context,

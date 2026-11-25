@@ -4,6 +4,30 @@
 
 ---
 
+## [2.2.0] - 2026-11-25
+
+### Added
+- **任务执行耗时显示与实时正计时**：
+  - 新增 `DurationUtils`（`formatTaskDuration` / `formatLiveElapsed` / `computeTurnDurationsByMsgIdx`），基于日志原生 ISO 时间戳精确计算每轮总耗时，在每轮末尾 AI 回复左下角展示 `耗时 1m 24s`；
+  - 思考/运行指示器升级为每秒刷新的 `_LiveThinkingIndicator`（`正在思考并执行... · 01:24`）。
+- **Discord Webhook 离线通知卡片**：
+  - 网关新增 `DiscordNotificationMonitor`（在 `gateway_config.json` 统一配置 `discord_webhook_url`）：当无活跃 WebSocket 客户端订阅该会话且运行满 15 秒完成或异常中断时发送红/绿 Embed 卡片；当出现 `ask_question` 交互且超过 10 秒未响应时强制发送黄色 Embed 提醒；
+  - 新增 `GET /api/v2/notifications/status` 与管理员专用 `POST /api/v2/notifications/test`，并在客户端「通用设置」弹窗内展示启用状态与「发送测试通知」入口。
+- **快捷指令抽屉（`+` 号菜单）**：
+  - 新增 `QuickCommandsController` 与 `QuickCommandsSheet`，保留输入框上方极简空间的同时在 `+` 号菜单提供「快捷指令」入口，预置常用开发协同话术并支持本机自由新增、编辑、删除与恢复默认，点按填入或右侧一键直发。
+- **弱网离线发信暂存与重连自动补发**：
+  - 新增 `OfflineOutboxStore` 与 `OfflineOutboxBar`：纯文本指令在节点离线或遭遇网络超时/502-504 异常时自动持久化进入本机待发区并在输入框上方展示琥珀色可展开提示条（支持编辑、撤回、手动重试），WebSocket 重连或前台恢复在线时按 FIFO 顺序自动补发（含附件消息保留附件不丢弃）。
+
+### Fixed & Hardened
+- **修复 Windows 独立计划任务下新建会话报 `ANTIGRAVITY_LS_ADDRESS is not set` 错误**：
+  - `WindowsEngineProvider._discover_hub_sync()` 升级为按 `mtime` 排序并优先校验本地 TCP 端口存活，避免命中历史残留的僵尸 `hub_*.json`；
+  - 调用 `language_server.exe agentapi`（新建会话与发消息回退）时自动注入 `ANTIGRAVITY_LS_ADDRESS` 与 `ANTIGRAVITY_CSRF_TOKEN` 环境变量。
+- **彻底解决 `ask_question` 移动端提交死锁问题**：
+  - 前端 `_AskQuestionCard` 提交交互选项改为专用直发链路（强制 `deliveryMode: 'immediate'` + `interrupt: true`），不再误入运行中会话的待发队列；
+  - 后端 `SendMessageRequest` 与 `POST /agent/sessions/{sid}/messages` 新增 `interrupt` 标志：当会话处于运行挂起态时，Windows/Deck 均先干净停止悬空等待中的 `ask_question` 调用，随后立即注入 `[选择回复]` 继续执行。
+
+---
+
 ## [2.1.3] - 2026-11-24
 
 ### Added

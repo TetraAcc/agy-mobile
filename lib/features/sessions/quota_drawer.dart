@@ -559,7 +559,7 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                   Row(
                     children: [
                       Text(
-                        const String.fromEnvironment('APP_VERSION', defaultValue: 'v2.1.3'),
+                        const String.fromEnvironment('APP_VERSION', defaultValue: 'v2.2.0'),
                         style: TextStyle(
                           fontSize: 10,
                           color: isDark ? Colors.white24 : Colors.black26,

@@ -274,6 +274,13 @@ async def test_windows_provider_rpc_stop_and_quota(tmp_path: Path) -> None:
         assert len(quota.groups) == 1
         assert abs(quota.groups[0].buckets[0].remaining_fraction - 0.72) < 1e-6
 
+        # Verify _build_agentapi_env injects LS_ADDRESS and CSRF_TOKEN from discovered hub
+        hub = provider._discover_hub_sync()
+        assert hub is not None
+        sub_env = provider._build_agentapi_env(hub)
+        assert sub_env["ANTIGRAVITY_LS_ADDRESS"] == "localhost:54321"
+        assert sub_env["ANTIGRAVITY_CSRF_TOKEN"] == "csrf-test"
+
 
 def test_agent_pdf_media_percent_filename_and_clean_git_diff(tmp_agent_env: dict) -> None:
     proj_dir: Path = tmp_agent_env["proj_dir"]
@@ -335,3 +342,47 @@ def test_agent_pdf_media_percent_filename_and_clean_git_diff(tmp_agent_env: dict
         )
         assert non_git_diff.status_code == 200
         assert non_git_diff.json()["diff"] == "Not a Git repository"
+
+
+def test_send_message_interrupt_stops_running_and_bypasses_queue(tmp_agent_env: dict) -> None:
+    provider = tmp_agent_env["provider"]
+    sid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"
+    provider.managed_running.add(sid)
+
+    app = create_agent_app(
+        tmp_agent_env["config"],
+        provider=provider,
+        registry=tmp_agent_env["registry"],
+    )
+    msg_path = f"/agent/sessions/{sid}/messages"
+    q_path = f"/agent/sessions/{sid}/queue"
+
+    with TestClient(app) as client:
+        # Regular queue message while running should enqueue without stopping
+        resp_q = client.post(
+            msg_path,
+            headers=_signed_headers("POST", msg_path),
+            json={"content": "排队等前面的任务", "delivery_mode": "queue"},
+        )
+        assert resp_q.status_code == 200
+        assert resp_q.json()["queued"] is True
+        assert sid not in provider.stopped_sessions
+
+        # Interrupt reply (e.g. ask_question submit) must stop hanging invocation and bypass queue
+        resp_int = client.post(
+            msg_path,
+            headers=_signed_headers("POST", msg_path),
+            json={"content": "[选择回复]\n1. 方案 A", "delivery_mode": "queue", "interrupt": True},
+        )
+        assert resp_int.status_code == 200
+        body = resp_int.json()
+        assert body["ok"] is True
+        assert body["queued"] is False
+        assert sid in provider.stopped_sessions
+        assert any("[选择回复]" in item["content"] for item in provider.sent_messages)
+
+        # Original queued message should remain queued (unpaused) rather than being paused/lost
+        q_resp = client.get(q_path, headers=_signed_headers("GET", q_path))
+        assert q_resp.status_code == 200
+        assert q_resp.json()["paused"] is False
+        assert len(q_resp.json()["items"]) == 1

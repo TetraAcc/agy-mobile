@@ -18,6 +18,7 @@ class BottomInputBar extends StatefulWidget {
   final double maxContentWidth;
   final Widget? changesBar;
   final Widget? queueBar;
+  final Widget? outboxBar;
   final String queueMode;
   final String sendKey;
   final List<UploadedAttachment> pendingAttachments;
@@ -37,6 +38,7 @@ class BottomInputBar extends StatefulWidget {
     this.maxContentWidth = 780.0,
     this.changesBar,
     this.queueBar,
+    this.outboxBar,
     this.queueMode = ComposerPrefs.queueModeQueue,
     this.sendKey = ComposerPrefs.sendKeyEnter,
     required this.pendingAttachments,
@@ -146,6 +148,7 @@ class _BottomInputBarState extends State<BottomInputBar> {
               children: [
                 if (widget.changesBar != null) widget.changesBar!,
                 if (widget.queueBar != null) widget.queueBar!,
+                if (widget.outboxBar != null) widget.outboxBar!,
                 if (widget.pendingAttachments.isNotEmpty)
                   AttachmentPreviewBar(
                     attachments: widget.pendingAttachments,

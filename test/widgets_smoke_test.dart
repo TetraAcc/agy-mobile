@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:agy_remote/core/config/composer_prefs.dart';
+import 'package:agy_remote/core/config/offline_outbox_store.dart';
+import 'package:agy_remote/core/config/quick_commands_prefs.dart';
 import 'package:agy_remote/core/config/responsive_layout.dart';
 import 'package:agy_remote/core/config/server_config.dart';
 import 'package:agy_remote/core/platform/platform_bridge.dart';
@@ -10,6 +12,8 @@ import 'package:agy_remote/features/chat/bottom_input_bar.dart';
 import 'package:agy_remote/features/chat/context_menu_sheet.dart';
 import 'package:agy_remote/features/chat/markdown_message_body.dart';
 import 'package:agy_remote/features/chat/message_card.dart';
+import 'package:agy_remote/features/chat/offline_outbox_bar.dart';
+import 'package:agy_remote/features/chat/quick_commands_sheet.dart';
 import 'package:agy_remote/features/chat/session_queue_bar.dart';
 import 'package:agy_remote/features/chat/session_steps_bar.dart';
 import 'package:agy_remote/features/hub/download_progress_dialog.dart';
@@ -1236,5 +1240,152 @@ void main() {
     await tester.tap(find.byTooltip('刷新节点状态'));
     await tester.pump();
     expect(refreshNodesCalls, 1);
+  });
+
+  testWidgets('MessageCard 展示本轮任务耗时、ContextMenuSheet 含快捷指令、OfflineOutboxBar 交互正常',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    const aiMsg = AgentMessage(
+      stepIndex: 4,
+      source: 'MODEL',
+      msgType: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      content: '已完成结构调整',
+      thinking: '',
+      toolCalls: [],
+      timestamp: '2026-11-25T09:01:24Z',
+    );
+
+    var quickOpened = false;
+    var retryAllTapped = false;
+    String? editedId;
+    String? editedText;
+    String? deletedId;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              MessageCard(
+                msg: aiMsg,
+                isDark: true,
+                resolveMediaUrl: (p) => p,
+                onDownloadFile: (_, {filename}) {},
+                onOpenUrl: (_) {},
+                turnDuration: const Duration(minutes: 1, seconds: 24),
+              ),
+              OfflineOutboxBar(
+                items: const [
+                  OfflineOutboxItem(
+                    id: 'out-1',
+                    nodeId: 'win',
+                    sessionId: 's1',
+                    content: '暂存的离线指令',
+                    createdAt: '2026-11-25T09:05:00Z',
+                  ),
+                ],
+                isDark: true,
+                onRetryAll: () => retryAllTapped = true,
+                onRetryItem: (_) {},
+                onEditItem: (id, txt) {
+                  editedId = id;
+                  editedText = txt;
+                },
+                onDeleteItem: (id) => deletedId = id,
+                onClearAll: () {},
+              ),
+              Builder(
+                builder: (ctx) => ElevatedButton(
+                  onPressed: () => ContextMenuSheet.show(
+                    ctx,
+                    isDark: true,
+                    onPickFile: () {},
+                    onPickImage: () {},
+                    onRequestGitDiff: () {},
+                    onOpenWorkspaceFiles: () {},
+                    onOpenQuickCommands: () => quickOpened = true,
+                  ),
+                  child: const Text('打开菜单'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await tester.pumpAndSettle();
+    expect(find.text('耗时 1m 24s'), findsOneWidget);
+    expect(find.text('等待重连 (1)'), findsOneWidget);
+
+    await tester.tap(find.text('重试'));
+    await tester.pump();
+    expect(retryAllTapped, true);
+
+    await tester.tap(find.text('等待重连 (1)'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('编辑内容'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).last, '修改后的离线消息');
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(editedId, 'out-1');
+    expect(editedText, '修改后的离线消息');
+
+    await tester.tap(find.byTooltip('撤回删除'));
+    await tester.pumpAndSettle();
+    expect(deletedId, 'out-1');
+
+    await tester.tap(find.text('打开菜单'));
+    await tester.pumpAndSettle();
+    expect(find.text('快捷指令'), findsOneWidget);
+    await tester.tap(find.text('快捷指令'));
+    await tester.pumpAndSettle();
+    expect(quickOpened, true);
+  });
+
+  testWidgets('QuickCommandsSheet 支持新增编辑自定义指令并一键填入', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    String? filledPrompt;
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (ctx) => ElevatedButton(
+                onPressed: () => QuickCommandsSheet.show(
+                  ctx,
+                  isDark: true,
+                  onFillPrompt: (p) => filledPrompt = p,
+                  onSendPrompt: (_) async => null,
+                ),
+                child: const Text('弹出快捷指令'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('弹出快捷指令'));
+    await tester.pumpAndSettle();
+    expect(find.text(defaultQuickCommands.first.title), findsOneWidget);
+
+    // 新增自定义指令
+    await tester.tap(find.text('新增'));
+    await tester.pumpAndSettle();
+    final fields = find.byType(TextField);
+    await tester.enterText(fields.at(0), '同步发布');
+    await tester.enterText(fields.at(1), '请提交代码并打包更新到 Deck');
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(find.text('同步发布'), findsOneWidget);
+
+    // 点击填入输入框
+    await tester.tap(find.text('同步发布'));
+    await tester.pumpAndSettle();
+    expect(filledPrompt, '请提交代码并打包更新到 Deck');
   });
 }

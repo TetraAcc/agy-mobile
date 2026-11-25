@@ -207,7 +207,7 @@ def create_agent_app(
         except InvalidSessionIdError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-        if payload.delivery_mode == "queue":
+        if payload.delivery_mode == "queue" and not payload.interrupt:
             is_running = await engine_provider.is_session_running(clean_sid)
             existing_queue = queue_manager.get_queue(clean_sid)
             if is_running or existing_queue.items:
@@ -220,7 +220,11 @@ def create_agent_app(
                     queue_position=pos,
                 )
 
-        if payload.delivery_mode == "immediate":
+        if payload.interrupt:
+            if await engine_provider.is_session_running(clean_sid):
+                await engine_provider.stop_session(clean_sid)
+                await asyncio.sleep(0.35)
+        elif payload.delivery_mode == "immediate":
             if engine_provider.platform_name == "deck" and engine_provider.is_managed_process_running(clean_sid):
                 await engine_provider.stop_session(clean_sid)
 

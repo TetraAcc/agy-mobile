@@ -1,4 +1,4 @@
-# AGY Remote Hub (v2.1.3)
+# AGY Remote Hub (v2.2.0)
 
 > **Google Antigravity 跨平台多节点远程协同控制中心**  
 > 分离式 **Edge Gateway + 无状态 Node Agent** 后端架构与 **Flutter 三端（Web / iOS PWA / Android 原生）** 客户端，支持多用户长期共存、细粒度节点权限隔离、实时按需事件订阅、四维 Diff 审查、受控文件沙箱与安全远程打断。

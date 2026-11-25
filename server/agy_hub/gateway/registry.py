@@ -73,6 +73,10 @@ class NodeRegistryManager:
             return
         await asyncio.gather(*(self.probe_node(nid) for nid in self.nodes), return_exceptions=True)
 
+    def is_node_online(self, node_id: str) -> bool:
+        cached = self._cache.get(node_id)
+        return bool(cached and cached.get("online", False))
+
     def get_visible_nodes(self, user: UserProfile) -> list[NodeStatus]:
         visible: list[NodeStatus] = []
         for node_id, grant in user.node_permissions.items():

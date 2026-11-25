@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../core/config/offline_outbox_store.dart';
 import '../../core/config/server_config.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/token_store.dart';
@@ -60,6 +61,8 @@ class HubState {
   final List<FileRootItem> cachedRoots;
   final SessionChangesData sessionChanges;
   final SessionQueueData sessionQueue;
+  final List<OfflineOutboxItem> offlineOutbox;
+  final bool isFlushingOutbox;
 
   const HubState({
     this.nodes = const [],
@@ -84,6 +87,8 @@ class HubState {
     this.cachedRoots = const [],
     this.sessionChanges = const SessionChangesData(),
     this.sessionQueue = const SessionQueueData(),
+    this.offlineOutbox = const [],
+    this.isFlushingOutbox = false,
   });
 
   HostNode? get currentNode {
@@ -92,6 +97,15 @@ class HubState {
       if (n.id == selectedNodeId) return n;
     }
     return null;
+  }
+
+  List<OfflineOutboxItem> get activeSessionOutbox {
+    if (selectedNodeId.isEmpty || activeSessionId.isEmpty || offlineOutbox.isEmpty) {
+      return const [];
+    }
+    return offlineOutbox
+        .where((e) => e.nodeId == selectedNodeId && e.sessionId == activeSessionId)
+        .toList();
   }
 
   bool get isConnected => wsState == WsConnState.connected;
@@ -130,6 +144,8 @@ class HubState {
     bool clearSessionChanges = false,
     SessionQueueData? sessionQueue,
     bool clearSessionQueue = false,
+    List<OfflineOutboxItem>? offlineOutbox,
+    bool? isFlushingOutbox,
   }) {
     return HubState(
       nodes: nodes ?? this.nodes,
@@ -154,6 +170,8 @@ class HubState {
       cachedRoots: cachedRoots ?? this.cachedRoots,
       sessionChanges: clearSessionChanges ? const SessionChangesData() : (sessionChanges ?? this.sessionChanges),
       sessionQueue: clearSessionQueue ? const SessionQueueData() : (sessionQueue ?? this.sessionQueue),
+      offlineOutbox: offlineOutbox ?? this.offlineOutbox,
+      isFlushingOutbox: isFlushingOutbox ?? this.isFlushingOutbox,
     );
   }
 }
@@ -174,6 +192,7 @@ class HubController extends Notifier<HubState> {
   String _lastNotifiedRunningBody = '';
   int _lastAskQuestionStep = -1;
   Future<List<HostNode>>? _inFlightRefreshNodes;
+  bool _isFlushingOutbox = false;
 
   @override
   HubState build() {
@@ -203,6 +222,12 @@ class HubController extends Notifier<HubState> {
   Future<void> initializeForUser(UserProfile user) async {
     _disposed = false;
     try {
+      final loadedOutbox = await OfflineOutboxStore.load();
+      if (_disposed) return;
+      if (loadedOutbox.isNotEmpty) {
+        state = state.copyWith(offlineOutbox: loadedOutbox);
+      }
+
       final (nodes, defaultNode) = await _api.getNodes();
       if (_disposed) return;
 
@@ -265,6 +290,7 @@ class HubController extends Notifier<HubState> {
     if (AndroidNativeBridge.isAndroidNative) {
       unawaited(AndroidNativeBridge.stopRunningNotification());
     }
+    unawaited(OfflineOutboxStore.clear());
     state = const HubState();
   }
 
@@ -351,6 +377,9 @@ class HubController extends Notifier<HubState> {
       if (connState == WsConnState.connected) {
         final isReconnect = hadConnectedOnce && prevState != WsConnState.connected;
         hadConnectedOnce = true;
+        if (state.offlineOutbox.isNotEmpty) {
+          unawaited(flushOfflineOutbox());
+        }
         if (isReconnect) {
           unawaited(refreshNodes());
           unawaited(refreshSessionTree());
@@ -400,7 +429,11 @@ class HubController extends Notifier<HubState> {
     if (socket != null && (socket.currentState != WsConnState.connected || pausedSeconds >= 5)) {
       unawaited(socket.reconnectNow(refreshToken: pausedSeconds >= 60));
     }
-    unawaited(refreshNodes());
+    unawaited(refreshNodes().then((_) {
+      if (!_disposed && state.offlineOutbox.isNotEmpty) {
+        unawaited(flushOfflineOutbox());
+      }
+    }));
     unawaited(refreshSessionTree());
     if (state.activeSessionId.isNotEmpty) {
       await _syncActiveSessionSilent();
@@ -785,7 +818,54 @@ class HubController extends Notifier<HubState> {
     }
   }
 
-  Future<String?> sendMessage(String rawText, {String deliveryMode = 'queue'}) async {
+  bool _isTransientNetworkError(Object err) {
+    if (err is ApiException) {
+      if (err.statusCode == 0 || err.statusCode == 502 || err.statusCode == 503 || err.statusCode == 504) {
+        return true;
+      }
+      final lower = err.message.toLowerCase();
+      return lower.contains('node unavailable') ||
+          lower.contains('timeout') ||
+          lower.contains('timed out') ||
+          lower.contains('connection') ||
+          lower.contains('socket') ||
+          err.message.contains('网络') ||
+          err.message.contains('超时') ||
+          err.message.contains('连接');
+    }
+    final text = err.toString().toLowerCase();
+    return text.contains('socketexception') ||
+        text.contains('timeout') ||
+        text.contains('connection') ||
+        text.contains('network');
+  }
+
+  Future<void> _enqueueOfflineOutbox({
+    required String nodeId,
+    required String sessionId,
+    required String content,
+    required String deliveryMode,
+    String lastError = '',
+  }) async {
+    final item = OfflineOutboxItem(
+      id: 'out_${DateTime.now().microsecondsSinceEpoch}',
+      nodeId: nodeId,
+      sessionId: sessionId,
+      content: content,
+      deliveryMode: deliveryMode,
+      createdAt: DateTime.now().toIso8601String(),
+      lastError: lastError,
+    );
+    final next = [...state.offlineOutbox, item];
+    state = state.copyWith(offlineOutbox: next);
+    await OfflineOutboxStore.save(next);
+  }
+
+  Future<String?> sendMessage(
+    String rawText, {
+    String deliveryMode = 'queue',
+    bool interrupt = false,
+  }) async {
     final nodeId = state.selectedNodeId;
     final sid = state.activeSessionId;
     if (nodeId.isEmpty || sid.isEmpty) return '请先选择或新建一个会话';
@@ -804,8 +884,27 @@ class HubController extends Notifier<HubState> {
       finalText = finalText.isEmpty ? refs : '$refs\n\n$finalText';
     }
 
+    final current = state.currentNode;
+    final canStageOffline = toSend.isEmpty && !interrupt;
+    if (canStageOffline &&
+        state.wsState != WsConnState.connected &&
+        current != null &&
+        !current.isOnline &&
+        !current.isLocal) {
+      await _enqueueOfflineOutbox(
+        nodeId: nodeId,
+        sessionId: sid,
+        content: finalText,
+        deliveryMode: deliveryMode,
+        lastError: '当前节点离线，已暂存等待恢复发送',
+      );
+      return null;
+    }
+
     final shouldQueue =
-        deliveryMode == 'queue' && (state.isActiveSessionRunning || state.sessionQueue.items.isNotEmpty);
+        !interrupt &&
+        deliveryMode == 'queue' &&
+        (state.isActiveSessionRunning || state.sessionQueue.items.isNotEmpty);
 
     if (shouldQueue) {
       state = state.copyWith(pendingAttachments: const []);
@@ -818,6 +917,9 @@ class HubController extends Notifier<HubState> {
           deliveryMode: 'queue',
         );
         if (!res.ok) {
+          if (toSend.isNotEmpty) {
+            state = state.copyWith(pendingAttachments: toSend);
+          }
           return res.message.isNotEmpty ? res.message : '加入队列失败';
         }
         if (res.queued) {
@@ -840,10 +942,21 @@ class HubController extends Notifier<HubState> {
           runningSessionIds: nextRunning,
         );
         return null;
-      } on ApiException catch (e) {
-        return e.message;
       } catch (e) {
-        return '加入队列失败: $e';
+        if (canStageOffline && _isTransientNetworkError(e)) {
+          await _enqueueOfflineOutbox(
+            nodeId: nodeId,
+            sessionId: sid,
+            content: finalText,
+            deliveryMode: deliveryMode,
+            lastError: e is ApiException ? e.message : '网络异常，等待重连发送',
+          );
+          return null;
+        }
+        if (toSend.isNotEmpty) {
+          state = state.copyWith(pendingAttachments: toSend);
+        }
+        return e is ApiException ? e.message : '加入队列失败: $e';
       }
     }
 
@@ -858,6 +971,7 @@ class HubController extends Notifier<HubState> {
       timestamp: DateTime.now().toIso8601String(),
     );
 
+    final hadRunning = state.runningSessionIds.contains(sid);
     final nextRunning = Set<String>.from(state.runningSessionIds)..add(sid);
     state = state.copyWith(
       pendingAttachments: const [],
@@ -866,8 +980,23 @@ class HubController extends Notifier<HubState> {
     );
     _syncRunningNotification();
 
+    void rollbackOptimistic() {
+      final rolledRunning = Set<String>.from(state.runningSessionIds);
+      if (!hadRunning) {
+        rolledRunning.remove(sid);
+      }
+      final cleanedMessages =
+          state.messages.where((m) => !identical(m, optimisticMsg)).toList();
+      state = state.copyWith(
+        messages: cleanedMessages,
+        runningSessionIds: rolledRunning,
+        pendingAttachments: toSend.isNotEmpty ? toSend : state.pendingAttachments,
+      );
+      _syncRunningNotification();
+    }
+
     try {
-      final (bool ok, String msg) = deliveryMode == 'immediate' && state.isActiveSessionRunning
+      final (bool ok, String msg) = (deliveryMode == 'immediate' || interrupt)
           ? await (() async {
               final res = await _api.sendMessageWithMode(
                 nodeId,
@@ -875,6 +1004,7 @@ class HubController extends Notifier<HubState> {
                 content: finalText,
                 model: state.selectedModel,
                 deliveryMode: 'immediate',
+                interrupt: interrupt,
               );
               return (res.ok, res.message);
             })()
@@ -885,19 +1015,23 @@ class HubController extends Notifier<HubState> {
               model: state.selectedModel,
             );
       if (!ok) {
-        final rollback = Set<String>.from(state.runningSessionIds)..remove(sid);
-        state = state.copyWith(runningSessionIds: rollback);
+        rollbackOptimistic();
         return msg.isNotEmpty ? msg : '发送失败';
       }
       return null;
-    } on ApiException catch (e) {
-      final rollback = Set<String>.from(state.runningSessionIds)..remove(sid);
-      state = state.copyWith(runningSessionIds: rollback);
-      return e.message;
     } catch (e) {
-      final rollback = Set<String>.from(state.runningSessionIds)..remove(sid);
-      state = state.copyWith(runningSessionIds: rollback);
-      return '发送失败: $e';
+      rollbackOptimistic();
+      if (canStageOffline && _isTransientNetworkError(e)) {
+        await _enqueueOfflineOutbox(
+          nodeId: nodeId,
+          sessionId: sid,
+          content: finalText,
+          deliveryMode: deliveryMode,
+          lastError: e is ApiException ? e.message : '网络异常，等待重连发送',
+        );
+        return null;
+      }
+      return e is ApiException ? e.message : '发送失败: $e';
     }
   }
 
@@ -1021,6 +1155,117 @@ class HubController extends Notifier<HubState> {
     } catch (e) {
       return '立即发送失败: $e';
     }
+  }
+
+  Future<String?> flushOfflineOutbox({bool manual = false, String? onlyItemId}) async {
+    if (_disposed || _isFlushingOutbox || state.offlineOutbox.isEmpty) return null;
+    final activeNodeId = state.selectedNodeId;
+    if (activeNodeId.isEmpty) return null;
+
+    _isFlushingOutbox = true;
+    state = state.copyWith(isFlushingOutbox: true);
+    String? firstError;
+
+    try {
+      final targets = state.offlineOutbox.where((e) {
+        if (onlyItemId != null) return e.id == onlyItemId;
+        return e.nodeId == activeNodeId;
+      }).toList();
+
+      for (final item in targets) {
+        if (_disposed) break;
+        try {
+          final res = await _api.sendMessageWithMode(
+            item.nodeId,
+            item.sessionId,
+            content: item.content,
+            model: state.selectedModel,
+            deliveryMode: item.deliveryMode,
+          );
+          if (_disposed) break;
+          if (!res.ok) {
+            final errMsg = res.message.isNotEmpty ? res.message : '补发失败';
+            firstError ??= errMsg;
+            final updated = state.offlineOutbox
+                .map((e) => e.id == item.id ? e.copyWith(lastError: errMsg) : e)
+                .toList();
+            state = state.copyWith(offlineOutbox: updated);
+            await OfflineOutboxStore.save(updated);
+            continue;
+          }
+
+          final remaining = state.offlineOutbox.where((e) => e.id != item.id).toList();
+          state = state.copyWith(offlineOutbox: remaining);
+          await OfflineOutboxStore.save(remaining);
+
+          if (item.nodeId == state.selectedNodeId && item.sessionId == state.activeSessionId) {
+            if (res.queued) {
+              unawaited(refreshSessionQueue());
+            } else {
+              final optimistic = AgentMessage(
+                stepIndex: -1,
+                source: 'USER_EXPLICIT',
+                msgType: 'USER_INPUT',
+                status: 'SENT',
+                content: item.content,
+                thinking: '',
+                toolCalls: const [],
+                timestamp: DateTime.now().toIso8601String(),
+              );
+              final nextRunning = Set<String>.from(state.runningSessionIds)..add(item.sessionId);
+              state = state.copyWith(
+                messages: [...state.messages, optimistic],
+                runningSessionIds: nextRunning,
+              );
+              unawaited(_syncActiveSessionSilent());
+            }
+          }
+        } catch (e) {
+          final errMsg = e is ApiException ? e.message : '补发失败: $e';
+          firstError ??= errMsg;
+          final updated = state.offlineOutbox
+              .map((it) => it.id == item.id ? it.copyWith(lastError: errMsg) : it)
+              .toList();
+          state = state.copyWith(offlineOutbox: updated);
+          await OfflineOutboxStore.save(updated);
+          if (_isTransientNetworkError(e)) {
+            if (!manual) break;
+          }
+        }
+      }
+    } finally {
+      _isFlushingOutbox = false;
+      if (!_disposed) {
+        state = state.copyWith(isFlushingOutbox: false);
+      }
+    }
+    return firstError;
+  }
+
+  Future<void> editOfflineOutboxItem(String itemId, String newContent) async {
+    final cleaned = newContent.trim();
+    if (cleaned.isEmpty) return;
+    final next = state.offlineOutbox
+        .map((e) => e.id == itemId ? e.copyWith(content: cleaned, lastError: '') : e)
+        .toList();
+    state = state.copyWith(offlineOutbox: next);
+    await OfflineOutboxStore.save(next);
+  }
+
+  Future<void> removeOfflineOutboxItem(String itemId) async {
+    final next = state.offlineOutbox.where((e) => e.id != itemId).toList();
+    state = state.copyWith(offlineOutbox: next);
+    await OfflineOutboxStore.save(next);
+  }
+
+  Future<void> clearActiveOfflineOutbox() async {
+    final nodeId = state.selectedNodeId;
+    final sid = state.activeSessionId;
+    final next = state.offlineOutbox
+        .where((e) => !(e.nodeId == nodeId && e.sessionId == sid))
+        .toList();
+    state = state.copyWith(offlineOutbox: next);
+    await OfflineOutboxStore.save(next);
   }
 
   Future<String?> createNewSession({

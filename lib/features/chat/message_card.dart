@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../core/utils/duration_utils.dart';
 import '../../core/utils/file_utils.dart';
 import '../../models/models.dart';
 import '../workspace/session_changes_bar.dart';
@@ -18,6 +19,7 @@ class MessageCard extends StatelessWidget {
   final void Function(int stepIndex, ToolCallItem tool)? onOpenToolDetail;
   final Future<String?> Function(String replyText)? onSubmitQuickReply;
   final SessionTurnChange? turnChanges;
+  final Duration? turnDuration;
   final VoidCallback? onOpenTurnReview;
   final ValueChanged<SessionFileChange>? onOpenTurnFile;
 
@@ -34,6 +36,7 @@ class MessageCard extends StatelessWidget {
     this.onOpenToolDetail,
     this.onSubmitQuickReply,
     this.turnChanges,
+    this.turnDuration,
     this.onOpenTurnReview,
     this.onOpenTurnFile,
   });
@@ -146,19 +149,40 @@ class MessageCard extends StatelessWidget {
               ),
             ),
           if (msg.content.trim().isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  _miniActionButton(
-                    icon: Icons.copy_rounded,
-                    label: '复制 Markdown',
-                    color: isDark ? Colors.white38 : Colors.black45,
-                    onTap: () => _copyMessage(context, msg.content),
+            Builder(
+              builder: (context) {
+                final durationLabel =
+                    turnDuration != null ? formatTaskDuration(turnDuration!) : '';
+                final mutedColor = isDark ? Colors.white38 : Colors.black45;
+                return Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Row(
+                    mainAxisAlignment: durationLabel.isNotEmpty
+                        ? MainAxisAlignment.spaceBetween
+                        : MainAxisAlignment.end,
+                    children: [
+                      if (durationLabel.isNotEmpty)
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.schedule_rounded, size: 11, color: mutedColor),
+                            const SizedBox(width: 3),
+                            Text(
+                              '耗时 $durationLabel',
+                              style: TextStyle(fontSize: 10.5, color: mutedColor),
+                            ),
+                          ],
+                        ),
+                      _miniActionButton(
+                        icon: Icons.copy_rounded,
+                        label: '复制 Markdown',
+                        color: mutedColor,
+                        onTap: () => _copyMessage(context, msg.content),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                );
+              },
             ),
         ],
       ),

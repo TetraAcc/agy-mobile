@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 import websockets
@@ -130,6 +130,8 @@ async def proxy_ws_to_node(
     perms: UserPermissionGrant,
     internal_secret: str,
     ws_connector: Any = None,
+    node_id: str = "",
+    on_session_subscription_change: Callable[[str, str, bool], None] | None = None,
 ) -> None:
     """Bridge a single authenticated client WebSocket to the target Node Agent."""
     upstream_url = _to_ws_url(node_cfg.base_url, upstream_path)
@@ -165,6 +167,35 @@ async def proxy_ws_to_node(
         return
 
     await client_ws.accept()
+    subscribed_sids: set[str] = set()
+
+    def _track_client_command(raw_text: str) -> None:
+        if on_session_subscription_change is None or not node_id:
+            return
+        try:
+            payload = json.loads(raw_text)
+        except Exception:
+            return
+        if not isinstance(payload, dict):
+            return
+        cmd_type = str(payload.get("type") or "").strip().lower()
+        sid = str(payload.get("session_id") or "").strip()
+        if not sid:
+            return
+        if cmd_type == "subscribe":
+            if sid not in subscribed_sids:
+                subscribed_sids.add(sid)
+                try:
+                    on_session_subscription_change(node_id, sid, True)
+                except Exception:
+                    pass
+        elif cmd_type == "unsubscribe":
+            if sid in subscribed_sids:
+                subscribed_sids.discard(sid)
+                try:
+                    on_session_subscription_change(node_id, sid, False)
+                except Exception:
+                    pass
 
     async def client_to_upstream() -> None:
         try:
@@ -174,7 +205,9 @@ async def proxy_ws_to_node(
                 if msg_type == "websocket.disconnect":
                     break
                 if "text" in msg and msg["text"] is not None:
-                    await upstream_ws.send(msg["text"])
+                    text_payload = msg["text"]
+                    _track_client_command(text_payload)
+                    await upstream_ws.send(text_payload)
                 elif "bytes" in msg and msg["bytes"] is not None:
                     await upstream_ws.send(msg["bytes"])
         except WebSocketDisconnect:
@@ -202,6 +235,13 @@ async def proxy_ws_to_node(
         for task in done:
             _ = task.exception() if not task.cancelled() else None
     finally:
+        if on_session_subscription_change is not None and node_id:
+            for sid in list(subscribed_sids):
+                try:
+                    on_session_subscription_change(node_id, sid, False)
+                except Exception:
+                    pass
+        subscribed_sids.clear()
         try:
             await upstream_ctx.__aexit__(None, None, None)
         except Exception:

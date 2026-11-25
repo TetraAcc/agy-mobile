@@ -1,6 +1,7 @@
 import 'package:agy_remote/core/platform/android_native_bridge.dart';
 import 'package:agy_remote/core/theme/app_colors.dart';
 import 'package:agy_remote/core/theme/app_fonts.dart';
+import 'package:agy_remote/core/utils/duration_utils.dart';
 import 'package:agy_remote/core/utils/file_utils.dart';
 import 'package:agy_remote/core/utils/latex_math_converter.dart';
 import 'package:agy_remote/models/models.dart';
@@ -367,6 +368,55 @@ void main() {
         LatexMathConverter.normalizeMarkdownMath(withFracAndSub),
         r'公式 (a+b)/2 与 xₘₐₓ + yₘᵢₙ 以及 x\_best + y\_cur',
       );
+    });
+
+    test('DurationUtils 格式化任务耗时、实时正计时与按轮次时长聚合', () {
+      expect(formatTaskDuration(const Duration(milliseconds: 500)), '');
+      expect(formatTaskDuration(const Duration(seconds: 42)), '42s');
+      expect(formatTaskDuration(const Duration(minutes: 2, seconds: 0)), '2m');
+      expect(formatTaskDuration(const Duration(minutes: 1, seconds: 24)), '1m 24s');
+      expect(formatTaskDuration(const Duration(hours: 1, minutes: 5)), '1h 5m');
+
+      expect(formatLiveElapsed(const Duration(seconds: 9)), '00:09');
+      expect(formatLiveElapsed(const Duration(minutes: 3, seconds: 15)), '03:15');
+      expect(formatLiveElapsed(const Duration(hours: 1, minutes: 2, seconds: 5)), '1:02:05');
+
+      const messages = [
+        AgentMessage(
+          stepIndex: 1,
+          source: 'USER_EXPLICIT',
+          msgType: 'USER_INPUT',
+          status: 'DONE',
+          content: '帮我修 bug',
+          thinking: '',
+          toolCalls: [],
+          timestamp: '2026-11-25T09:00:00Z',
+        ),
+        AgentMessage(
+          stepIndex: 2,
+          source: 'MODEL',
+          msgType: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          content: '',
+          thinking: '读文件',
+          toolCalls: [],
+          timestamp: '2026-11-25T09:00:30Z',
+        ),
+        AgentMessage(
+          stepIndex: 3,
+          source: 'MODEL',
+          msgType: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          content: '已修复完毕',
+          thinking: '',
+          toolCalls: [],
+          timestamp: '2026-11-25T09:01:24Z',
+        ),
+      ];
+      final durations = computeTurnDurationsByMsgIdx(messages);
+      expect(durations.length, 1);
+      expect(durations[2], const Duration(minutes: 1, seconds: 24));
+      expect(findActiveTurnStartTime(messages), DateTime.parse('2026-11-25T09:00:00Z'));
     });
   });
 }

@@ -148,6 +148,7 @@ class SendMessageRequest(BaseModel):
     content: str = Field(..., min_length=1)
     model: str | None = None
     delivery_mode: Literal["queue", "immediate"] = "immediate"
+    interrupt: bool = False
 
 
 class ActionAckResponse(BaseModel):
