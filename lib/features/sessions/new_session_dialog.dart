@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../models/models.dart';
+import '../chat/model_picker_sheet.dart';
 
 class NewSessionDialog extends StatefulWidget {
   final String initialMode;
@@ -189,78 +190,89 @@ class _NewSessionDialogState extends State<NewSessionDialog> {
               style: TextStyle(fontSize: 12, color: isDark ? Colors.white60 : Colors.black54),
             ),
             const SizedBox(height: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-              decoration: BoxDecoration(
-                color: isDark ? AppColors.darkBg : AppColors.lightBg,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: isDark ? AppColors.darkBorder : AppColors.lightBorder),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  value: widget.models.any((m) => m.id == _selectedModel)
-                      ? _selectedModel
-                      : widget.models.first.id,
-                  isExpanded: true,
-                  dropdownColor: isDark ? AppColors.darkCard : Colors.white,
-                  icon: Icon(Icons.arrow_drop_down_rounded, color: isDark ? Colors.white70 : Colors.black54),
-                  items: widget.models.map((m) {
-                    return DropdownMenuItem<String>(
-                      value: m.id,
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Flexible(
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(m.icon, style: const TextStyle(fontSize: 13)),
-                                const SizedBox(width: 8),
-                                Flexible(
-                                  child: Text(
-                                    m.displayName,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: m.id == _selectedModel ? FontWeight.bold : FontWeight.normal,
-                                      color: isDark ? Colors.white : Colors.black87,
-                                    ),
-                                  ),
-                                ),
-                              ],
+            Builder(
+              builder: (ctx) {
+                OfficialModelOption? matched;
+                for (final m in widget.models) {
+                  if (m.id == _selectedModel) {
+                    matched = m;
+                    break;
+                  }
+                }
+                final displayName = matched?.displayName ??
+                    formatModelDisplayName(_selectedModel, widget.models);
+                final icon = matched?.icon ?? '✦';
+                final rem = matched?.remainingFraction;
+                return InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: () {
+                    ModelPickerSheet.show(
+                      ctx,
+                      isDark: isDark,
+                      models: widget.models,
+                      activeModel: _selectedModel,
+                      pendingModel: '',
+                      sheetTitle: '选择新会话模型',
+                      subtitleOverride: '点击系列展开思考强度，支持搜索与自定义',
+                      allowKeepCurrent: false,
+                      onSelectModel: (picked) {
+                        if (picked != null && picked.trim().isNotEmpty && mounted) {
+                          setState(() => _selectedModel = picked.trim());
+                        }
+                      },
+                    );
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: isDark ? AppColors.darkBg : AppColors.lightBg,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: isDark ? AppColors.darkBorder : AppColors.lightBorder,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Text(icon, style: const TextStyle(fontSize: 14)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            displayName,
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: isDark ? Colors.white : Colors.black87,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (rem != null) ...[
+                          const SizedBox(width: 6),
+                          Text(
+                            '${(rem * 100).round()}%',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: rem >= 0.5
+                                  ? AppColors.statusGreen(isDark)
+                                  : (rem >= 0.15
+                                      ? AppColors.statusAmber(isDark)
+                                      : AppColors.statusRed(isDark)),
                             ),
                           ),
-                          if (m.thinkingBadge.isNotEmpty)
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                              decoration: BoxDecoration(
-                                color: m.thinkingBadge == 'High' || m.thinkingBadge == 'Thinking'
-                                    ? (isDark
-                                        ? AppColors.primaryBlue.withValues(alpha: 0.3)
-                                        : const Color(0xFFE0F2FE))
-                                    : (isDark ? Colors.white10 : Colors.black12),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                m.thinkingBadge,
-                                style: TextStyle(
-                                  fontSize: 9.5,
-                                  fontWeight: FontWeight.bold,
-                                  color: m.thinkingBadge == 'High' || m.thinkingBadge == 'Thinking'
-                                      ? (isDark ? AppColors.primarySky : AppColors.primaryBlue)
-                                      : (isDark ? Colors.white60 : Colors.black54),
-                                ),
-                              ),
-                            ),
                         ],
-                      ),
-                    );
-                  }).toList(),
-                  onChanged: (val) {
-                    if (val != null) setState(() => _selectedModel = val);
-                  },
-                ),
-              ),
+                        const SizedBox(width: 4),
+                        Icon(
+                          Icons.keyboard_arrow_down_rounded,
+                          size: 18,
+                          color: isDark ? Colors.white60 : Colors.black54,
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
             ),
           ],
         ),

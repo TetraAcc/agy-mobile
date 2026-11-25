@@ -18,6 +18,7 @@ import 'package:agy_remote/features/chat/quick_commands_sheet.dart';
 import 'package:agy_remote/features/chat/session_queue_bar.dart';
 import 'package:agy_remote/features/chat/session_steps_bar.dart';
 import 'package:agy_remote/features/hub/download_progress_dialog.dart';
+import 'package:agy_remote/features/sessions/new_session_dialog.dart';
 import 'package:agy_remote/features/sessions/quota_drawer.dart';
 import 'package:agy_remote/features/workspace/change_review_sheet.dart';
 import 'package:agy_remote/features/workspace/file_viewer_sheet.dart';
@@ -1439,11 +1440,32 @@ void main() {
         remainingFraction: 0.82,
       ),
       OfficialModelOption(
+        id: 'gemini-4-neon-low',
+        displayName: 'Gemini 4 Neon (Low)',
+        group: 'Gemini',
+        thinkingBadge: 'New',
+        remainingFraction: 0.82,
+      ),
+      OfficialModelOption(
+        id: 'claude-sonnet-5-5-low',
+        displayName: 'Claude Sonnet 5.5 (Low)',
+        group: 'Claude',
+        thinkingBadge: 'New',
+        remainingFraction: 0.48,
+      ),
+      OfficialModelOption(
         id: 'claude-sonnet-5-5-medium',
         displayName: 'Claude Sonnet 5.5 (Medium)',
         group: 'Claude',
         thinkingBadge: 'New',
         remainingFraction: 0.48,
+      ),
+      OfficialModelOption(
+        id: 'gemini-pro-orchestrator-neon',
+        displayName: 'Orchestrator (Neon)',
+        group: 'Orchestrator',
+        thinkingBadge: 'New',
+        remainingFraction: 0.58,
       ),
     ];
 
@@ -1524,18 +1546,83 @@ void main() {
     await tester.pump();
     expect(switchFromErrorTapped, true);
 
-    // 2. 点击输入栏模型胶囊，弹出选择器，搜索并选择 Claude Sonnet 5.5
+    // 2. 点击输入栏模型胶囊，按系列折叠展示，默认展开当前 Gemini 4 Neon 二级思考强度
     await tester.tap(find.text('Gemini 4 Neon (High)').last);
     await tester.pumpAndSettle();
     expect(find.text('切换当前会话模型'), findsOneWidget);
+    expect(find.text('Gemini 4 Neon'), findsOneWidget);
+    expect(find.text('Claude Sonnet 5.5'), findsOneWidget);
+    expect(find.text('当前·High'), findsOneWidget);
     expect(find.text('82%'), findsOneWidget);
     expect(find.text('48%'), findsOneWidget);
 
-    await tester.enterText(find.byType(TextField).last, 'claude');
+    // 3. 点击 Claude Sonnet 5.5 展开其二级菜单，选择 Medium 挡位
+    await tester.tap(find.text('Claude Sonnet 5.5'));
     await tester.pumpAndSettle();
-    expect(find.text('Claude Sonnet 5.5 (Medium)'), findsOneWidget);
-    await tester.tap(find.text('Claude Sonnet 5.5 (Medium)'));
+    expect(find.text('Low'), findsOneWidget);
+    expect(find.text('Medium'), findsOneWidget);
+    await tester.tap(find.text('Medium'));
     await tester.pumpAndSettle();
     expect(pickedModel, 'claude-sonnet-5-5-medium');
+  });
+
+  testWidgets('NewSessionDialog 复用二级模型选择器且 Leaving Soon 自动沉底', (tester) async {
+    String? startedModel;
+    const catalog = [
+      OfficialModelOption(
+        id: 'gemini-3.8-flash-high',
+        displayName: 'Gemini 3.8 Flash (High)',
+        group: 'Gemini',
+        thinkingBadge: 'Leaving Soon',
+        remainingFraction: 0.82,
+      ),
+      OfficialModelOption(
+        id: 'gemini-4-neon-high',
+        displayName: 'Gemini 4 Neon (High)',
+        group: 'Gemini',
+        thinkingBadge: 'New',
+        remainingFraction: 0.82,
+      ),
+      OfficialModelOption(
+        id: 'gemini-4-neon-low',
+        displayName: 'Gemini 4 Neon (Low)',
+        group: 'Gemini',
+        thinkingBadge: 'New',
+        remainingFraction: 0.82,
+      ),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: NewSessionDialog(
+            initialMode: 'auto',
+            initialModel: 'gemini-4-neon-high',
+            models: catalog,
+            onStart: (prompt, mode, model, wsPath, rootId) => startedModel = model,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Gemini 4 Neon (High)'), findsOneWidget);
+    await tester.tap(find.text('Gemini 4 Neon (High)'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('选择新会话模型'), findsOneWidget);
+    // Gemini 4 Neon (New) should be positioned above Gemini 3.8 Flash (Leaving Soon)
+    final neonY = tester.getTopLeft(find.text('Gemini 4 Neon')).dy;
+    final flashY = tester.getTopLeft(find.text('Gemini 3.8 Flash')).dy;
+    expect(neonY, lessThan(flashY));
+
+    // Switch to Low variant inside already-expanded Gemini 4 Neon
+    await tester.tap(find.text('Low'));
+    await tester.pumpAndSettle();
+    expect(find.text('Gemini 4 Neon (Low)'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField).first, '测试新建会话');
+    await tester.tap(find.text('立即开启'));
+    await tester.pumpAndSettle();
+    expect(startedModel, 'gemini-4-neon-low');
   });
 }

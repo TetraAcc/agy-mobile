@@ -11,6 +11,7 @@ from agy_hub.common.transcript import (
     parse_project_name_and_path,
     parse_transcript_line,
     read_conversation_db_error_steps,
+    read_conversation_db_latest_user_models,
 )
 
 
@@ -154,3 +155,20 @@ def test_read_conversation_db_error_steps_parses_quota_429_protobuf(tmp_path: Pa
 
     # Verify min_step_index filter
     assert read_conversation_db_error_steps(db_path, min_step_index=68) == []
+
+
+def test_read_conversation_db_latest_user_models_detects_orchestrator_dual_model(tmp_path: Path) -> None:
+    # Build USER_INPUT (step_type=14) protobuf payload with r.19.13.1.1=1532 and r.19.13.1.60.1=1525
+    inner_1 = _pb_field_varint(1, 1532) + _pb_field_bytes(60, _pb_field_varint(1, 1525))
+    payload_orch = _pb_field_bytes(19, _pb_field_bytes(13, _pb_field_bytes(1, inner_1)))
+
+    db_path = tmp_path / "orch.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)")
+    conn.execute("INSERT INTO steps (idx, step_type, step_payload) VALUES (10, 14, ?)", (payload_orch,))
+    conn.commit()
+    conn.close()
+
+    plan_enum, exec_enum = read_conversation_db_latest_user_models(db_path)
+    assert plan_enum == 1532
+    assert exec_enum == 1525

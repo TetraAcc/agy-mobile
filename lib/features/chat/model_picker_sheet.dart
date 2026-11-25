@@ -4,12 +4,53 @@ import '../../core/config/responsive_layout.dart';
 import '../../core/theme/app_colors.dart';
 import '../../models/models.dart';
 
+class _ModelFamilyGroup {
+  final String familyName;
+  final String group;
+  final String icon;
+  final String tag;
+  final double? remainingFraction;
+  final List<_ModelVariantEntry> variants;
+
+  const _ModelFamilyGroup({
+    required this.familyName,
+    required this.group,
+    required this.icon,
+    required this.tag,
+    required this.remainingFraction,
+    required this.variants,
+  });
+
+  bool containsModelId(String id) => id.isNotEmpty && variants.any((v) => v.option.id == id);
+
+  _ModelVariantEntry? findVariant(String id) {
+    if (id.isEmpty) return null;
+    for (final v in variants) {
+      if (v.option.id == id) return v;
+    }
+    return null;
+  }
+}
+
+class _ModelVariantEntry {
+  final String variantLabel;
+  final OfficialModelOption option;
+
+  const _ModelVariantEntry({
+    required this.variantLabel,
+    required this.option,
+  });
+}
+
 class ModelPickerSheet extends StatefulWidget {
   final bool isDark;
   final List<OfficialModelOption> models;
   final String activeModel;
   final String pendingModel;
   final ValueChanged<String?> onSelectModel;
+  final String sheetTitle;
+  final String? subtitleOverride;
+  final bool allowKeepCurrent;
 
   const ModelPickerSheet({
     super.key,
@@ -18,6 +59,9 @@ class ModelPickerSheet extends StatefulWidget {
     required this.activeModel,
     required this.pendingModel,
     required this.onSelectModel,
+    this.sheetTitle = '切换当前会话模型',
+    this.subtitleOverride,
+    this.allowKeepCurrent = true,
   });
 
   static Future<void> show(
@@ -27,6 +71,9 @@ class ModelPickerSheet extends StatefulWidget {
     required String activeModel,
     required String pendingModel,
     required ValueChanged<String?> onSelectModel,
+    String sheetTitle = '切换当前会话模型',
+    String? subtitleOverride,
+    bool allowKeepCurrent = true,
   }) {
     return showModalBottomSheet<void>(
       context: context,
@@ -38,6 +85,9 @@ class ModelPickerSheet extends StatefulWidget {
         activeModel: activeModel,
         pendingModel: pendingModel,
         onSelectModel: onSelectModel,
+        sheetTitle: sheetTitle,
+        subtitleOverride: subtitleOverride,
+        allowKeepCurrent: allowKeepCurrent,
       ),
     );
   }
@@ -49,11 +99,99 @@ class ModelPickerSheet extends StatefulWidget {
 class _ModelPickerSheetState extends State<ModelPickerSheet> {
   final TextEditingController _searchController = TextEditingController();
   String _query = '';
+  String? _expandedFamily;
+
+  static final RegExp _parenVariantRe = RegExp(r'^(.*?)\s*\(([^()]+)\)\s*$');
+  static const List<String> _variantOrder = [
+    'low',
+    'fast',
+    'medium',
+    'high',
+    'xhigh',
+    'thinking',
+    'neon',
+    'carbon',
+    'argon',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    final targetId = widget.pendingModel.isNotEmpty ? widget.pendingModel : widget.activeModel;
+    final families = _buildFamilies(widget.models);
+    for (final f in families) {
+      if (f.variants.length > 1 && f.containsModelId(targetId)) {
+        _expandedFamily = f.familyName;
+        break;
+      }
+    }
+  }
 
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  (String family, String variant) _splitFamilyAndVariant(OfficialModelOption opt) {
+    final m = _parenVariantRe.firstMatch(opt.displayName.trim());
+    if (m != null) {
+      final base = (m.group(1) ?? '').trim();
+      final variant = (m.group(2) ?? '').trim();
+      if (base.isNotEmpty && variant.isNotEmpty) {
+        return (base, variant);
+      }
+    }
+    return (opt.displayName.trim(), '');
+  }
+
+  int _variantRank(String label) {
+    final idx = _variantOrder.indexOf(label.trim().toLowerCase());
+    return idx >= 0 ? idx : _variantOrder.length;
+  }
+
+  List<_ModelFamilyGroup> _buildFamilies(List<OfficialModelOption> list) {
+    final map = <String, List<_ModelVariantEntry>>{};
+    final meta = <String, OfficialModelOption>{};
+    final order = <String>[];
+
+    for (final opt in list) {
+      final (family, variant) = _splitFamilyAndVariant(opt);
+      if (!map.containsKey(family)) {
+        order.add(family);
+        meta[family] = opt;
+        map[family] = <_ModelVariantEntry>[];
+      }
+      map[family]!.add(_ModelVariantEntry(
+        variantLabel: variant.isNotEmpty ? variant : '默认',
+        option: opt,
+      ));
+    }
+
+    return order.map((family) {
+      final first = meta[family]!;
+      final variants = map[family]!
+        ..sort((a, b) {
+          final ra = _variantRank(a.variantLabel);
+          final rb = _variantRank(b.variantLabel);
+          return ra != rb ? ra.compareTo(rb) : a.variantLabel.compareTo(b.variantLabel);
+        });
+      double? rem;
+      for (final v in variants) {
+        if (v.option.remainingFraction != null) {
+          rem = v.option.remainingFraction;
+          break;
+        }
+      }
+      return _ModelFamilyGroup(
+        familyName: family,
+        group: first.group.isNotEmpty ? first.group : 'Other',
+        icon: first.icon,
+        tag: first.thinkingBadge,
+        remainingFraction: rem,
+        variants: variants,
+      );
+    }).toList();
   }
 
   Color _quotaColor(double frac) {
@@ -75,6 +213,14 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
     Navigator.of(context).pop();
   }
 
+  void _selectOption(OfficialModelOption opt) {
+    final isCurrent = widget.allowKeepCurrent && widget.activeModel == opt.id;
+    widget.onSelectModel(isCurrent ? null : opt.id);
+    Navigator.of(context).pop();
+  }
+
+  static bool _isLeavingSoon(String tag) => tag.toLowerCase().contains('leaving soon');
+
   @override
   Widget build(BuildContext context) {
     final isDark = widget.isDark;
@@ -83,7 +229,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
 
     final query = _query.trim().toLowerCase();
-    final filtered = widget.models.where((m) {
+    final filteredModels = widget.models.where((m) {
       if (query.isEmpty) return true;
       return m.displayName.toLowerCase().contains(query) ||
           m.id.toLowerCase().contains(query) ||
@@ -91,11 +237,19 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
           m.thinkingBadge.toLowerCase().contains(query);
     }).toList();
 
-    final grouped = <String, List<OfficialModelOption>>{};
-    const preferredOrder = ['Gemini', 'Claude', 'Orchestrator', 'GPT', 'Other'];
-    for (final m in filtered) {
-      final grp = m.group.isNotEmpty ? m.group : 'Other';
-      grouped.putIfAbsent(grp, () => <OfficialModelOption>[]).add(m);
+    final families = _buildFamilies(filteredModels);
+    final grouped = <String, List<_ModelFamilyGroup>>{};
+    const preferredOrder = ['Gemini', 'Orchestrator', 'Claude', 'GPT', 'Other'];
+    for (final f in families) {
+      grouped.putIfAbsent(f.group, () => <_ModelFamilyGroup>[]).add(f);
+    }
+    for (final list in grouped.values) {
+      final activeOnes = list.where((f) => !_isLeavingSoon(f.tag)).toList();
+      final leavingOnes = list.where((f) => _isLeavingSoon(f.tag)).toList();
+      list
+        ..clear()
+        ..addAll(activeOnes)
+        ..addAll(leavingOnes);
     }
     final orderedGroups = grouped.keys.toList()
       ..sort((a, b) {
@@ -109,6 +263,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
     final activeDisplay = widget.activeModel.isNotEmpty
         ? formatModelDisplayName(widget.activeModel, widget.models)
         : '跟随默认模型';
+    final selectedId = widget.pendingModel.isNotEmpty ? widget.pendingModel : widget.activeModel;
     final hasPendingSwitch =
         widget.pendingModel.isNotEmpty && widget.pendingModel != widget.activeModel;
 
@@ -154,7 +309,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                '切换当前会话模型',
+                                widget.sheetTitle,
                                 style: TextStyle(
                                   fontSize: 15,
                                   fontWeight: FontWeight.w700,
@@ -163,7 +318,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                '当前会话：$activeDisplay · 切换后从下一条消息生效',
+                                widget.subtitleOverride ?? '当前：$activeDisplay · 点击系列选思考强度',
                                 style: TextStyle(
                                   fontSize: 11.5,
                                   color: isDark ? Colors.white54 : Colors.black54,
@@ -188,7 +343,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
                     ),
                   ),
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                     child: TextField(
                       controller: _searchController,
                       onChanged: (v) => setState(() => _query = v),
@@ -198,7 +353,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
                       ),
                       decoration: InputDecoration(
                         isDense: true,
-                        hintText: '搜索模型名或 ID（如 neon / claude / low）...',
+                        hintText: '搜索模型（如 neon / claude / orchestrator）...',
                         hintStyle: TextStyle(
                           fontSize: 13,
                           color: isDark ? Colors.white38 : Colors.black38,
@@ -219,7 +374,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
                             : null,
                         filled: true,
                         fillColor: isDark ? AppColors.darkBg : AppColors.lightBg,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(10),
                           borderSide: BorderSide(
@@ -245,7 +400,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
                           Navigator.of(context).pop();
                         },
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           decoration: BoxDecoration(
                             color: primary.withValues(alpha: isDark ? 0.14 : 0.08),
                             borderRadius: BorderRadius.circular(10),
@@ -257,7 +412,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
                               const SizedBox(width: 8),
                               Expanded(
                                 child: Text(
-                                  '取消待切换，恢复沿用当前会话模型 ($activeDisplay)',
+                                  '取消待切换，恢复沿用 $activeDisplay',
                                   style: TextStyle(
                                     fontSize: 12,
                                     fontWeight: FontWeight.w600,
@@ -290,7 +445,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
                             children: [
                               for (final grp in orderedGroups) ...[
                                 Padding(
-                                  padding: const EdgeInsets.fromLTRB(6, 10, 6, 4),
+                                  padding: const EdgeInsets.fromLTRB(6, 8, 6, 4),
                                   child: Text(
                                     grp,
                                     style: TextStyle(
@@ -301,15 +456,12 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
                                     ),
                                   ),
                                 ),
-                                for (final m in grouped[grp]!)
-                                  _buildModelTile(
+                                for (final family in grouped[grp]!)
+                                  _buildFamilyTile(
                                     context,
-                                    m,
-                                    isCurrent: widget.activeModel == m.id,
-                                    isSelected: (widget.pendingModel.isNotEmpty
-                                            ? widget.pendingModel
-                                            : widget.activeModel) ==
-                                        m.id,
+                                    family,
+                                    selectedId: selectedId,
+                                    forceExpand: query.isNotEmpty,
                                   ),
                               ],
                             ],
@@ -324,60 +476,78 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
     );
   }
 
-  Widget _buildModelTile(
+  Widget _buildFamilyTile(
     BuildContext context,
-    OfficialModelOption model, {
-    required bool isCurrent,
-    required bool isSelected,
+    _ModelFamilyGroup family, {
+    required String selectedId,
+    required bool forceExpand,
   }) {
     final isDark = widget.isDark;
     final primary = Theme.of(context).colorScheme.primary;
-    final rem = model.remainingFraction;
+    final isSingle = family.variants.length == 1;
+    final currentVariant = family.findVariant(widget.activeModel);
+    final selectedVariant = family.findVariant(selectedId);
+    final hasSelection = selectedVariant != null;
+    final isExpanded = !isSingle && (forceExpand || _expandedFamily == family.familyName);
+    final rem = family.remainingFraction;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: () {
-          widget.onSelectModel(isCurrent ? null : model.id);
-          Navigator.of(context).pop();
-        },
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-          decoration: BoxDecoration(
-            color: isSelected
-                ? primary.withValues(alpha: isDark ? 0.14 : 0.08)
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: isSelected
-                  ? primary.withValues(alpha: 0.45)
-                  : Colors.transparent,
-            ),
-          ),
-          child: Row(
-            children: [
-              Text(model.icon, style: const TextStyle(fontSize: 14)),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+    final isLeavingSoon = _isLeavingSoon(family.tag);
+    final familyTextColor = (isLeavingSoon && !hasSelection)
+        ? (isDark ? Colors.white60 : Colors.black54)
+        : (isDark ? Colors.white : const Color(0xFF18181B));
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 2.5),
+      decoration: BoxDecoration(
+        color: (hasSelection || isExpanded)
+            ? primary.withValues(alpha: isDark ? 0.10 : 0.05)
+            : (isDark ? Colors.white.withValues(alpha: 0.025) : Colors.black.withValues(alpha: 0.02)),
+        borderRadius: BorderRadius.circular(11),
+        border: Border.all(
+          color: hasSelection
+              ? primary.withValues(alpha: 0.45)
+              : (isExpanded
+                  ? primary.withValues(alpha: 0.28)
+                  : (isDark ? Colors.white.withValues(alpha: 0.06) : Colors.black.withValues(alpha: 0.06))),
+          width: 0.8,
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(11),
+            onTap: () {
+              if (isSingle) {
+                _selectOption(family.variants.first.option);
+              } else {
+                setState(() {
+                  _expandedFamily = (_expandedFamily == family.familyName) ? null : family.familyName;
+                });
+              }
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 10),
+              child: Row(
+                children: [
+                  Text(family.icon, style: const TextStyle(fontSize: 14)),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Row(
                       children: [
                         Flexible(
                           child: Text(
-                            model.displayName,
+                            family.familyName,
                             style: TextStyle(
                               fontSize: 13.5,
-                              fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                              color: isDark ? Colors.white : const Color(0xFF18181B),
+                              fontWeight: hasSelection ? FontWeight.w700 : FontWeight.w500,
+                              color: familyTextColor,
                             ),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        if (model.thinkingBadge.isNotEmpty) ...[
+                        if (family.tag.isNotEmpty) ...[
                           const SizedBox(width: 6),
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
@@ -388,7 +558,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
                               borderRadius: BorderRadius.circular(4),
                             ),
                             child: Text(
-                              model.thinkingBadge,
+                              family.tag,
                               style: TextStyle(
                                 fontSize: 9.5,
                                 color: isDark ? Colors.white60 : Colors.black54,
@@ -396,16 +566,18 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
                             ),
                           ),
                         ],
-                        if (isCurrent) ...[
+                        if (selectedVariant != null) ...[
                           const SizedBox(width: 6),
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
                             decoration: BoxDecoration(
                               color: primary.withValues(alpha: 0.16),
-                              borderRadius: BorderRadius.circular(4),
+                              borderRadius: BorderRadius.circular(5),
                             ),
                             child: Text(
-                              '当前',
+                              currentVariant?.option.id == selectedVariant.option.id
+                                  ? (isSingle ? '当前' : '当前·${selectedVariant.variantLabel}')
+                                  : (isSingle ? '待切换' : '切→${selectedVariant.variantLabel}'),
                               style: TextStyle(
                                 fontSize: 9.5,
                                 fontWeight: FontWeight.w600,
@@ -416,44 +588,122 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
                         ],
                       ],
                     ),
-                    const SizedBox(height: 1.5),
-                    Text(
-                      model.id,
-                      style: TextStyle(
-                        fontSize: 10.5,
-                        fontFamily: 'monospace',
-                        color: isDark ? Colors.white38 : Colors.black45,
+                  ),
+                  if (rem != null) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: _quotaColor(rem).withValues(alpha: isDark ? 0.16 : 0.12),
+                        borderRadius: BorderRadius.circular(6),
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                      child: Text(
+                        '${(rem * 100).round()}%',
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                          color: _quotaColor(rem),
+                        ),
+                      ),
                     ),
                   ],
-                ),
+                  const SizedBox(width: 6),
+                  Icon(
+                    isSingle
+                        ? (hasSelection ? Icons.check_rounded : Icons.chevron_right_rounded)
+                        : (isExpanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded),
+                    size: 18,
+                    color: hasSelection
+                        ? primary
+                        : (isDark ? Colors.white38 : Colors.black38),
+                  ),
+                ],
               ),
-              if (rem != null) ...[
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: _quotaColor(rem).withValues(alpha: isDark ? 0.16 : 0.12),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    '${(rem * 100).round()}%',
-                    style: TextStyle(
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.w600,
-                      color: _quotaColor(rem),
-                    ),
-                  ),
-                ),
-              ],
-              if (isSelected) ...[
-                const SizedBox(width: 6),
-                Icon(Icons.check_rounded, size: 17, color: primary),
-              ],
-            ],
+            ),
           ),
+          if (isExpanded)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(11, 2, 11, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Divider(
+                    height: 1,
+                    color: isDark ? Colors.white.withValues(alpha: 0.06) : Colors.black.withValues(alpha: 0.06),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 7,
+                    runSpacing: 7,
+                    children: [
+                      for (final v in family.variants)
+                        _buildVariantChip(
+                          context,
+                          v,
+                          isCurrent: widget.activeModel == v.option.id,
+                          isSelected: selectedId == v.option.id,
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVariantChip(
+    BuildContext context,
+    _ModelVariantEntry entry, {
+    required bool isCurrent,
+    required bool isSelected,
+  }) {
+    final isDark = widget.isDark;
+    final primary = Theme.of(context).colorScheme.primary;
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => _selectOption(entry.option),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? primary.withValues(alpha: isDark ? 0.24 : 0.14)
+              : (isDark ? AppColors.darkBg : Colors.white),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isSelected
+                ? primary
+                : (isDark ? AppColors.darkBorder : AppColors.lightBorder),
+            width: isSelected ? 1.2 : 0.8,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isSelected) ...[
+              Icon(Icons.check_rounded, size: 13, color: primary),
+              const SizedBox(width: 4),
+            ] else if (isCurrent) ...[
+              Container(
+                width: 6,
+                height: 6,
+                margin: const EdgeInsets.only(right: 5),
+                decoration: BoxDecoration(shape: BoxShape.circle, color: primary),
+              ),
+            ],
+            Text(
+              entry.variantLabel,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                color: isSelected
+                    ? primary
+                    : (isDark ? const Color(0xFFE4E4E7) : const Color(0xFF27272A)),
+              ),
+            ),
+          ],
         ),
       ),
     );

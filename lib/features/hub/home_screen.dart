@@ -342,25 +342,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
   void _showModelPicker(HubState hubState, HubController hubNotifier, bool isDark) {
-    final models = hubState.availableModels.isNotEmpty ? hubState.availableModels : kAllOfficialModels;
     unawaited(hubNotifier.fetchModels());
-    ModelPickerSheet.show(
-      context,
-      isDark: isDark,
-      models: models,
-      activeModel: hubState.activeSessionModel,
-      pendingModel: hubState.pendingSwitchModel,
-      onSelectModel: (selectedId) {
-        hubNotifier.setSessionPendingModel(selectedId);
-        if (selectedId == null ||
-            selectedId.trim().isEmpty ||
-            selectedId == hubState.activeSessionModel) {
-          _showSnack('已恢复沿用当前会话模型');
-        } else {
-          final label = formatModelDisplayName(selectedId, models);
-          _showSnack('下一条消息将切换为 $label');
-        }
-      },
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Consumer(
+        builder: (_, sheetRef, __) {
+          final liveState = sheetRef.watch(hubControllerProvider);
+          final models =
+              liveState.availableModels.isNotEmpty ? liveState.availableModels : kAllOfficialModels;
+          return ModelPickerSheet(
+            isDark: isDark,
+            models: models,
+            activeModel: liveState.activeSessionModel,
+            pendingModel: liveState.pendingSwitchModel,
+            onSelectModel: (selectedId) {
+              hubNotifier.setSessionPendingModel(selectedId);
+              if (selectedId == null ||
+                  selectedId.trim().isEmpty ||
+                  selectedId == liveState.activeSessionModel) {
+                _showSnack('已恢复沿用当前会话模型');
+              } else {
+                final label = formatModelDisplayName(selectedId, models);
+                _showSnack('下一条消息将切换为 $label');
+              }
+            },
+          );
+        },
+      ),
     );
   }
 
@@ -1047,7 +1057,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       onRefreshNodes: () => hubNotifier.refreshNodes(),
       quotaData: hubState.quota,
       isLoadingQuota: hubState.isLoadingQuota,
-      onRequestQuota: () => hubNotifier.fetchQuota(),
+      onRequestQuota: () {
+        hubNotifier.fetchQuota();
+        unawaited(hubNotifier.fetchModels());
+      },
       canWrite: hubState.canWrite,
       canDelete: hubState.canDelete,
       onNewSession: () => _showNewSessionDialog(),
@@ -1161,6 +1174,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         if (isOpen) {
           hubNotifier.refreshNodes();
           hubNotifier.fetchQuota();
+          unawaited(hubNotifier.fetchModels());
         }
       },
       appBar: AppBar(

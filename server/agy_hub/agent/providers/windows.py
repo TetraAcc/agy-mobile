@@ -7,6 +7,7 @@ import glob
 import json
 import logging
 import os
+import re
 import socket
 import time
 from pathlib import Path
@@ -69,6 +70,8 @@ class WindowsEngineProvider(BaseEngineProvider):
         self._hub_cache_ts: float = 0.0
         self._model_catalog_cache: ModelsResponse | None = None
         self._model_id_to_alias: dict[str, dict[str, Any]] = {}
+        self._enum_num_to_model_id: dict[int, str] = {}
+        self._orchestrator_by_core: dict[str, str] = {}
         self._last_models_sync: float = 0.0
         super().__init__(config, registry)
 
@@ -202,6 +205,8 @@ class WindowsEngineProvider(BaseEngineProvider):
 
         models: list[ModelOption] = []
         id_to_alias: dict[str, dict[str, Any]] = {}
+        enum_num_to_id: dict[int, str] = {}
+        orchestrator_by_core: dict[str, str] = {}
         default_model_id = ""
         seen_ids: set[str] = set()
 
@@ -234,6 +239,13 @@ class WindowsEngineProvider(BaseEngineProvider):
                 id_to_alias[label.lower()] = moa_dict
                 if raw_moa_val:
                     id_to_alias[raw_moa_val.lower()] = moa_dict
+                    m_enum = re.fullmatch(r"MODEL_PLACEHOLDER_M(\d+)", raw_moa_val)
+                    if m_enum:
+                        enum_num_to_id[1000 + int(m_enum.group(1))] = model_id
+
+            m_orch = re.search(r"orchestrator\s*\(([^)]+)\)", label, flags=re.IGNORECASE)
+            if m_orch:
+                orchestrator_by_core[m_orch.group(1).strip().lower()] = model_id
 
             models.append(
                 ModelOption(
@@ -261,8 +273,23 @@ class WindowsEngineProvider(BaseEngineProvider):
         )
         self._model_catalog_cache = catalog
         self._model_id_to_alias = id_to_alias
+        self._enum_num_to_model_id = enum_num_to_id
+        self._orchestrator_by_core = orchestrator_by_core
         self._last_models_sync = now
         return catalog
+
+    def resolve_model_id_by_enum(self, model_enum: int | None) -> str:
+        if model_enum is None:
+            return ""
+        return self._enum_num_to_model_id.get(model_enum, "")
+
+    def resolve_orchestrator_model_id(self, plan_enum: int | None, fallback_model: str = "") -> str:
+        primary_hint = self.resolve_model_id_by_enum(plan_enum) or fallback_model
+        low = primary_hint.lower()
+        for core, orch_id in self._orchestrator_by_core.items():
+            if core and core in low:
+                return orch_id
+        return super().resolve_orchestrator_model_id(plan_enum, fallback_model=fallback_model)
 
     async def _resolve_model_or_alias(self, model: str | None) -> dict[str, Any] | None:
         raw = (model or "").strip()

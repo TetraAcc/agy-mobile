@@ -421,6 +421,7 @@ class HubController extends Notifier<HubState> {
       if (!_disposed && state.selectedNodeId == nodeId) {
         unawaited(refreshNodes());
         fetchQuota();
+        unawaited(fetchModels());
       }
     });
 
@@ -457,6 +458,7 @@ class HubController extends Notifier<HubState> {
       }
     }));
     unawaited(refreshSessionTree());
+    unawaited(fetchModels());
     if (state.activeSessionId.isNotEmpty) {
       await _syncActiveSessionSilent();
     }
@@ -806,12 +808,21 @@ class HubController extends Notifier<HubState> {
           }
         }
         final stepModel = event.step.model.trim();
+        final preserveOrchestrator = state.activeSessionModel.toLowerCase().contains('orchestrator') &&
+            state.pendingSwitchModel.isEmpty &&
+            stepModel.isNotEmpty &&
+            !stepModel.toLowerCase().contains('orchestrator');
+        final nextActiveModel = (stepModel.isNotEmpty && !preserveOrchestrator)
+            ? stepModel
+            : state.activeSessionModel;
+        final clearPending = stepModel.isNotEmpty &&
+            (state.pendingSwitchModel == stepModel ||
+                state.pendingSwitchModel.toLowerCase().contains('orchestrator'));
         state = state.copyWith(
           messages: updated,
           runningSessionIds: nextRunning,
-          activeSessionModel: stepModel.isNotEmpty ? stepModel : state.activeSessionModel,
-          clearPendingSwitchModel:
-              stepModel.isNotEmpty && state.pendingSwitchModel == stepModel,
+          activeSessionModel: nextActiveModel,
+          clearPendingSwitchModel: clearPending,
         );
         _syncRunningNotification();
         _maybeNotifyAskQuestion(event.step);

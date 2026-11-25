@@ -225,6 +225,10 @@ _PB_CONTAINER_PATHS: set[str] = {
     "r.5.1",
     "r.5.26",
     "r.5.26.1",
+    "r.19",
+    "r.19.13",
+    "r.19.13.1",
+    "r.19.13.1.60",
     "r.24",
     "r.24.3",
 }
@@ -440,3 +444,46 @@ def read_conversation_db_error_steps(
             except Exception:
                 pass
     return steps
+
+
+def read_conversation_db_latest_user_models(
+    conv_db_path: Path,
+) -> tuple[int | None, int | None]:
+    """Read (plan_model_enum, exec_model_enum) from the latest USER_INPUT (step_type=14) row.
+
+    In Antigravity Orchestrator mode (Plan + Execute dual-model), the latest USER_INPUT carries
+    both `r.19.13.1.1(v)` (primary planner model enum) and `r.19.13.1.60.1(v)` (offload executor
+    model enum). Standard single-model turns only set `r.19.13.1.1(v)`.
+    """
+    if not conv_db_path.exists() or not conv_db_path.is_file():
+        return None, None
+
+    conn: sqlite3.Connection | None = None
+    try:
+        uri = f"{conv_db_path.resolve().as_uri()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=1.5)
+        conn.execute("PRAGMA busy_timeout=1500;")
+        row = conn.execute(
+            "SELECT step_payload FROM steps WHERE step_type = 14 ORDER BY idx DESC LIMIT 1"
+        ).fetchone()
+        if not row or not isinstance(row[0], (bytes, bytearray)):
+            return None, None
+        entries = _decode_pb_entries(bytes(row[0]), "r") or []
+        plan_enum: int | None = None
+        exec_enum: int | None = None
+        for key, val in entries:
+            if key == "r.19.13.1.1(v)" and isinstance(val, int) and plan_enum is None:
+                plan_enum = val
+            elif key == "r.19.13.1.60.1(v)" and isinstance(val, int) and exec_enum is None:
+                exec_enum = val
+            if plan_enum is not None and exec_enum is not None:
+                break
+        return plan_enum, exec_enum
+    except (sqlite3.Error, OSError):
+        return None, None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass

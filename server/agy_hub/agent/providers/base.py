@@ -33,6 +33,7 @@ from agy_hub.common.transcript import (
     parse_project_name_and_path,
     parse_transcript_line,
     read_conversation_db_error_steps,
+    read_conversation_db_latest_user_models,
 )
 
 logger = logging.getLogger(__name__)
@@ -564,6 +565,7 @@ class BaseEngineProvider(ABC):
             if step.model:
                 active_model = step.model
                 break
+        active_model = self.resolve_active_model_sync(sid, fallback_model=active_model)
 
         if before_step is not None:
             merged = [s for s in merged if s.step_index < before_step]
@@ -652,6 +654,37 @@ class BaseEngineProvider(ABC):
     @abstractmethod
     async def fetch_quota(self) -> QuotaResponse:
         """Retrieve current model quota summary."""
+
+    def resolve_model_id_by_enum(self, model_enum: int | None) -> str:
+        """Override in subclasses that map numeric MODEL_PLACEHOLDER enums to model IDs."""
+        return ""
+
+    def resolve_orchestrator_model_id(self, plan_enum: int | None, fallback_model: str = "") -> str:
+        """Map dual-model Orchestrator (plan_enum + exec_enum) back to its Orchestrator modelId."""
+        primary_hint = self.resolve_model_id_by_enum(plan_enum) or fallback_model
+        low = primary_hint.lower()
+        if "neon" in low:
+            return "gemini-pro-orchestrator-neon"
+        if "carbon" in low:
+            return "gemini-pro-orchestrator"
+        if "argon" in low:
+            return "gemini-pro-orchestrator-argon"
+        return "gemini-pro-orchestrator-neon" if plan_enum == 1532 else (fallback_model or "gemini-pro-orchestrator")
+
+    def resolve_active_model_sync(self, session_id: str, *, fallback_model: str = "") -> str:
+        """Detect Orchestrator dual-model sessions from conversation DB, falling back to transcript model."""
+        plan_enum, exec_enum = read_conversation_db_latest_user_models(
+            self.get_conversation_db_path(session_id)
+        )
+        if exec_enum is not None:
+            return self.resolve_orchestrator_model_id(plan_enum, fallback_model=fallback_model)
+        if plan_enum is not None:
+            mapped = self.resolve_model_id_by_enum(plan_enum)
+            if mapped and "orchestrator" in mapped.lower():
+                return mapped
+            if not fallback_model and mapped:
+                return mapped
+        return fallback_model
 
     @staticmethod
     def infer_model_group(model_id: str, label: str = "") -> str:
