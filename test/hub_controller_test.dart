@@ -112,6 +112,8 @@ class FakeApiClient extends ApiClient {
   bool throwNetworkErrorOnSend = false;
   bool throwGetNodesError = false;
   bool messagesIsRunning = false;
+  bool failPinSession = false;
+  final List<(String sessionId, bool pinned)> pinCalls = [];
 
   FakeApiClient()
       : super(
@@ -155,6 +157,23 @@ class FakeApiClient extends ApiClient {
       },
       generalSessions: [SessionItem(id: 's2', title: '通用会话', rootId: 'scratch')],
       engineAlive: true,
+    );
+  }
+
+  @override
+  Future<({bool ok, bool isPinned, String message})> setSessionPinned(
+    String nodeId,
+    String sessionId, {
+    required bool pinned,
+  }) async {
+    pinCalls.add((sessionId, pinned));
+    if (failPinSession) {
+      throw const ApiException(500, 'Pin RPC error');
+    }
+    return (
+      ok: true,
+      isPinned: pinned,
+      message: pinned ? '已置顶并同步至桌面端' : '已取消置顶并同步至桌面端',
     );
   }
 
@@ -1113,5 +1132,71 @@ void main() {
     expect(onlineState.isInitializing, false);
     expect(onlineState.isShowingCachedData, false);
     expect(onlineState.messages.any((m) => m.content == '后台期间新增回复'), true);
+  });
+
+  test('HubController.toggleSessionPin 支持乐观置顶、排序并在失败时回滚', () async {
+    final fakeApi = FakeApiClient()
+      ..customWinTree = const SessionTreeData(
+        projects: {
+          'Demo': [
+            SessionItem(id: 's1', title: '普通会话1', isPinned: false),
+            SessionItem(id: 's2', title: '普通会话2', isPinned: false),
+          ],
+        },
+        generalSessions: [SessionItem(id: 'g1', title: '通用会话', isPinned: false)],
+        engineAlive: true,
+      );
+
+    final container = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(fakeApi),
+        tokenStoreProvider.overrideWithValue(MemoryTokenStore(initialAccess: 'tok')),
+        eventSocketFactoryProvider.overrideWithValue(({
+          required ServerConfig serverConfig,
+          required String nodeId,
+          required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
+        }) => FakeEventSocket(nodeId)),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const user = UserProfile(
+      id: 1,
+      username: 'tetra',
+      displayName: 'Tetra',
+      role: 'admin',
+      defaultNode: 'win',
+      allowedNodes: ['win'],
+      nodePermissions: {
+        'win': UserPermissionGrant(nodeId: 'win', canWrite: true, canDelete: true),
+      },
+    );
+
+    final hub = container.read(hubControllerProvider.notifier);
+    await hub.initializeForUser(user);
+    await Future<void>.delayed(Duration.zero);
+
+    // 1. 置顶项目下第二个会话 s2，应变为 isPinned=true 且自动排到 Demo 第一位
+    final resOk = await hub.toggleSessionPin(
+      const SessionItem(id: 's2', title: '普通会话2', isPinned: false),
+    );
+    expect(resOk.error, isNull);
+    expect(resOk.isPinned, true);
+    expect(fakeApi.pinCalls.last, ('s2', true));
+
+    // refreshSessionTree 异步对齐前检查缓存树和状态（或自定义 tree 对齐）
+    final curItems = container.read(hubControllerProvider).projects['Demo']!;
+    expect(curItems.first.id, 's2');
+    expect(curItems.first.isPinned, true);
+
+    // 2. 接口失败时应回滚状态
+    fakeApi.failPinSession = true;
+    final resFail = await hub.toggleSessionPin(
+      const SessionItem(id: 's1', title: '普通会话1', isPinned: false),
+    );
+    expect(resFail.error, isNotNull);
+    final afterRollback = container.read(hubControllerProvider).projects['Demo']!;
+    expect(afterRollback.firstWhere((e) => e.id == 's1').isPinned, false);
   });
 }

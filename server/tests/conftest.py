@@ -15,6 +15,7 @@ from agy_hub.common.sandbox import RootRegistry
 from agy_hub.common.schemas import (
     ActionAckResponse,
     CreateSessionResponse,
+    PinSessionResponse,
     QuotaBucket,
     QuotaGroup,
     QuotaResponse,
@@ -55,6 +56,19 @@ class FakeEngineProvider(BaseEngineProvider):
 
     def get_pinned_session_ids(self) -> set[str]:
         return set(self.pinned_ids)
+
+    async def set_session_pinned(self, session_id: str, pinned: bool) -> PinSessionResponse:
+        sid = self.validate_session_id(session_id)
+        if pinned:
+            self.pinned_ids.add(sid)
+        else:
+            self.pinned_ids.discard(sid)
+        return PinSessionResponse(
+            ok=True,
+            session_id=sid,
+            is_pinned=pinned,
+            message="已置顶会话" if pinned else "已取消置顶",
+        )
 
     def is_managed_process_running(self, session_id: str) -> bool:
         return session_id in self.managed_running

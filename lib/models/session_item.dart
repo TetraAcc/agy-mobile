@@ -48,6 +48,29 @@ class SessionItem {
         'workspace_path': workspacePath,
         'root_id': rootId,
       };
+
+  SessionItem copyWith({
+    String? title,
+    String? preview,
+    String? updatedAt,
+    String? lastModified,
+    bool? isPinned,
+    bool? isRunning,
+    String? workspacePath,
+    String? rootId,
+  }) {
+    return SessionItem(
+      id: id,
+      title: title ?? this.title,
+      preview: preview ?? this.preview,
+      updatedAt: updatedAt ?? this.updatedAt,
+      lastModified: lastModified ?? this.lastModified,
+      isPinned: isPinned ?? this.isPinned,
+      isRunning: isRunning ?? this.isRunning,
+      workspacePath: workspacePath ?? this.workspacePath,
+      rootId: rootId ?? this.rootId,
+    );
+  }
 }
 
 class SessionTreeData {

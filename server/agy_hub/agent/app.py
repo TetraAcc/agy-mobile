@@ -45,6 +45,8 @@ from agy_hub.common.schemas import (
     NodeUpdateApplyRequest,
     NodeUpdateApplyResponse,
     NodeUpdateStatusResponse,
+    PinSessionRequest,
+    PinSessionResponse,
     QueuePauseRequest,
     QuotaResponse,
     SendMessageRequest,
@@ -266,6 +268,18 @@ def create_agent_app(
                 await engine_provider.stop_session(clean_sid)
 
         return await engine_provider.send_message(clean_sid, content=payload.content, model=payload.model)
+
+    @app.post("/agent/sessions/{sid}/pin", response_model=PinSessionResponse)
+    async def pin_session(
+        sid: str,
+        payload: PinSessionRequest,
+        _caller: GatewayCaller = Depends(require_write_caller),
+    ) -> PinSessionResponse:
+        try:
+            clean_sid = engine_provider.validate_session_id(sid)
+        except InvalidSessionIdError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return await engine_provider.set_session_pinned(clean_sid, payload.pinned)
 
     @app.post("/agent/sessions/{sid}/stop", response_model=ActionAckResponse)
     async def stop_session(

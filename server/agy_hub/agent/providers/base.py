@@ -21,6 +21,7 @@ from agy_hub.common.schemas import (
     DeleteSessionResponse,
     ModelOption,
     ModelsResponse,
+    PinSessionResponse,
     QuotaResponse,
     SessionMessagesResponse,
     SessionSummary,
@@ -244,9 +245,88 @@ class BaseEngineProvider(ABC):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(sorted(archived), ensure_ascii=False, indent=2), encoding="utf-8")
 
+    @property
+    def annotations_dir(self) -> Path:
+        return self.brain_dir.parent / "annotations"
+
+    def _read_annotations_map_sync(self) -> dict[str, dict[str, bool]]:
+        """Read authoritative per-conversation pinned/archived flags from annotations/*.pbtxt."""
+        ann_dir = self.annotations_dir
+        if not ann_dir.exists() or not ann_dir.is_dir():
+            return {}
+        result: dict[str, dict[str, bool]] = {}
+        try:
+            for p in ann_dir.iterdir():
+                if not p.is_file() or p.suffix.lower() != ".pbtxt":
+                    continue
+                cid = p.stem
+                try:
+                    raw = p.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                flags: dict[str, bool] = {}
+                m_pin = re.search(r"\bpinned\s*:\s*(true|false)\b", raw, flags=re.IGNORECASE)
+                if m_pin:
+                    flags["pinned"] = m_pin.group(1).lower() == "true"
+                m_arch = re.search(r"\barchived\s*:\s*(true|false)\b", raw, flags=re.IGNORECASE)
+                if m_arch:
+                    flags["archived"] = m_arch.group(1).lower() == "true"
+                if flags:
+                    result[cid] = flags
+        except OSError:
+            pass
+        return result
+
+    def _update_annotation_pinned_sync(self, session_id: str, pinned: bool) -> None:
+        """Atomically update pinned:true/false inside annotations/<sid>.pbtxt."""
+        sid = self.validate_session_id(session_id)
+        ann_dir = self.annotations_dir
+        ann_dir.mkdir(parents=True, exist_ok=True)
+        target = ann_dir / f"{sid}.pbtxt"
+        val_str = "true" if pinned else "false"
+        existing = ""
+        if target.exists():
+            try:
+                existing = target.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                existing = ""
+        if re.search(r"\bpinned\s*:\s*(true|false)\b", existing, flags=re.IGNORECASE):
+            updated = re.sub(
+                r"\bpinned\s*:\s*(true|false)\b",
+                f"pinned:{val_str}",
+                existing,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        else:
+            sep = " " if existing and not existing.endswith((" ", "\n", "\t")) else ""
+            updated = f"{existing}{sep}pinned:{val_str}"
+        tmp_path = target.with_suffix(".pbtxt.tmp")
+        tmp_path.write_text(updated, encoding="utf-8")
+        os.replace(tmp_path, target)
+
+    def get_pinned_order(self) -> list[str]:
+        """Optional ordering hint for pinned sessions (does not decide pinned status)."""
+        return []
+
     def get_pinned_session_ids(self) -> set[str]:
-        """Override in platform subclasses that support desktop pinned session metadata."""
-        return set()
+        """Read authoritative pinned session IDs from ~/.gemini/antigravity/annotations/*.pbtxt."""
+        ann_map = self._read_annotations_map_sync()
+        return {
+            cid
+            for cid, flags in ann_map.items()
+            if flags.get("pinned") is True and flags.get("archived") is not True
+        }
+
+    async def set_session_pinned(self, session_id: str, pinned: bool) -> PinSessionResponse:
+        sid = self.validate_session_id(session_id)
+        await asyncio.to_thread(self._update_annotation_pinned_sync, sid, pinned)
+        return PinSessionResponse(
+            ok=True,
+            session_id=sid,
+            is_pinned=pinned,
+            message="已置顶会话" if pinned else "已取消置顶",
+        )
 
     def is_managed_process_running(self, session_id: str) -> bool:
         """Override when provider tracks local child processes."""
@@ -424,7 +504,14 @@ class BaseEngineProvider(ABC):
         finally:
             conn.close()
 
+        ann_map = self._read_annotations_map_sync()
+        desktop_archived = {cid for cid, flags in ann_map.items() if flags.get("archived") is True}
+        if desktop_archived:
+            archived_ids = archived_ids | desktop_archived
+
         pinned_cids = self.get_pinned_session_ids()
+        pinned_order = self.get_pinned_order()
+        pinned_rank = {cid: idx for idx, cid in enumerate(pinned_order)}
         projects_dict: dict[str, list[SessionSummary]] = {}
         project_latest_time: dict[str, str] = {}
         general_sessions: list[SessionSummary] = []
@@ -507,12 +594,17 @@ class BaseEngineProvider(ABC):
             else:
                 general_sessions.append(summary)
 
+        def _pin_sort_key(s: SessionSummary) -> tuple[int, int]:
+            if s.is_pinned:
+                return (0, pinned_rank.get(s.id, 10**6))
+            return (1, 0)
+
         for proj_name, items in projects_dict.items():
-            items.sort(key=lambda s: not s.is_pinned)
+            items.sort(key=_pin_sort_key)
             if proj_name not in project_latest_time and items:
                 project_latest_time[proj_name] = items[0].updated_at
 
-        general_sessions.sort(key=lambda s: not s.is_pinned)
+        general_sessions.sort(key=_pin_sort_key)
 
         sorted_names = sorted(
             projects_dict.keys(),

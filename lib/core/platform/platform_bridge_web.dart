@@ -108,3 +108,12 @@ VoidCallback implRegisterWebDropAndPaste(void Function(PickedLocalFile file) onF
 Future<Uint8List?> implReadLocalFileBytes(String path) async => null;
 
 Future<void> implDeleteLocalFile(String path) async {}
+
+Future<({bool ok, bool cancelled, String? error})> implDownloadUrlToLocalFile({
+  required String url,
+  required String savePath,
+  void Function(int received, int total)? onProgress,
+  Object? cancelToken,
+}) async {
+  return (ok: false, cancelled: false, error: 'Web 端不支持本地安装包下载');
+}

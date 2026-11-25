@@ -264,6 +264,40 @@ class AndroidNativeBridge {
     } catch (_) {}
   }
 
+  static Future<({String versionName, int versionCode})?> getAppVersion() async {
+    if (!isAndroidNative) return null;
+    try {
+      final raw = await _channel.invokeMethod<Map<dynamic, dynamic>>('getAppVersion');
+      if (raw == null) return null;
+      return (
+        versionName: raw['versionName']?.toString() ?? '',
+        versionCode: (raw['versionCode'] as num?)?.toInt() ?? 0,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<({bool ok, bool needsPermission, String? error})> installApk(String path) async {
+    if (!isAndroidNative) {
+      return (ok: false, needsPermission: false, error: '当前非 Android 原生环境');
+    }
+    try {
+      final raw = await _channel.invokeMethod<Map<dynamic, dynamic>>('installApk', {
+        'path': path,
+      });
+      if (raw == null) {
+        return (ok: false, needsPermission: false, error: '未获取到安装器返回');
+      }
+      final ok = raw['ok'] == true;
+      final needsPerm = raw['needsPermission'] == true;
+      final err = raw['error']?.toString();
+      return (ok: ok, needsPermission: needsPerm, error: ok ? null : err);
+    } catch (e) {
+      return (ok: false, needsPermission: false, error: '拉起安装器失败: $e');
+    }
+  }
+
   static String inferMimeType(String filename) {
     final dot = filename.lastIndexOf('.');
     if (dot < 0 || dot == filename.length - 1) return '*/*';

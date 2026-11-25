@@ -201,3 +201,100 @@ def test_rbac_node_isolation_and_admin_governance(tmp_path: Path) -> None:
         assert revoked.status_code == 200
         assert revoked.json()["revoked_count"] >= 1
     db.close()
+
+
+def test_gateway_app_latest_release_cache_and_fallback(tmp_path: Path) -> None:
+    import httpx
+
+    db = HubDatabase(tmp_path / "hub_release.db")
+    db.create_user(
+        username="tetra",
+        password="TetraPassword!123",
+        display_name="Tetra",
+        role="member",
+        default_node="deck",
+        grants=[UserPermissionGrant(node_id="deck", can_write=True, can_delete=False)],
+    )
+    cfg = GatewayConfig(
+        signing_secret=TEST_SIGNING_SECRET,
+        internal_secret=TEST_INTERNAL_SECRET,
+        nodes={},
+        github_repo="TetraAcc/agy-mobile",
+    )
+
+    gh_calls = 0
+    gh_fail = False
+    tag_val = "v2.9.0"
+
+    def _gh_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal gh_calls
+        gh_calls += 1
+        if gh_fail:
+            return httpx.Response(503, json={"message": "GitHub unavailable"})
+        return httpx.Response(
+            200,
+            json={
+                "tag_name": tag_val,
+                "name": f"Release {tag_val}",
+                "body": "新增 App 内版本更新与安装支持",
+                "html_url": f"https://github.com/TetraAcc/agy-mobile/releases/tag/{tag_val}",
+                "published_at": "2026-11-25T10:00:00Z",
+                "assets": [
+                    {
+                        "name": f"agy-remote-{tag_val}-b5030.apk",
+                        "size": 21500000,
+                        "browser_download_url": f"https://github.com/TetraAcc/agy-mobile/releases/download/{tag_val}/agy-remote-{tag_val}-b5030.apk",
+                    },
+                    {
+                        "name": "SHA256SUMS.txt",
+                        "size": 120,
+                        "browser_download_url": "https://example.com/SHA256SUMS.txt",
+                    },
+                ],
+            },
+        )
+
+    gh_client = httpx.AsyncClient(transport=httpx.MockTransport(_gh_handler))
+    app = create_gateway_app(cfg, db=db, enable_monitor=False, release_http_client=gh_client)
+
+    with TestClient(app) as client:
+        # Unauthenticated request rejected
+        assert client.get("/api/v2/app/latest").status_code == 401
+
+        login = client.post("/api/v2/auth/login", json={"username": "tetra", "password": "TetraPassword!123"})
+        hdr = {"Authorization": f"Bearer {login.json()['tokens']['access_token']}"}
+
+        r1 = client.get("/api/v2/app/latest", headers=hdr)
+        assert r1.status_code == 200
+        d1 = r1.json()
+        assert d1["latest_version"] == "2.9.0"
+        assert d1["apk_name"] == "agy-remote-v2.9.0-b5030.apk"
+        assert d1["apk_size"] == 21500000
+        assert d1["source"] == "github"
+        assert gh_calls == 1
+
+        # Cached within TTL
+        r2 = client.get("/api/v2/app/latest", headers=hdr)
+        assert r2.status_code == 200
+        assert gh_calls == 1
+
+        # Force refresh bypasses cache
+        tag_val = "v2.9.1"
+        r3 = client.get("/api/v2/app/latest?force=true", headers=hdr)
+        assert r3.status_code == 200
+        assert r3.json()["latest_version"] == "2.9.1"
+        assert gh_calls == 2
+
+    # Fresh app when upstream GitHub fails degrades gracefully to HTTP 200 fallback
+    gh_fail = True
+    app_err = create_gateway_app(cfg, db=db, enable_monitor=False, release_http_client=gh_client)
+    with TestClient(app_err) as client:
+        login = client.post("/api/v2/auth/login", json={"username": "tetra", "password": "TetraPassword!123"})
+        hdr = {"Authorization": f"Bearer {login.json()['tokens']['access_token']}"}
+        rf = client.get("/api/v2/app/latest", headers=hdr)
+        assert rf.status_code == 200
+        df = rf.json()
+        assert df["source"] == "gateway_fallback"
+        assert df["error"] != ""
+
+    db.close()

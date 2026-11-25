@@ -1716,6 +1716,88 @@ class HubController extends Notifier<HubState> {
     }
   }
 
+  List<SessionItem> _applyPinAndSort(List<SessionItem> items, String sid, bool pinned) {
+    var changed = false;
+    final mapped = items.map((s) {
+      if (s.id == sid) {
+        changed = true;
+        return s.copyWith(isPinned: pinned);
+      }
+      return s;
+    }).toList();
+    if (!changed) return items;
+    final pinnedItems = mapped.where((s) => s.isPinned).toList();
+    final normalItems = mapped.where((s) => !s.isPinned).toList();
+    if (pinned) {
+      final idx = pinnedItems.indexWhere((s) => s.id == sid);
+      if (idx > 0) {
+        final picked = pinnedItems.removeAt(idx);
+        pinnedItems.insert(0, picked);
+      }
+    }
+    return [...pinnedItems, ...normalItems];
+  }
+
+  Future<({String? error, String message, bool isPinned})> toggleSessionPin(SessionItem session) async {
+    final nodeId = state.selectedNodeId;
+    if (nodeId.isEmpty || session.id.isEmpty) {
+      return (error: '请先选择有效节点和会话', message: '', isPinned: session.isPinned);
+    }
+    if (!state.canWrite) {
+      return (error: '当前节点为只读权限，无法修改置顶状态', message: '', isPinned: session.isPinned);
+    }
+
+    final nextPinned = !session.isPinned;
+    final prevProjects = state.projects;
+    final prevGeneral = state.generalSessions;
+
+    final nextProjects = <String, List<SessionItem>>{
+      for (final entry in prevProjects.entries)
+        entry.key: _applyPinAndSort(entry.value, session.id, nextPinned),
+    };
+    final nextGeneral = _applyPinAndSort(prevGeneral, session.id, nextPinned);
+
+    state = state.copyWith(
+      projects: nextProjects,
+      generalSessions: nextGeneral,
+    );
+
+    try {
+      final res = await _api.setSessionPinned(nodeId, session.id, pinned: nextPinned);
+      if (_disposed) {
+        return (error: null, message: res.message, isPinned: res.isPinned);
+      }
+      if (!res.ok) {
+        if (state.selectedNodeId == nodeId) {
+          state = state.copyWith(projects: prevProjects, generalSessions: prevGeneral);
+        }
+        return (
+          error: res.message.isNotEmpty ? res.message : '操作未成功',
+          message: '',
+          isPinned: session.isPinned,
+        );
+      }
+
+      unawaited(SessionCacheStore.saveSessionTree(nodeId, nextProjects, nextGeneral));
+      unawaited(refreshSessionTree(autoSelectFirst: false));
+      return (
+        error: null,
+        message: res.message.isNotEmpty ? res.message : (res.isPinned ? '已置顶会话' : '已取消置顶'),
+        isPinned: res.isPinned,
+      );
+    } on ApiException catch (e) {
+      if (!_disposed && state.selectedNodeId == nodeId) {
+        state = state.copyWith(projects: prevProjects, generalSessions: prevGeneral);
+      }
+      return (error: e.message, message: '', isPinned: session.isPinned);
+    } catch (e) {
+      if (!_disposed && state.selectedNodeId == nodeId) {
+        state = state.copyWith(projects: prevProjects, generalSessions: prevGeneral);
+      }
+      return (error: '置顶操作失败: $e', message: '', isPinned: session.isPinned);
+    }
+  }
+
   Future<String?> uploadAttachment({
     required String filename,
     required Uint8List bytes,

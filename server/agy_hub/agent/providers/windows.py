@@ -23,6 +23,7 @@ from agy_hub.common.schemas import (
     CreateSessionResponse,
     ModelOption,
     ModelsResponse,
+    PinSessionResponse,
     QuotaBucket,
     QuotaGroup,
     QuotaResponse,
@@ -152,6 +153,25 @@ class WindowsEngineProvider(BaseEngineProvider):
         resp.raise_for_status()
         return resp.json() if resp.content else {}
 
+    async def _conversation_rpc_post(
+        self,
+        method_name: str,
+        payload: dict[str, Any],
+        timeout: float = 5.0,
+    ) -> dict[str, Any] | None:
+        hub = await asyncio.to_thread(self._discover_hub_sync)
+        if not hub:
+            return None
+        url = f"http://127.0.0.1:{hub['port']}/product.v1.ConversationService/{method_name}"
+        headers = {
+            "Content-Type": "application/json",
+            "Connect-Protocol-Version": "1",
+            "x-antigravity-csrf-token": hub["csrf_token"],
+        }
+        resp = await self._http_client.post(url, json=payload, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
     async def is_engine_alive(self) -> bool:
         hub = await asyncio.to_thread(self._discover_hub_sync)
         if not hub:
@@ -167,20 +187,89 @@ class WindowsEngineProvider(BaseEngineProvider):
         except Exception:
             return False
 
-    def get_pinned_session_ids(self) -> set[str]:
+    def get_pinned_order(self) -> list[str]:
         if not self._app_storage_path.exists():
-            return set()
+            return []
         try:
             data = json.loads(self._app_storage_path.read_text(encoding="utf-8"))
             raw_pinned = data.get("pinned_conversations_order", "[]")
             if isinstance(raw_pinned, str):
                 parsed = json.loads(raw_pinned)
-                return {str(x) for x in parsed if x} if isinstance(parsed, list) else set()
+                return [str(x) for x in parsed if x] if isinstance(parsed, list) else []
             if isinstance(raw_pinned, list):
-                return {str(x) for x in raw_pinned if x}
+                return [str(x) for x in raw_pinned if x]
         except Exception:
             pass
-        return set()
+        return []
+
+    def get_pinned_session_ids(self) -> set[str]:
+        """Use ~/.gemini/antigravity/annotations/*.pbtxt as authoritative source.
+
+        app_storage.json's pinned_conversations_order is only a desktop ordering cache
+        that retains unpinned IDs; only fall back to it when annotations dir is absent.
+        """
+        if self.annotations_dir.exists() and self.annotations_dir.is_dir():
+            return super().get_pinned_session_ids()
+        return set(self.get_pinned_order())
+
+    def _sync_app_storage_pinned_order_sync(self, session_id: str, pinned: bool) -> None:
+        if not self._app_storage_path.exists():
+            return
+        try:
+            data = json.loads(self._app_storage_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return
+            raw_pinned = data.get("pinned_conversations_order", "[]")
+            was_str = isinstance(raw_pinned, str)
+            order: list[str] = []
+            if was_str:
+                parsed = json.loads(raw_pinned)
+                if isinstance(parsed, list):
+                    order = [str(x) for x in parsed if x]
+            elif isinstance(raw_pinned, list):
+                order = [str(x) for x in raw_pinned if x]
+
+            if pinned:
+                if session_id not in order:
+                    order.insert(0, session_id)
+            else:
+                order = [x for x in order if x != session_id]
+
+            data["pinned_conversations_order"] = json.dumps(order, ensure_ascii=False) if was_str else order
+            tmp_path = self._app_storage_path.with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp_path, self._app_storage_path)
+        except Exception as exc:
+            logger.debug("Sync pinned_conversations_order skipped: %s", exc)
+
+    async def set_session_pinned(self, session_id: str, pinned: bool) -> PinSessionResponse:
+        sid = self.validate_session_id(session_id)
+        rpc_ok = False
+        try:
+            resp = await self._conversation_rpc_post(
+                "UpdateConversation",
+                {
+                    "conversationId": sid,
+                    "annotations": {"pinned": pinned},
+                },
+                timeout=5.0,
+            )
+            if isinstance(resp, dict):
+                rpc_ok = True
+        except Exception as exc:
+            logger.warning("ConversationService UpdateConversation(pinned=%s) failed for %s: %s", pinned, sid, exc)
+
+        if not rpc_ok:
+            await asyncio.to_thread(self._update_annotation_pinned_sync, sid, pinned)
+        await asyncio.to_thread(self._sync_app_storage_pinned_order_sync, sid, pinned)
+        return PinSessionResponse(
+            ok=True,
+            session_id=sid,
+            is_pinned=pinned,
+            message=("已置顶并同步至桌面端" if rpc_ok else "已置顶会话")
+            if pinned
+            else ("已取消置顶并同步至桌面端" if rpc_ok else "已取消置顶"),
+        )
 
     async def _sync_model_catalog(self, force: bool = False) -> ModelsResponse | None:
         now = time.time()

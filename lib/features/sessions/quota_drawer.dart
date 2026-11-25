@@ -21,6 +21,7 @@ class QuotaDrawer extends StatefulWidget {
   final String? activeSessionId;
   final Set<String> runningSessionIds;
   final ValueChanged<SessionItem> onSwitchSession;
+  final ValueChanged<SessionItem>? onTogglePinSession;
   final ValueChanged<String> onDeleteSession;
   final bool isDark;
   final ValueChanged<bool> onToggleTheme;
@@ -48,6 +49,7 @@ class QuotaDrawer extends StatefulWidget {
     required this.activeSessionId,
     this.runningSessionIds = const {},
     required this.onSwitchSession,
+    this.onTogglePinSession,
     required this.onDeleteSession,
     required this.isDark,
     required this.onToggleTheme,
@@ -1120,8 +1122,28 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                 s.updatedAt,
                 style: TextStyle(color: isDark ? Colors.white24 : Colors.black26, fontSize: 9),
               ),
-            if (widget.canDelete) ...[
+            if (widget.canWrite && widget.onTogglePinSession != null) ...[
               const SizedBox(width: 4),
+              Tooltip(
+                message: s.isPinned ? '取消置顶' : '置顶会话',
+                child: InkWell(
+                  onTap: () => widget.onTogglePinSession!(s),
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Icon(
+                      s.isPinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+                      size: 14,
+                      color: s.isPinned
+                          ? Theme.of(context).colorScheme.primary
+                          : (isDark ? Colors.white30 : Colors.black38),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+            if (widget.canDelete) ...[
+              const SizedBox(width: 2),
               InkWell(
                 onTap: () => _confirmDeleteSession(context, s),
                 borderRadius: BorderRadius.circular(12),
@@ -1141,8 +1163,68 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
           _closeIfDrawer(context);
           widget.onSwitchSession(s);
         },
+        onLongPress: (widget.canWrite && widget.onTogglePinSession != null) || widget.canDelete
+            ? () => _showSessionActionSheet(context, s)
+            : null,
       ),
       ),
+    );
+  }
+
+  void _showSessionActionSheet(BuildContext context, SessionItem s) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: isDark ? const Color(0xFF1E1E22) : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: ResponsiveLayout.compactSheetConstraints(ctx),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+                  child: Text(
+                    s.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w600,
+                      color: isDark ? Colors.white70 : Colors.black87,
+                    ),
+                  ),
+                ),
+                const Divider(height: 1),
+                if (widget.canWrite && widget.onTogglePinSession != null)
+                  ListTile(
+                    leading: Icon(
+                      s.isPinned ? Icons.push_pin_outlined : Icons.push_pin_rounded,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    title: Text(s.isPinned ? '取消置顶' : '置顶会话'),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      widget.onTogglePinSession!(s);
+                    },
+                  ),
+                if (widget.canDelete)
+                  ListTile(
+                    leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                    title: const Text('归档并移除会话', style: TextStyle(color: Colors.redAccent)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _confirmDeleteSession(context, s);
+                    },
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/config/app_update_service.dart';
 import '../../core/config/composer_prefs.dart';
 import '../../core/config/responsive_layout.dart';
 import '../../core/network/api_client.dart';
@@ -67,6 +68,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   final List<SharedIncomingPayload> _queuedShares = [];
   bool _drainingShares = false;
   bool _isSidebarCollapsed = false;
+  String _currentAppVersion = kFallbackAppVersion;
+  AppReleaseInfo? _availableAppUpdate;
 
   List<ReviewCommentItem> _commentsForSession(String sessionId) {
     if (sessionId.isEmpty || sessionId != _commentSessionId) return const [];
@@ -195,10 +198,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       _shareSub = AndroidNativeBridge.incomingShares.listen(_enqueueIncomingShare);
       unawaited(_loadInitialShares());
       unawaited(AndroidNativeBridge.requestNotificationPermission());
+      Future<void>.delayed(const Duration(milliseconds: 1500), _checkAppUpdateSilently);
     }
     Future.microtask(() {
       ref.read(hubControllerProvider.notifier).initializeForUser(widget.user);
     });
+  }
+
+  Future<void> _checkAppUpdateSilently() async {
+    if (!mounted || !AndroidNativeBridge.isAndroidNative) return;
+    try {
+      final current = await AppUpdateService.resolveCurrentVersion();
+      final ignored = await AppUpdateService.getIgnoredVersion();
+      final latest = await ref.read(apiClientProvider).getAppLatestRelease();
+      if (!mounted) return;
+      final hasNew = isAppUpdateAvailable(current, latest.latestVersion) &&
+          normalizeSemver(latest.latestVersion) != ignored;
+      setState(() {
+        _currentAppVersion = current;
+        _availableAppUpdate = hasNew ? latest : null;
+      });
+    } catch (_) {}
   }
 
   @override
@@ -403,6 +423,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       _showSnack(err, isError: true);
     } else {
       _showSnack('已归档移除该会话');
+    }
+  }
+
+  Future<void> _handleTogglePinSession(SessionItem session) async {
+    HapticFeedback.lightImpact();
+    final res = await ref.read(hubControllerProvider.notifier).toggleSessionPin(session);
+    if (!mounted) return;
+    if (res.error != null) {
+      _showSnack(res.error!, isError: true);
+    } else if (res.message.isNotEmpty) {
+      _showSnack(res.message);
     }
   }
 
@@ -1100,6 +1131,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       context: context,
       builder: (_) => _GeneralSettingsDialog(
         currentUrl: auth.serverConfig.baseUrl,
+        currentAppVersion: _currentAppVersion,
+        initialAppUpdate: _availableAppUpdate,
+        onUpdateBadgeChanged: (nextUpdate) {
+          if (mounted) {
+            setState(() => _availableAppUpdate = nextUpdate);
+          }
+        },
         onSaveUrl: (newUrl) async {
           await ref.read(authControllerProvider.notifier).updateServerUrl(newUrl);
           if (mounted) {
@@ -1283,6 +1321,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       activeSessionId: hubState.activeSessionId,
       runningSessionIds: hubState.runningSessionIds,
       onSwitchSession: (s) => hubNotifier.selectSession(s),
+      onTogglePinSession: _handleTogglePinSession,
       onDeleteSession: _handleDeleteSession,
       isDark: isDark,
       onToggleTheme: (val) {
@@ -1481,8 +1520,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           ),
           IconButton(
             visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.settings_outlined),
-            tooltip: '通用设置',
+            icon: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                const Icon(Icons.settings_outlined),
+                if (_availableAppUpdate != null)
+                  Positioned(
+                    right: -2,
+                    top: -2,
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.redAccent,
+                        border: Border.all(
+                          color: isDark ? AppColors.darkBg : AppColors.lightBg,
+                          width: 1.2,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            tooltip: _availableAppUpdate != null
+                ? '通用设置（有新版本 v${_availableAppUpdate!.latestVersion}）'
+                : '通用设置',
             onPressed: _showSettingsDialog,
           ),
         ],
@@ -2223,10 +2286,16 @@ class _WorkspaceBrowserSheetState extends State<_WorkspaceBrowserSheet> {
 
 class _GeneralSettingsDialog extends ConsumerStatefulWidget {
   final String currentUrl;
+  final String currentAppVersion;
+  final AppReleaseInfo? initialAppUpdate;
+  final ValueChanged<AppReleaseInfo?>? onUpdateBadgeChanged;
   final ValueChanged<String> onSaveUrl;
 
   const _GeneralSettingsDialog({
     required this.currentUrl,
+    this.currentAppVersion = kFallbackAppVersion,
+    this.initialAppUpdate,
+    this.onUpdateBadgeChanged,
     required this.onSaveUrl,
   });
 
@@ -2242,6 +2311,14 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
   double _notifyAskDelaySeconds = 10;
   bool _sendingTestNotify = false;
 
+  late String _appVersion;
+  AppReleaseInfo? _latestRelease;
+  bool _checkingAppUpdate = false;
+  bool _appUpdateChecked = false;
+  String? _appUpdateError;
+  String? _downloadedApkPath;
+  bool _installingApk = false;
+
   bool _loadingAdminNodes = false;
   List<HostNode> _adminNodes = const [];
   final Map<String, NodeUpdateStatus> _nodeUpdateStatuses = {};
@@ -2253,9 +2330,145 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
   void initState() {
     super.initState();
     _urlController = TextEditingController(text: widget.currentUrl);
+    _appVersion = widget.currentAppVersion;
+    _latestRelease = widget.initialAppUpdate;
+    _appUpdateChecked = widget.initialAppUpdate != null;
     _loadNotifyStatus();
+    if (AndroidNativeBridge.isAndroidNative) {
+      unawaited(_initAppUpdateSection());
+    }
     if (ref.read(authControllerProvider).user?.role == 'admin') {
       _loadAdminNodes();
+    }
+  }
+
+  Future<void> _initAppUpdateSection() async {
+    final ver = await AppUpdateService.resolveCurrentVersion();
+    if (!mounted) return;
+    setState(() => _appVersion = ver);
+    if (_latestRelease == null) {
+      await _checkAppUpdate(force: false);
+    }
+  }
+
+  Future<void> _checkAppUpdate({required bool force}) async {
+    if (_checkingAppUpdate) return;
+    setState(() {
+      _checkingAppUpdate = true;
+      _appUpdateError = null;
+    });
+    try {
+      final info = await ref.read(apiClientProvider).getAppLatestRelease(force: force);
+      if (!mounted) return;
+      final hasNew = isAppUpdateAvailable(_appVersion, info.latestVersion);
+      if (hasNew && force) {
+        await AppUpdateService.clearIgnoredVersion();
+      }
+      setState(() {
+        _latestRelease = info;
+        _appUpdateChecked = true;
+        _checkingAppUpdate = false;
+        if (info.error.isNotEmpty && info.source == 'gateway_fallback') {
+          _appUpdateError = '暂未连接到 GitHub Releases：${info.error}';
+        }
+      });
+      widget.onUpdateBadgeChanged?.call(hasNew ? info : null);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _checkingAppUpdate = false;
+        _appUpdateChecked = true;
+        _appUpdateError = '检查版本失败: $e';
+      });
+    }
+  }
+
+  String _formatApkSize(int bytes) {
+    if (bytes <= 0) return '';
+    if (bytes >= 1048576) {
+      return '${(bytes / 1048576).toStringAsFixed(1)} MB';
+    }
+    if (bytes >= 1024) {
+      return '${(bytes / 1024).toStringAsFixed(0)} KB';
+    }
+    return '$bytes B';
+  }
+
+  Future<void> _downloadAndInstallApk(AppReleaseInfo release) async {
+    if (_installingApk) return;
+    if (_downloadedApkPath != null) {
+      await _triggerInstallApk(_downloadedApkPath!, release);
+      return;
+    }
+    if (release.apkUrl.trim().isEmpty) {
+      await PlatformBridge.openExternalUrl(release.htmlUrl);
+      return;
+    }
+    setState(() {
+      _installingApk = true;
+      _appUpdateError = null;
+    });
+    try {
+      final dl = await runWithDownloadProgressDialog<({String? path, String? error, bool cancelled})>(
+        context: context,
+        autoOpen: false,
+        titleOverride: '正在下载新版安装包...',
+        formatBytes: _formatApkSize,
+        task: (onProgress, cancelToken) => AppUpdateService.downloadApkToCache(
+          apkUrl: release.apkUrl,
+          filename: release.apkName.isNotEmpty
+              ? release.apkName
+              : 'agy-remote-v${release.latestVersion}.apk',
+          onProgress: onProgress,
+          cancelToken: cancelToken,
+        ),
+      );
+      if (!mounted) return;
+      if (dl.cancelled) return;
+      if (dl.error != null || dl.path == null) {
+        setState(() {
+          _appUpdateError = dl.error ?? '下载安装包失败，可尝试使用浏览器下载';
+        });
+        return;
+      }
+      _downloadedApkPath = dl.path;
+      await _triggerInstallApk(dl.path!, release);
+    } finally {
+      if (mounted) {
+        setState(() => _installingApk = false);
+      }
+    }
+  }
+
+  Future<void> _triggerInstallApk(String apkPath, AppReleaseInfo release) async {
+    final res = await AndroidNativeBridge.installApk(apkPath);
+    if (!mounted) return;
+    if (res.ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已拉起系统安装界面，请按提示完成覆盖升级')),
+      );
+      return;
+    }
+    setState(() {
+      _appUpdateError = res.error ?? '拉起安装器失败，可点击「浏览器下载」手动安装';
+    });
+    if (res.needsPermission) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('请先开启「允许安装未知应用」权限，返回后再次点击「立即安装」'),
+          duration: Duration(seconds: 4),
+        ),
+      );
+    } else if (release.htmlUrl.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_appUpdateError!),
+          action: SnackBarAction(
+            label: '浏览器下载',
+            onPressed: () => PlatformBridge.openExternalUrl(release.htmlUrl),
+          ),
+        ),
+      );
     }
   }
 
@@ -2405,6 +2618,183 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
     super.dispose();
   }
 
+  Widget _buildAppUpdateSection(bool isDark, Color primary) {
+    final release = _latestRelease;
+    final hasUpdate = release != null && isAppUpdateAvailable(_appVersion, release.latestVersion);
+    final sizeText = release != null ? _formatApkSize(release.apkSize) : '';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              '应用版本与更新',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
+            ),
+            const Spacer(),
+            TextButton(
+              onPressed: _checkingAppUpdate ? null : () => _checkAppUpdate(force: true),
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Text(
+                _checkingAppUpdate ? '检查中...' : '检查更新',
+                style: const TextStyle(fontSize: 11.5),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Text(
+              '当前版本 v$_appVersion',
+              style: TextStyle(
+                fontSize: 12.5,
+                fontFamily: 'monospace',
+                color: isDark ? Colors.white70 : Colors.black87,
+              ),
+            ),
+            if (_appUpdateChecked && !hasUpdate && _appUpdateError == null) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppColors.statusGreen(isDark).withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  '已是最新',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.statusGreen(isDark),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+        if (hasUpdate) ...[
+          const SizedBox(height: 8),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: primary.withValues(alpha: isDark ? 0.12 : 0.08),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: primary.withValues(alpha: 0.45)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.system_update_rounded, size: 16, color: primary),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '发现新版本 v${release.latestVersion}${sizeText.isNotEmpty ? ' ($sizeText)' : ''}',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700,
+                          color: isDark ? Colors.white : Colors.black87,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                if (release.releaseNotes.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    release.releaseNotes,
+                    maxLines: 4,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11,
+                      height: 1.4,
+                      color: isDark ? Colors.white70 : Colors.black54,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: _installingApk ? null : () => _downloadAndInstallApk(release),
+                      icon: Icon(
+                        _downloadedApkPath != null
+                            ? Icons.install_mobile_rounded
+                            : Icons.download_rounded,
+                        size: 14,
+                      ),
+                      label: Text(
+                        _downloadedApkPath != null ? '立即安装' : '下载并安装',
+                        style: const TextStyle(fontSize: 11.5),
+                      ),
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ),
+                    if (release.htmlUrl.isNotEmpty)
+                      OutlinedButton(
+                        onPressed: () => PlatformBridge.openExternalUrl(
+                          release.apkUrl.isNotEmpty ? release.apkUrl : release.htmlUrl,
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text('浏览器下载', style: TextStyle(fontSize: 11.5)),
+                      ),
+                    TextButton(
+                      onPressed: () async {
+                        await AppUpdateService.setIgnoredVersion(release.latestVersion);
+                        if (!mounted) return;
+                        setState(() => _latestRelease = null);
+                        widget.onUpdateBadgeChanged?.call(null);
+                      },
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text(
+                        '忽略此版本',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: isDark ? Colors.white54 : Colors.black54,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (_appUpdateError != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            _appUpdateError!,
+            style: TextStyle(
+              fontSize: 11,
+              color: AppColors.statusAmber(isDark),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
   Widget _buildSegmented({
     required String title,
     required String subtitle,
@@ -2507,6 +2897,12 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (AndroidNativeBridge.isAndroidNative) ...[
+                _buildAppUpdateSection(isDark, primary),
+                const SizedBox(height: 16),
+                Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
+                const SizedBox(height: 12),
+              ],
               Text(
                 'Input Box',
                 style: TextStyle(

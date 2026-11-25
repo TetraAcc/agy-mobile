@@ -499,3 +499,143 @@ async def test_windows_provider_models_and_mid_session_switch(tmp_path: Path, tm
         msgs_resp = client.get(msg_path, headers=_signed_headers("GET", msg_path))
         assert msgs_resp.status_code == 200
         assert msgs_resp.json()["active_model"] == "gemini-4-hydrogen-low"
+
+
+async def test_pinned_sessions_use_annotations_pbtxt_as_source_of_truth_and_bidirectional_pin(
+    tmp_path: Path,
+) -> None:
+    import httpx
+    from agy_hub.agent.config import AgentConfig
+    from agy_hub.agent.providers.windows import WindowsEngineProvider
+    from agy_hub.common.sandbox import RootRegistry
+    from tests.conftest import create_sample_official_db
+
+    brain_dir = tmp_path / "brain"
+    ann_dir = tmp_path / "annotations"
+    db_path = tmp_path / "conversation_summaries.db"
+    daemon_dir = tmp_path / "daemon"
+    app_storage_path = tmp_path / "app_storage.json"
+    scratch_dir = tmp_path / "scratch"
+    ws_dir = tmp_path / "Novel"
+    ann_dir.mkdir(parents=True)
+    daemon_dir.mkdir(parents=True)
+    scratch_dir.mkdir(parents=True)
+    ws_dir.mkdir(parents=True)
+
+    create_sample_official_db(db_path, ws_dir)
+    # Sample DB creates aaaaaaaa-...-1 (MySpecialProject) and bbbbbbbb-...-2 (general)
+    sid1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"
+    sid2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2"
+    sid3 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3"
+    (brain_dir / sid1).mkdir(parents=True)
+    (brain_dir / sid2).mkdir(parents=True)
+    (brain_dir / sid3).mkdir(parents=True)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                sid3,
+                "被桌面归档的会话",
+                "archived",
+                json.dumps([ws_dir.resolve().as_uri()]),
+                "2026-11-25T10:00:00Z",
+                "",
+                None,
+                0,
+                "antigravity",
+                "CASCADE_RUN_STATUS_IDLE",
+                0,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Desktop app_storage.json still keeps unpinned sid1 in pinned_conversations_order!
+    app_storage_path.write_text(
+        json.dumps({"pinned_conversations_order": json.dumps([sid1, sid2])}),
+        encoding="utf-8",
+    )
+    # Authoritative annotations/*.pbtxt says sid1 is unpinned (pinned:false), sid2 is pinned:true, sid3 is archived:true
+    (ann_dir / f"{sid1}.pbtxt").write_text('title:"已取消置顶" pinned:false', encoding="utf-8")
+    (ann_dir / f"{sid2}.pbtxt").write_text('title:"真正置顶" pinned:true', encoding="utf-8")
+    (ann_dir / f"{sid3}.pbtxt").write_text('title:"被归档" archived:true pinned:true', encoding="utf-8")
+
+    (daemon_dir / "hub_789.json").write_text(
+        json.dumps({"httpPort": 54399, "csrfToken": "csrf-pin-test"}),
+        encoding="utf-8",
+    )
+
+    rpc_calls: list[dict] = []
+    rpc_should_fail = False
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/product.v1.ConversationService/UpdateConversation"):
+            assert request.headers.get("x-antigravity-csrf-token") == "csrf-pin-test"
+            if rpc_should_fail:
+                return httpx.Response(503, json={"error": "unavailable"})
+            body = json.loads(request.content.decode("utf-8"))
+            rpc_calls.append(body)
+            cid = body["conversationId"]
+            pin_val = body["annotations"]["pinned"]
+            p = ann_dir / f"{cid}.pbtxt"
+            p.write_text(f'title:"RPC" pinned:{"true" if pin_val else "false"}', encoding="utf-8")
+            return httpx.Response(200, json={"id": cid, "annotations": {"pinned": pin_val}})
+        return httpx.Response(200, json={})
+
+    cfg = AgentConfig(
+        platform="windows",
+        internal_secret=TEST_INTERNAL_SECRET,
+        brain_dir=str(brain_dir),
+        db_path=str(db_path),
+        default_workspace=str(scratch_dir),
+        daemon_dir=str(daemon_dir),
+        app_storage_path=str(app_storage_path),
+    )
+    registry = RootRegistry()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_handler)) as mock_client:
+        provider = WindowsEngineProvider(cfg, registry, http_client=mock_client)
+        # 1. Pinned list must follow annotations/*.pbtxt (sid2 only; sid1 excluded; sid3 hidden by archived:true)
+        assert provider.get_pinned_session_ids() == {sid2}
+        tree = await provider.get_session_tree()
+        proj_items = tree.projects.get("MySpecialProject", [])
+        assert [s.id for s in proj_items] == [sid1]
+        assert proj_items[0].is_pinned is False
+        assert [s.id for s in tree.general_sessions] == [sid2]
+        assert tree.general_sessions[0].is_pinned is True
+
+        # 2. HTTP /agent/sessions/{sid}/pin RBAC & RPC sync + fallback write
+        app = create_agent_app(cfg, provider=provider, registry=registry)
+        pin_path = f"/agent/sessions/{sid1}/pin"
+        with TestClient(app) as client:
+            ro_resp = client.post(
+                pin_path,
+                headers=_signed_headers("POST", pin_path, can_write=False),
+                json={"pinned": True},
+            )
+            assert ro_resp.status_code == 403
+
+            pin_resp = client.post(
+                pin_path,
+                headers=_signed_headers("POST", pin_path, can_write=True),
+                json={"pinned": True},
+            )
+            assert pin_resp.status_code == 200
+            assert pin_resp.json()["is_pinned"] is True
+            assert len(rpc_calls) == 1
+            assert rpc_calls[0] == {"conversationId": sid1, "annotations": {"pinned": True}}
+            assert sid1 in provider.get_pinned_session_ids()
+
+            # Fallback to direct .pbtxt update when desktop RPC fails
+            rpc_should_fail = True
+            unpin_resp = client.post(
+                pin_path,
+                headers=_signed_headers("POST", pin_path, can_write=True),
+                json={"pinned": False},
+            )
+            assert unpin_resp.status_code == 200
+            assert unpin_resp.json()["is_pinned"] is False
+            assert sid1 not in provider.get_pinned_session_ids()
+            stored_order = json.loads(json.loads(app_storage_path.read_text(encoding="utf-8"))["pinned_conversations_order"])
+            assert sid1 not in stored_order

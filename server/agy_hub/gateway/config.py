@@ -45,6 +45,7 @@ class GatewayConfig(BaseModel):
     notify_ask_question_delay_seconds: float = Field(default=10.0, ge=1.0, le=600.0)
     notify_poll_interval_seconds: float = Field(default=4.0, ge=0.5, le=60.0)
     public_base_url: str = ""
+    github_repo: str = "TetraAcc/agy-mobile"
 
     @field_validator("discord_webhook_url")
     @classmethod

@@ -18,6 +18,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.provider.Settings
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -126,6 +127,15 @@ class MainActivity : FlutterActivity() {
                     val id = call.argument<Int>("id") ?: 2001
                     postAlertNotification(title, body, id)
                     result.success(null)
+                }
+
+                "getAppVersion" -> {
+                    result.success(readCurrentAppVersion())
+                }
+
+                "installApk" -> {
+                    val path = call.argument<String>("path") ?: ""
+                    result.success(installApkFromPath(path))
                 }
 
                 else -> result.notImplemented()
@@ -240,6 +250,72 @@ class MainActivity : FlutterActivity() {
             true
         } catch (_: Exception) {
             false
+        }
+    }
+
+    private fun readCurrentAppVersion(): Map<String, Any?> {
+        return try {
+            val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageInfo(packageName, 0)
+            }
+            val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                info.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                info.versionCode.toLong()
+            }
+            mapOf(
+                "versionName" to (info.versionName ?: ""),
+                "versionCode" to code,
+            )
+        } catch (_: Exception) {
+            mapOf("versionName" to "", "versionCode" to 0L)
+        }
+    }
+
+    private fun installApkFromPath(path: String): Map<String, Any?> {
+        if (path.isBlank()) {
+            return mapOf("ok" to false, "needsPermission" to false, "error" to "安装包路径为空")
+        }
+        val file = File(path)
+        if (!file.exists()) {
+            return mapOf("ok" to false, "needsPermission" to false, "error" to "安装包文件不存在")
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+            return try {
+                val permIntent = Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:$packageName")
+                ).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(permIntent)
+                mapOf(
+                    "ok" to false,
+                    "needsPermission" to true,
+                    "error" to "请在系统设置中允许 AGY Remote 安装未知来源应用，然后再次点击安装",
+                )
+            } catch (e: Exception) {
+                mapOf(
+                    "ok" to false,
+                    "needsPermission" to true,
+                    "error" to (e.message ?: "无法打开未知应用安装权限设置"),
+                )
+            }
+        }
+        return try {
+            val uri = FileProvider.getUriForFile(this, fileProviderAuthority(), file)
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(installIntent)
+            mapOf("ok" to true, "needsPermission" to false)
+        } catch (e: Exception) {
+            mapOf("ok" to false, "needsPermission" to false, "error" to (e.message ?: "无法拉起系统安装器"))
         }
     }
 

@@ -1,3 +1,4 @@
+import 'package:agy_remote/core/config/app_update_service.dart';
 import 'package:agy_remote/core/config/session_cache_store.dart';
 import 'package:agy_remote/core/platform/android_native_bridge.dart';
 import 'package:agy_remote/core/theme/app_colors.dart';
@@ -523,6 +524,39 @@ void main() {
       snap = await SessionCacheStore.loadSnapshot();
       expect(snap.nodes, isEmpty);
       expect(snap.sessionsByKey, isEmpty);
+    });
+
+    test('AppUpdateService 版本比较、Release 解析与忽略版本读写', () async {
+      SharedPreferences.setMockInitialValues({});
+
+      expect(normalizeSemver('v2.3.2+5027'), '2.3.2');
+      expect(normalizeSemver('V2.10.0-rc1'), '2.10.0');
+      expect(compareSemver('2.10.0', '2.3.2'), greaterThan(0));
+      expect(compareSemver('v2.3.2+5027', '2.3.2'), 0);
+      expect(isAppUpdateAvailable('2.3.2', 'v2.4.0'), true);
+      expect(isAppUpdateAvailable('2.3.2', 'v2.3.2'), false);
+      expect(isAppUpdateAvailable('2.3.2', 'v2.3.1'), false);
+
+      final info = AppReleaseInfo.fromJson({
+        'latest_version': '2.4.0',
+        'tag_name': 'v2.4.0',
+        'release_name': 'v2.4.0',
+        'release_notes': '新增应用内更新',
+        'apk_url': 'https://example.com/app.apk',
+        'apk_name': 'agy-remote-v2.4.0.apk',
+        'apk_size': 21000000,
+        'html_url': 'https://example.com/release',
+        'source': 'github',
+      });
+      expect(info.latestVersion, '2.4.0');
+      expect(info.apkName, 'agy-remote-v2.4.0.apk');
+      expect(info.apkSize, 21000000);
+
+      expect(await AppUpdateService.getIgnoredVersion(), '');
+      await AppUpdateService.setIgnoredVersion('v2.4.0');
+      expect(await AppUpdateService.getIgnoredVersion(), '2.4.0');
+      await AppUpdateService.clearIgnoredVersion();
+      expect(await AppUpdateService.getIgnoredVersion(), '');
     });
   });
 }

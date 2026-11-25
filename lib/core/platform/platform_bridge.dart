@@ -31,4 +31,17 @@ class PlatformBridge {
 
   static Future<void> deleteLocalFile(String path) =>
       impl.implDeleteLocalFile(path);
+
+  static Future<({bool ok, bool cancelled, String? error})> downloadUrlToLocalFile({
+    required String url,
+    required String savePath,
+    void Function(int received, int total)? onProgress,
+    Object? cancelToken,
+  }) =>
+      impl.implDownloadUrlToLocalFile(
+        url: url,
+        savePath: savePath,
+        onProgress: onProgress,
+        cancelToken: cancelToken,
+      );
 }

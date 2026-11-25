@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 Future<T> runWithDownloadProgressDialog<T>({
   required BuildContext context,
   required bool autoOpen,
+  String? titleOverride,
   required Future<T> Function(
     void Function(int received, int total) onProgress,
     CancelToken cancelToken,
@@ -71,7 +72,7 @@ Future<T> runWithDownloadProgressDialog<T>({
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      autoOpen ? '正在获取文件预览...' : '正在下载文件...',
+                      titleOverride ?? (autoOpen ? '正在获取文件预览...' : '正在下载文件...'),
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w600,

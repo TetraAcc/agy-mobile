@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 import urllib.parse
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from agy_hub import __version__
 from agy_hub.common.schemas import (
+    AppReleaseResponse,
     DownloadTicketRequest,
     DownloadTicketResponse,
     LoginRequest,
@@ -107,6 +109,7 @@ def create_gateway_app(
     http_client: httpx.AsyncClient | None = None,
     ws_connector: Any = None,
     enable_monitor: bool = True,
+    release_http_client: httpx.AsyncClient | None = None,
 ) -> FastAPI:
     owned_db = db is None
     hub_db = db or HubDatabase(config.db_path)
@@ -168,6 +171,89 @@ def create_gateway_app(
     @app.get("/api/v2/health")
     async def health() -> dict[str, Any]:
         return {"status": "healthy", "service": "gateway", "version": __version__}
+
+    _release_cache: dict[str, Any] = {"ts": 0.0, "data": None}
+    _release_cache_ttl = 600.0
+
+    @app.get("/api/v2/app/latest", response_model=AppReleaseResponse)
+    async def get_latest_app_release(
+        force: bool = Query(default=False),
+        _user: UserProfile = Depends(get_current_user),
+    ) -> AppReleaseResponse:
+        now = time.monotonic()
+        cached_data = _release_cache.get("data")
+        if not force and isinstance(cached_data, AppReleaseResponse) and (now - float(_release_cache.get("ts", 0.0))) < _release_cache_ttl:
+            return cached_data
+
+        repo = (config.github_repo or "TetraAcc/agy-mobile").strip().strip("/")
+        api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": f"agy-remote-gateway/{__version__}",
+        }
+        try:
+            if release_http_client is not None:
+                resp = await release_http_client.get(api_url, headers=headers, timeout=6.0)
+            else:
+                async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as gh_client:
+                    resp = await gh_client.get(api_url, headers=headers)
+            resp.raise_for_status()
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Invalid GitHub release JSON")
+
+            tag_name = str(payload.get("tag_name") or "").strip()
+            latest_ver = tag_name.lstrip("vV").strip()
+            apk_url = ""
+            apk_name = ""
+            apk_size = 0
+            assets = payload.get("assets")
+            if isinstance(assets, list):
+                for asset in assets:
+                    if not isinstance(asset, dict):
+                        continue
+                    name = str(asset.get("name") or "").strip()
+                    dl_url = str(asset.get("browser_download_url") or "").strip()
+                    if name.lower().endswith(".apk") and dl_url:
+                        apk_name = name
+                        apk_url = dl_url
+                        try:
+                            apk_size = int(asset.get("size") or 0)
+                        except (TypeError, ValueError):
+                            apk_size = 0
+                        break
+
+            release_notes = str(payload.get("body") or "").strip()
+            if len(release_notes) > 2000:
+                release_notes = release_notes[:2000] + "\n..."
+
+            release_info = AppReleaseResponse(
+                latest_version=latest_ver,
+                tag_name=tag_name,
+                release_name=str(payload.get("name") or tag_name).strip(),
+                release_notes=release_notes,
+                apk_url=apk_url,
+                apk_name=apk_name,
+                apk_size=apk_size,
+                html_url=str(payload.get("html_url") or f"https://github.com/{repo}/releases").strip(),
+                published_at=str(payload.get("published_at") or "").strip(),
+                source="github",
+                error="",
+            )
+            _release_cache["ts"] = now
+            _release_cache["data"] = release_info
+            return release_info
+        except Exception as exc:
+            if isinstance(cached_data, AppReleaseResponse):
+                return cached_data
+            return AppReleaseResponse(
+                latest_version=__version__,
+                tag_name=f"v{__version__}",
+                release_name=f"v{__version__}",
+                html_url=f"https://github.com/{repo}/releases",
+                source="gateway_fallback",
+                error=str(exc),
+            )
 
     @app.post("/api/v2/auth/login", response_model=LoginResponse)
     async def login(payload: LoginRequest, request: Request, response: Response) -> LoginResponse:

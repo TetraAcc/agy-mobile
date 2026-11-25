@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../models/models.dart';
+import '../config/app_update_service.dart';
 import '../config/server_config.dart';
 import 'http_adapter.dart';
 import 'token_store.dart';
@@ -249,6 +250,16 @@ class ApiClient {
         final map = Map<String, dynamic>.from(data as Map);
         return (map['ok'] == true, map['message']?.toString() ?? '');
       },
+    );
+  }
+
+  Future<AppReleaseInfo> getAppLatestRelease({bool force = false}) async {
+    return _exec(
+      () => _dio.get<dynamic>(
+        '/api/v2/app/latest',
+        queryParameters: {'force': force},
+      ),
+      (data) => AppReleaseInfo.fromJson(Map<String, dynamic>.from(data as Map)),
     );
   }
 
@@ -500,6 +511,27 @@ class ApiClient {
       (data) {
         final map = Map<String, dynamic>.from(data as Map);
         return (map['ok'] == true, map['message']?.toString() ?? '');
+      },
+    );
+  }
+
+  Future<({bool ok, bool isPinned, String message})> setSessionPinned(
+    String nodeId,
+    String sessionId, {
+    required bool pinned,
+  }) async {
+    return _exec(
+      () => _dio.post<dynamic>(
+        '/api/v2/nodes/$nodeId/sessions/$sessionId/pin',
+        data: {'pinned': pinned},
+      ),
+      (data) {
+        final map = Map<String, dynamic>.from(data as Map);
+        return (
+          ok: map['ok'] == true,
+          isPinned: map['is_pinned'] == true,
+          message: map['message']?.toString() ?? '',
+        );
       },
     );
   }

@@ -111,6 +111,20 @@ class NodeUpdateApplyResponse(BaseModel):
     message: str = ""
 
 
+class AppReleaseResponse(BaseModel):
+    latest_version: str = ""
+    tag_name: str = ""
+    release_name: str = ""
+    release_notes: str = ""
+    apk_url: str = ""
+    apk_name: str = ""
+    apk_size: int = 0
+    html_url: str = ""
+    published_at: str = ""
+    source: str = "github"
+    error: str = ""
+
+
 class NodesResponse(BaseModel):
     nodes: list[NodeStatus] = Field(default_factory=list)
     default_node: str = ""
@@ -216,6 +230,17 @@ class DeleteSessionResponse(BaseModel):
     ok: bool
     session_id: str
     archived: bool = True
+    message: str = ""
+
+
+class PinSessionRequest(BaseModel):
+    pinned: bool
+
+
+class PinSessionResponse(BaseModel):
+    ok: bool = True
+    session_id: str
+    is_pinned: bool
     message: str = ""
 
 

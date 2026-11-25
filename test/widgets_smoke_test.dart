@@ -1625,4 +1625,74 @@ void main() {
     await tester.pumpAndSettle();
     expect(startedModel, 'gemini-4-neon-low');
   });
+
+  testWidgets('QuotaDrawer 支持图钉按钮与长按菜单切换置顶，只读权限隐藏置顶按钮', (tester) async {
+    tester.view.physicalSize = const Size(800, 1200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final toggled = <(String, bool)>[];
+
+    Widget buildDrawer({required bool canWrite}) {
+      return MaterialApp(
+        home: Scaffold(
+          body: QuotaDrawer(
+            nodes: [
+              HostNode(
+                id: 'win',
+                name: 'Windows PC',
+                isOnline: true,
+                engineAlive: true,
+                canWrite: canWrite,
+              ),
+            ],
+            selectedNode: 'win',
+            onSwitchNode: (_) {},
+            quotaData: null,
+            isLoadingQuota: false,
+            onRequestQuota: () {},
+            canWrite: canWrite,
+            onNewSession: () {},
+            projects: const {},
+            generalSessions: const [
+              SessionItem(id: 'g1', title: '待置顶对话', isPinned: false),
+              SessionItem(id: 'g2', title: '已置顶对话', isPinned: true),
+            ],
+            activeSessionId: 'g1',
+            onSwitchSession: (_) {},
+            onTogglePinSession: (s) => toggled.add((s.id, s.isPinned)),
+            onDeleteSession: (_) {},
+            isDark: true,
+            onToggleTheme: (_) {},
+            onSelectAccentTheme: (_) {},
+            isPermanentSidebar: true,
+          ),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(buildDrawer(canWrite: true));
+    await tester.pump();
+
+    // 1. 点击未置顶项右侧空心图钉触发置顶回调
+    await tester.tap(find.byIcon(Icons.push_pin_outlined).last);
+    await tester.pump();
+    expect(toggled.last, ('g1', false));
+
+    // 2. 长按已置顶会话弹出底部菜单并点击「取消置顶」
+    await tester.longPress(find.text('已置顶对话').last);
+    await tester.pumpAndSettle();
+    expect(find.text('取消置顶'), findsOneWidget);
+    await tester.tap(find.text('取消置顶'));
+    await tester.pumpAndSettle();
+    expect(toggled.last, ('g2', true));
+
+    // 3. 只读权限下，未置顶项不显示可操作的图钉按钮
+    await tester.pumpWidget(buildDrawer(canWrite: false));
+    await tester.pump();
+    expect(find.byIcon(Icons.push_pin_outlined), findsNothing);
+  });
 }
