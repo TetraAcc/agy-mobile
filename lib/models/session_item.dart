@@ -36,6 +36,18 @@ class SessionItem {
       rootId: json['root_id']?.toString() ?? '',
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'preview': preview,
+        'updated_at': updatedAt,
+        'last_modified': lastModified,
+        'is_pinned': isPinned,
+        'is_running': isRunning,
+        'workspace_path': workspacePath,
+        'root_id': rootId,
+      };
 }
 
 class SessionTreeData {

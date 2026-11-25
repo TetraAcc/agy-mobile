@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:agy_remote/core/config/server_config.dart';
+import 'package:agy_remote/core/config/session_cache_store.dart';
 import 'package:agy_remote/core/network/api_client.dart';
 import 'package:agy_remote/core/network/token_store.dart';
 import 'package:agy_remote/core/realtime/node_event_socket.dart';
@@ -109,6 +110,7 @@ class FakeApiClient extends ApiClient {
     ),
   ];
   bool throwNetworkErrorOnSend = false;
+  bool throwGetNodesError = false;
   bool messagesIsRunning = false;
 
   FakeApiClient()
@@ -121,6 +123,9 @@ class FakeApiClient extends ApiClient {
   @override
   Future<(List<HostNode>, String)> getNodes() async {
     getNodesCalls += 1;
+    if (throwGetNodesError) {
+      throw const ApiException(502, 'Gateway unreachable');
+    }
     if (customNodes != null) {
       return (customNodes!, customNodes!.first.id);
     }
@@ -998,5 +1003,115 @@ void main() {
     expect(state.activeSessionModel, 'claude-sonnet-5-5-medium');
     expect(state.pendingSwitchModel, isEmpty);
     expect(state.hasPendingModelSwitch, false);
+  });
+
+  test('HubController 冷启动秒开本地缓存对话并在断联时支持离线只读浏览', () async {
+    // 1. 预先写入缓存（模拟上次正常使用后退出）
+    await SessionCacheStore.saveNodes(
+      const [HostNode(id: 'win', name: 'Windows PC', isOnline: true, engineAlive: true, canWrite: true)],
+      selectedNodeId: 'win',
+    );
+    await SessionCacheStore.saveSessionTree(
+      'win',
+      {
+        'Demo': const [
+          SessionItem(id: 's1', title: '缓存主会话', rootId: 'ws_1'),
+          SessionItem(id: 's2', title: '缓存次会话', rootId: 'scratch'),
+        ],
+      },
+      const [],
+    );
+    await SessionCacheStore.saveSessionMessages(
+      nodeId: 'win',
+      sessionId: 's1',
+      title: '缓存主会话',
+      rootId: 'ws_1',
+      activeModel: 'gemini-4-neon-high',
+      messages: const [
+        AgentMessage(
+          stepIndex: 10,
+          source: 'USER_EXPLICIT',
+          msgType: 'USER_INPUT',
+          status: 'DONE',
+          content: '上次断联前的缓存提问',
+          thinking: '',
+          toolCalls: [],
+          timestamp: '',
+        ),
+        AgentMessage(
+          stepIndex: 11,
+          source: 'MODEL',
+          msgType: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          content: '上次断联前的缓存回答',
+          thinking: '',
+          toolCalls: [],
+          timestamp: '',
+          model: 'gemini-4-neon-high',
+        ),
+      ],
+    );
+
+    // 2. 断网冷启动（getNodes 直接抛错）
+    final offlineApi = FakeApiClient()..throwGetNodesError = true;
+    final containerOffline = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(offlineApi),
+        tokenStoreProvider.overrideWithValue(MemoryTokenStore(initialAccess: 'tok')),
+        eventSocketFactoryProvider.overrideWithValue(({
+          required ServerConfig serverConfig,
+          required String nodeId,
+          required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
+        }) => FakeEventSocket(nodeId)),
+      ],
+    );
+    addTearDown(containerOffline.dispose);
+
+    const user = UserProfile(
+      id: 1,
+      username: 'tetra',
+      displayName: 'Tetra',
+      role: 'admin',
+      defaultNode: 'win',
+      allowedNodes: ['win'],
+      nodePermissions: {
+        'win': UserPermissionGrant(nodeId: 'win', canWrite: true, canDelete: true),
+      },
+    );
+
+    await containerOffline.read(hubControllerProvider.notifier).initializeForUser(user);
+    final offlineState = containerOffline.read(hubControllerProvider);
+    expect(offlineState.isInitializing, false);
+    expect(offlineState.selectedNodeId, 'win');
+    expect(offlineState.activeSessionId, 's1');
+    expect(offlineState.activeSessionTitle, '缓存主会话');
+    expect(offlineState.isShowingCachedData, true);
+    expect(offlineState.activeSessionModel, 'gemini-4-neon-high');
+    expect(offlineState.messages.any((m) => m.content == '上次断联前的缓存回答'), true);
+    expect(offlineState.projects['Demo']?.length, 2);
+
+    // 3. 恢复联网后启动：冷启动命中缓存，随即无感刷新为在线最新数据并清除缓存横幅
+    final onlineApi = FakeApiClient()..appendResumeReply = true;
+    final containerOnline = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(onlineApi),
+        tokenStoreProvider.overrideWithValue(MemoryTokenStore(initialAccess: 'tok')),
+        eventSocketFactoryProvider.overrideWithValue(({
+          required ServerConfig serverConfig,
+          required String nodeId,
+          required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
+        }) => FakeEventSocket(nodeId)),
+      ],
+    );
+    addTearDown(containerOnline.dispose);
+
+    await containerOnline.read(hubControllerProvider.notifier).initializeForUser(user);
+    await Future<void>.delayed(Duration.zero);
+    final onlineState = containerOnline.read(hubControllerProvider);
+    expect(onlineState.isInitializing, false);
+    expect(onlineState.isShowingCachedData, false);
+    expect(onlineState.messages.any((m) => m.content == '后台期间新增回复'), true);
   });
 }

@@ -32,6 +32,7 @@ class NodeRegistryManager:
                 "online": False,
                 "engine_alive": False,
                 "last_seen": 0.0,
+                "version": "",
             }
             for nid in nodes
         }
@@ -40,7 +41,7 @@ class NodeRegistryManager:
     async def probe_node(self, node_id: str) -> dict[str, Any]:
         cfg = self.nodes.get(node_id)
         if not cfg:
-            return {"online": False, "engine_alive": False, "last_seen": 0.0}
+            return {"online": False, "engine_alive": False, "last_seen": 0.0, "version": ""}
         now = time.time()
         try:
             resp = await self.http_client.get(
@@ -53,6 +54,7 @@ class NodeRegistryManager:
                     "online": True,
                     "engine_alive": bool(data.get("engine_alive", False)),
                     "last_seen": now,
+                    "version": str(data.get("version", "") or ""),
                 }
                 self._cache[node_id] = entry
                 return entry
@@ -64,6 +66,7 @@ class NodeRegistryManager:
             "online": False,
             "engine_alive": False,
             "last_seen": float(prev.get("last_seen", 0.0)),
+            "version": str(prev.get("version", "") or ""),
         }
         self._cache[node_id] = entry
         return entry
@@ -92,11 +95,31 @@ class NodeRegistryManager:
                     engine_alive=bool(cached.get("engine_alive", False)),
                     is_local=cfg.is_local,
                     last_seen=float(cached.get("last_seen", 0.0)),
+                    version=str(cached.get("version", "") or ""),
                     can_write=grant.can_write,
                     can_delete=grant.can_delete,
                 )
             )
         return visible
+
+    def get_all_nodes(self) -> list[NodeStatus]:
+        all_nodes: list[NodeStatus] = []
+        for node_id, cfg in self.nodes.items():
+            cached = self._cache.get(node_id, {})
+            all_nodes.append(
+                NodeStatus(
+                    id=node_id,
+                    name=cfg.name,
+                    online=bool(cached.get("online", False)),
+                    engine_alive=bool(cached.get("engine_alive", False)),
+                    is_local=cfg.is_local,
+                    last_seen=float(cached.get("last_seen", 0.0)),
+                    version=str(cached.get("version", "") or ""),
+                    can_write=True,
+                    can_delete=True,
+                )
+            )
+        return all_nodes
 
     def start(self) -> None:
         if self._task is None or self._task.done():

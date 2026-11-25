@@ -27,6 +27,7 @@ from agy_hub.agent.message_queue import SessionMessageQueueManager
 from agy_hub.agent.providers.base import BaseEngineProvider, InvalidSessionIdError
 from agy_hub.agent.providers.deck import DeckEngineProvider
 from agy_hub.agent.providers.windows import WindowsEngineProvider
+from agy_hub.agent.updater import NodeSelfUpdater
 from agy_hub.agent.watcher import SessionEventHub
 from agy_hub.common.sandbox import BinaryFileError, RootRegistry, SandboxError, is_sensitive_path
 from agy_hub.common.schemas import (
@@ -41,6 +42,9 @@ from agy_hub.common.schemas import (
     GitRepoItem,
     GitReposResponse,
     ModelsResponse,
+    NodeUpdateApplyRequest,
+    NodeUpdateApplyResponse,
+    NodeUpdateStatusResponse,
     QueuePauseRequest,
     QuotaResponse,
     SendMessageRequest,
@@ -73,11 +77,13 @@ def create_agent_app(
     config: AgentConfig,
     provider: BaseEngineProvider | None = None,
     registry: RootRegistry | None = None,
+    updater: NodeSelfUpdater | None = None,
 ) -> FastAPI:
     root_registry = registry or RootRegistry()
     engine_provider = provider or _build_default_provider(config, root_registry)
     event_hub = SessionEventHub(engine_provider, poll_interval=config.poll_interval_seconds)
     queue_manager = SessionMessageQueueManager(engine_provider)
+    self_updater = updater or NodeSelfUpdater()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -95,15 +101,45 @@ def create_agent_app(
     app.state.registry = root_registry
     app.state.event_hub = event_hub
     app.state.queue_manager = queue_manager
+    app.state.updater = self_updater
 
     @app.get("/internal/health")
     async def internal_health() -> dict[str, Any]:
         return {
             "status": "healthy",
+            "version": __version__,
             "platform": engine_provider.platform_name,
             "engine_alive": await engine_provider.is_engine_alive(),
             "time": time.time(),
         }
+
+    @app.get("/agent/update/status", response_model=NodeUpdateStatusResponse)
+    async def get_update_status(
+        fetch: bool = Query(default=True),
+        _caller: GatewayCaller = Depends(require_gateway_signature),
+    ) -> NodeUpdateStatusResponse:
+        try:
+            tree = await engine_provider.get_session_tree()
+            running_count = len(tree.running_session_ids)
+        except Exception:
+            running_count = 0
+        return await self_updater.check_update(fetch=fetch, running_sessions=running_count)
+
+    @app.post("/agent/update/apply", response_model=NodeUpdateApplyResponse)
+    async def apply_self_update(
+        payload: NodeUpdateApplyRequest | None = None,
+        _caller: GatewayCaller = Depends(require_write_caller),
+    ) -> NodeUpdateApplyResponse:
+        try:
+            tree = await engine_provider.get_session_tree()
+            running_count = len(tree.running_session_ids)
+        except Exception:
+            running_count = 0
+        force = bool(payload.force) if payload is not None else False
+        result = await self_updater.apply_update(running_sessions=running_count, force=force)
+        if result.ok and result.restarting:
+            self_updater.schedule_restart(delay_seconds=0.8)
+        return result
 
     @app.get("/agent/sessions", response_model=SessionTreeResponse)
     async def list_sessions(_caller: GatewayCaller = Depends(require_gateway_signature)) -> SessionTreeResponse:

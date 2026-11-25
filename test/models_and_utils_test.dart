@@ -1,3 +1,4 @@
+import 'package:agy_remote/core/config/session_cache_store.dart';
 import 'package:agy_remote/core/platform/android_native_bridge.dart';
 import 'package:agy_remote/core/theme/app_colors.dart';
 import 'package:agy_remote/core/theme/app_fonts.dart';
@@ -6,6 +7,7 @@ import 'package:agy_remote/core/utils/file_utils.dart';
 import 'package:agy_remote/core/utils/latex_math_converter.dart';
 import 'package:agy_remote/models/models.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   group('v2 模型与官方配置测试', () {
@@ -432,6 +434,95 @@ void main() {
       expect(durations.length, 1);
       expect(durations[2], const Duration(minutes: 1, seconds: 24));
       expect(findActiveTurnStartTime(messages), DateTime.parse('2026-11-25T09:00:00Z'));
+    });
+
+    test('SessionCacheStore 支持轻量 LRU（最多8会话/每会话40条）读写与清理', () async {
+      SharedPreferences.setMockInitialValues({});
+
+      await SessionCacheStore.saveNodes(
+        const [HostNode(id: 'win', name: 'Windows PC', isOnline: true, engineAlive: true)],
+        selectedNodeId: 'win',
+      );
+      await SessionCacheStore.saveSessionTree(
+        'win',
+        {
+          'Demo': [const SessionItem(id: 's1', title: '测试会话', rootId: 'scratch')],
+        },
+        const [],
+      );
+
+      // Save 10 sessions -> only 8 most recent kept; first session has 50 messages -> last 40 kept
+      for (var i = 1; i <= 10; i++) {
+        final msgs = List.generate(
+          i == 1 ? 50 : 2,
+          (m) => AgentMessage(
+            stepIndex: m + 1,
+            source: 'MODEL',
+            msgType: 'PLANNER_RESPONSE',
+            status: 'DONE',
+            content: 'msg_${i}_$m',
+            thinking: '',
+            toolCalls: const [],
+            timestamp: '',
+            model: 'gemini-4-neon-high',
+          ),
+        );
+        await SessionCacheStore.saveSessionMessages(
+          nodeId: 'win',
+          sessionId: 's$i',
+          title: '会话 $i',
+          rootId: 'scratch',
+          activeModel: 'gemini-4-neon-high',
+          messages: msgs,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 2));
+      }
+
+      var snap = await SessionCacheStore.loadSnapshot();
+      expect(snap.nodes.length, 1);
+      expect(snap.lastNodeId, 'win');
+      expect(snap.sessionsByKey.length, SessionCacheStore.maxCachedSessions);
+      expect(snap.getSession('win', 's1'), isNull);
+      expect(snap.getSession('win', 's2'), isNull);
+      expect(snap.getSession('win', 's10')?.messages.length, 2);
+      expect(snap.latestSessionForNode('win')?.sessionId, 's10');
+
+      // Verify 40 message cap on a single session
+      final longMsgs = List.generate(
+        55,
+        (m) => AgentMessage(
+          stepIndex: m + 1,
+          source: 'MODEL',
+          msgType: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          content: 'long_$m',
+          thinking: '',
+          toolCalls: const [],
+          timestamp: '',
+        ),
+      );
+      await SessionCacheStore.saveSessionMessages(
+        nodeId: 'win',
+        sessionId: 's10',
+        title: '长会话 10',
+        rootId: 'scratch',
+        activeModel: 'gemini-4-neon-high',
+        messages: longMsgs,
+      );
+      snap = await SessionCacheStore.loadSnapshot();
+      final cached10 = snap.getSession('win', 's10')!;
+      expect(cached10.messages.length, SessionCacheStore.maxMessagesPerSession);
+      expect(cached10.messages.first.stepIndex, 16);
+      expect(cached10.messages.last.stepIndex, 55);
+
+      await SessionCacheStore.removeSession('win', 's10');
+      snap = await SessionCacheStore.loadSnapshot();
+      expect(snap.getSession('win', 's10'), isNull);
+
+      await SessionCacheStore.clear();
+      snap = await SessionCacheStore.loadSnapshot();
+      expect(snap.nodes, isEmpty);
+      expect(snap.sessionsByKey, isEmpty);
     });
   });
 }

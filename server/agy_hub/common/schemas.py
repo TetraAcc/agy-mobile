@@ -78,8 +78,37 @@ class NodeStatus(BaseModel):
     engine_alive: bool
     is_local: bool = False
     last_seen: float = 0.0
+    version: str = ""
     can_write: bool = False
     can_delete: bool = False
+
+
+class NodeUpdateStatusResponse(BaseModel):
+    current_version: str = ""
+    git_available: bool = False
+    branch: str = ""
+    local_commit: str = ""
+    remote_commit: str = ""
+    behind_count: int = 0
+    dirty: bool = False
+    running_sessions: int = 0
+    update_available: bool = False
+    can_update: bool = False
+    message: str = ""
+
+
+class NodeUpdateApplyRequest(BaseModel):
+    force: bool = False
+
+
+class NodeUpdateApplyResponse(BaseModel):
+    ok: bool = False
+    updated: bool = False
+    restarting: bool = False
+    from_version: str = ""
+    to_version: str = ""
+    commit: str = ""
+    message: str = ""
 
 
 class NodesResponse(BaseModel):

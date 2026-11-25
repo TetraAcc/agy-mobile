@@ -6,16 +6,22 @@ import 'package:flutter_highlight/themes/atom-one-light.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:markdown/markdown.dart' as md;
 
+import '../../core/utils/search_highlight_utils.dart';
+
 class CodeBlockWidget extends StatefulWidget {
   final String code;
   final String language;
   final bool isDark;
+  final String highlightQuery;
+  final bool isFocusedMatch;
 
   const CodeBlockWidget({
     super.key,
     required this.code,
     required this.language,
     required this.isDark,
+    this.highlightQuery = '',
+    this.isFocusedMatch = false,
   });
 
   @override
@@ -130,23 +136,44 @@ class _CodeBlockWidgetState extends State<CodeBlockWidget> {
           ),
           LayoutBuilder(
             builder: (context, constraints) {
+              final trimmedQuery = widget.highlightQuery.trim();
+              final hasCodeMatch = trimmedQuery.isNotEmpty &&
+                  widget.code.toLowerCase().contains(trimmedQuery.toLowerCase());
+              const codeTextStyle = TextStyle(
+                fontFamily: 'monospace',
+                fontFamilyFallback: ['Consolas', 'Fira Code', 'JetBrains Mono', 'Courier New', 'monospace'],
+                fontSize: 12.5,
+                height: 1.55,
+              );
               return SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 physics: const BouncingScrollPhysics(),
                 child: ConstrainedBox(
                   constraints: BoxConstraints(minWidth: constraints.maxWidth),
-                  child: HighlightView(
-                    widget.code,
-                    language: widget.language.toLowerCase(),
-                    theme: _buildSeamlessHighlightTheme(),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                    textStyle: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontFamilyFallback: ['Consolas', 'Fira Code', 'JetBrains Mono', 'Courier New', 'monospace'],
-                      fontSize: 12.5,
-                      height: 1.55,
-                    ),
-                  ),
+                  child: hasCodeMatch
+                      ? Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          child: SelectableText.rich(
+                            buildHighlightedTextSpan(
+                              text: widget.code,
+                              query: trimmedQuery,
+                              baseStyle: codeTextStyle.copyWith(
+                                color: widget.isDark
+                                    ? const Color(0xFFE2E8F0)
+                                    : const Color(0xFF334155),
+                              ),
+                              isDark: widget.isDark,
+                              isFocused: widget.isFocusedMatch,
+                            ),
+                          ),
+                        )
+                      : HighlightView(
+                          widget.code,
+                          language: widget.language.toLowerCase(),
+                          theme: _buildSeamlessHighlightTheme(),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          textStyle: codeTextStyle,
+                        ),
                 ),
               );
             },
@@ -159,8 +186,14 @@ class _CodeBlockWidgetState extends State<CodeBlockWidget> {
 
 class CodeElementBuilder extends MarkdownElementBuilder {
   final bool isDark;
+  final String highlightQuery;
+  final bool isFocusedMatch;
 
-  CodeElementBuilder({required this.isDark});
+  CodeElementBuilder({
+    required this.isDark,
+    this.highlightQuery = '',
+    this.isFocusedMatch = false,
+  });
 
   @override
   Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
@@ -168,6 +201,26 @@ class CodeElementBuilder extends MarkdownElementBuilder {
     final className = element.attributes['class'] ?? '';
     final isBlock = textContent.contains('\n') || className.startsWith('language-');
     if (!isBlock) {
+      final trimmedQuery = highlightQuery.trim();
+      if (trimmedQuery.isNotEmpty &&
+          textContent.toLowerCase().contains(trimmedQuery.toLowerCase())) {
+        final baseStyle = preferredStyle ??
+            TextStyle(
+              backgroundColor: isDark ? const Color(0xFF222226) : const Color(0xFFF1F1F3),
+              color: isDark ? const Color(0xFFF4F4F5) : const Color(0xFF18181B),
+              fontFamily: 'monospace',
+              fontSize: 13,
+            );
+        return Text.rich(
+          buildHighlightedTextSpan(
+            text: textContent,
+            query: trimmedQuery,
+            baseStyle: baseStyle,
+            isDark: isDark,
+            isFocused: isFocusedMatch,
+          ),
+        );
+      }
       return null;
     }
     var language = '';
@@ -180,6 +233,8 @@ class CodeElementBuilder extends MarkdownElementBuilder {
       code: cleanCode,
       language: language,
       isDark: isDark,
+      highlightQuery: highlightQuery,
+      isFocusedMatch: isFocusedMatch,
     );
   }
 }

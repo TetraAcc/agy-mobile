@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../core/utils/duration_utils.dart';
 import '../../core/utils/file_utils.dart';
+import '../../core/utils/search_highlight_utils.dart';
 import '../../models/models.dart';
 import '../workspace/session_changes_bar.dart';
 import 'markdown_message_body.dart';
@@ -24,6 +25,8 @@ class MessageCard extends StatelessWidget {
   final VoidCallback? onSwitchModel;
   final VoidCallback? onOpenTurnReview;
   final ValueChanged<SessionFileChange>? onOpenTurnFile;
+  final String searchQuery;
+  final bool isFocusedSearchMatch;
 
   const MessageCard({
     super.key,
@@ -43,6 +46,8 @@ class MessageCard extends StatelessWidget {
     this.onSwitchModel,
     this.onOpenTurnReview,
     this.onOpenTurnFile,
+    this.searchQuery = '',
+    this.isFocusedSearchMatch = false,
   });
 
   List<AskQuestionItem> get _askQuestions {
@@ -70,6 +75,12 @@ class MessageCard extends StatelessWidget {
       var displayContent = msg.content.replaceAll(RegExp(r'\[用户上传图片:\s*.*?\]\n?'), '').trim();
       displayContent = displayContent.replaceAll(RegExp(r'\[用户上传文件:\s*.*?\]\n?'), '').trim();
 
+      final userTextStyle = TextStyle(
+        color: isDark ? const Color(0xFFF4F4F5) : const Color(0xFF18181B),
+        fontSize: 14.5,
+        height: 1.5,
+      );
+
       return Align(
         alignment: Alignment.centerRight,
         child: Container(
@@ -79,8 +90,10 @@ class MessageCard extends StatelessWidget {
             color: isDark ? const Color(0xFF26262A) : const Color(0xFFF2F2F4),
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
-              color: isDark ? const Color(0xFF34343B) : const Color(0xFFE4E4E7),
-              width: 0.8,
+              color: isFocusedSearchMatch
+                  ? SearchHighlightColors.cardBorder(isDark: isDark)
+                  : (isDark ? const Color(0xFF34343B) : const Color(0xFFE4E4E7)),
+              width: isFocusedSearchMatch ? 1.6 : 0.8,
             ),
           ),
           child: Column(
@@ -88,14 +101,20 @@ class MessageCard extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               if (displayContent.isNotEmpty)
-                SelectableText(
-                  displayContent,
-                  style: TextStyle(
-                    color: isDark ? const Color(0xFFF4F4F5) : const Color(0xFF18181B),
-                    fontSize: 14.5,
-                    height: 1.5,
-                  ),
-                ),
+                searchQuery.trim().isNotEmpty
+                    ? SelectableText.rich(
+                        buildHighlightedTextSpan(
+                          text: displayContent,
+                          query: searchQuery,
+                          baseStyle: userTextStyle,
+                          isDark: isDark,
+                          isFocused: isFocusedSearchMatch,
+                        ),
+                      )
+                    : SelectableText(
+                        displayContent,
+                        style: userTextStyle,
+                      ),
               for (final imgPath in imgPaths) _buildUserImagePreview(context, imgPath),
             ],
           ),
@@ -118,26 +137,26 @@ class MessageCard extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 22),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (msg.toolCalls.isNotEmpty) _buildCompactToolCallsBar(context, msg.stepIndex, msg.toolCalls),
-          if (msg.thinking.isNotEmpty) ...[
-            _buildThinkingFold(context, msg.thinking),
-            const SizedBox(height: 10),
-          ],
-          if (msg.content.isNotEmpty)
-            MarkdownMessageBody(
-              text: msg.content,
-              isDark: isDark,
-              resolveMediaUrl: resolveMediaUrl,
-              mediaHeaders: mediaHeaders,
-              onOpenUrl: onOpenUrl,
-              onDownloadPath: (p) => onDownloadFile(p),
-              onOpenMediaExternal: onOpenMediaExternal,
-            ),
+    final assistantBody = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (msg.toolCalls.isNotEmpty) _buildCompactToolCallsBar(context, msg.stepIndex, msg.toolCalls),
+        if (msg.thinking.isNotEmpty) ...[
+          _buildThinkingFold(context, msg.thinking),
+          const SizedBox(height: 10),
+        ],
+        if (msg.content.isNotEmpty)
+          MarkdownMessageBody(
+            text: msg.content,
+            isDark: isDark,
+            resolveMediaUrl: resolveMediaUrl,
+            mediaHeaders: mediaHeaders,
+            onOpenUrl: onOpenUrl,
+            onDownloadPath: (p) => onDownloadFile(p),
+            onOpenMediaExternal: onOpenMediaExternal,
+            highlightQuery: searchQuery,
+            isFocusedMatch: isFocusedSearchMatch,
+          ),
           for (final fPath in FileUtils.extractDownloadableFiles(msg.content))
             _buildDownloadCard(context, fPath),
           if (askQuestions.isNotEmpty)
@@ -214,8 +233,28 @@ class MessageCard extends StatelessWidget {
                 );
               },
             ),
-        ],
-      ),
+      ],
+    );
+
+    if (isFocusedSearchMatch) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 22),
+        padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+        decoration: BoxDecoration(
+          color: SearchHighlightColors.cardTint(isDark: isDark),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: SearchHighlightColors.cardBorder(isDark: isDark),
+            width: 1.2,
+          ),
+        ),
+        child: assistantBody,
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 22),
+      child: assistantBody,
     );
   }
 
@@ -401,17 +440,33 @@ class MessageCard extends StatelessWidget {
           final canOpenDiff = editTargetPath != null && onOpenEditDiff != null;
           final canOpenDetail = !canOpenDiff && onOpenToolDetail != null;
           final isInteractive = canOpenDiff || canOpenDetail;
+          final trimmedQuery = searchQuery.trim().toLowerCase();
+          final toolMatchesSearch = trimmedQuery.isNotEmpty &&
+              (name.toLowerCase().contains(trimmedQuery) ||
+                  label.toLowerCase().contains(trimmedQuery) ||
+                  args.values.any((v) => v.toString().toLowerCase().contains(trimmedQuery)));
+          final chipTextStyle = TextStyle(
+            fontSize: 10.5,
+            fontFamily: 'monospace',
+            color: isInteractive
+                ? (isDark ? Colors.white : Colors.black87)
+                : (isDark ? Colors.white60 : Colors.black54),
+          );
           final chip = Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
             decoration: BoxDecoration(
-              color: canOpenDiff
-                  ? primary.withValues(alpha: isDark ? 0.10 : 0.08)
-                  : (isDark ? const Color(0xFF18181B) : const Color(0xFFF4F4F5)),
+              color: toolMatchesSearch
+                  ? SearchHighlightColors.cardTint(isDark: isDark)
+                  : (canOpenDiff
+                      ? primary.withValues(alpha: isDark ? 0.10 : 0.08)
+                      : (isDark ? const Color(0xFF18181B) : const Color(0xFFF4F4F5))),
               borderRadius: BorderRadius.circular(6),
               border: Border.all(
-                color: canOpenDiff
-                    ? primary.withValues(alpha: 0.35)
-                    : (isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
+                color: toolMatchesSearch
+                    ? SearchHighlightColors.cardBorder(isDark: isDark)
+                    : (canOpenDiff
+                        ? primary.withValues(alpha: 0.35)
+                        : (isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7))),
               ),
             ),
             child: Row(
@@ -427,17 +482,22 @@ class MessageCard extends StatelessWidget {
                 const SizedBox(width: 4),
                 ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 220),
-                  child: Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 10.5,
-                      fontFamily: 'monospace',
-                      color: isInteractive
-                          ? (isDark ? Colors.white : Colors.black87)
-                          : (isDark ? Colors.white60 : Colors.black54),
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  child: toolMatchesSearch
+                      ? Text.rich(
+                          buildHighlightedTextSpan(
+                            text: label,
+                            query: searchQuery,
+                            baseStyle: chipTextStyle,
+                            isDark: isDark,
+                            isFocused: isFocusedSearchMatch,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        )
+                      : Text(
+                          label,
+                          style: chipTextStyle,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                 ),
                 if (canOpenDiff) ...[
                   const SizedBox(width: 4),
@@ -502,7 +562,10 @@ class MessageCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: bgColor,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: borderColor),
+        border: Border.all(
+          color: isFocusedSearchMatch ? SearchHighlightColors.cardBorder(isDark: isDark) : borderColor,
+          width: isFocusedSearchMatch ? 1.6 : 1.0,
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -536,14 +599,28 @@ class MessageCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-          SelectableText(
-            errorText,
-            style: TextStyle(
-              fontSize: 13,
-              height: 1.48,
-              color: bodyColor,
-            ),
-          ),
+          searchQuery.trim().isNotEmpty
+              ? SelectableText.rich(
+                  buildHighlightedTextSpan(
+                    text: errorText,
+                    query: searchQuery,
+                    baseStyle: TextStyle(
+                      fontSize: 13,
+                      height: 1.48,
+                      color: bodyColor,
+                    ),
+                    isDark: isDark,
+                    isFocused: isFocusedSearchMatch,
+                  ),
+                )
+              : SelectableText(
+                  errorText,
+                  style: TextStyle(
+                    fontSize: 13,
+                    height: 1.48,
+                    color: bodyColor,
+                  ),
+                ),
           const SizedBox(height: 6),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
@@ -579,36 +656,58 @@ class MessageCard extends StatelessWidget {
     final preview = thinkingText.trim().split('\n').first;
     final cleanPreview = preview.length > 36 ? '${preview.substring(0, 36)}...' : preview;
     final muted = isDark ? const Color(0xFFA1A1AA) : const Color(0xFF71717A);
+    final trimmedQuery = searchQuery.trim();
+    final thinkingMatches = trimmedQuery.isNotEmpty &&
+        thinkingText.toLowerCase().contains(trimmedQuery.toLowerCase());
+    final thinkingStyle = TextStyle(
+      color: isDark ? const Color(0xFFD4D4D8) : const Color(0xFF3F3F46),
+      fontSize: 12.5,
+      height: 1.5,
+    );
 
-    return Container(
-      decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF18181B) : const Color(0xFFF8F8F9),
+    return Material(
+      color: isDark ? const Color(0xFF18181B) : const Color(0xFFF8F8F9),
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7),
+        side: BorderSide(
+          color: thinkingMatches
+              ? SearchHighlightColors.cardBorder(isDark: isDark)
+              : (isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
         ),
       ),
+      clipBehavior: Clip.antiAlias,
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
         child: ExpansionTile(
-          initiallyExpanded: false,
+          key: ValueKey('think_${msg.messageKey}_$thinkingMatches'),
+          initiallyExpanded: thinkingMatches,
           tilePadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
           childrenPadding: const EdgeInsets.only(left: 10, right: 10, bottom: 10),
           leading: Icon(Icons.auto_awesome_outlined, color: muted, size: 16),
           title: Text(
-            '思考过程 · $cleanPreview',
-            style: TextStyle(color: muted, fontSize: 12, fontWeight: FontWeight.w500),
+            thinkingMatches ? '思考过程（命中搜索）· $cleanPreview' : '思考过程 · $cleanPreview',
+            style: TextStyle(
+              color: thinkingMatches ? SearchHighlightColors.cardBorder(isDark: isDark) : muted,
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+            ),
             overflow: TextOverflow.ellipsis,
           ),
           children: [
-            SelectableText(
-              thinkingText,
-              style: TextStyle(
-                color: isDark ? const Color(0xFFD4D4D8) : const Color(0xFF3F3F46),
-                fontSize: 12.5,
-                height: 1.5,
-              ),
-            ),
+            thinkingMatches
+                ? SelectableText.rich(
+                    buildHighlightedTextSpan(
+                      text: thinkingText,
+                      query: trimmedQuery,
+                      baseStyle: thinkingStyle,
+                      isDark: isDark,
+                      isFocused: isFocusedSearchMatch,
+                    ),
+                  )
+                : SelectableText(
+                    thinkingText,
+                    style: thinkingStyle,
+                  ),
           ],
         ),
       ),

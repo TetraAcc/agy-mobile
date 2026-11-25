@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/config/offline_outbox_store.dart';
 import '../../core/config/server_config.dart';
+import '../../core/config/session_cache_store.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/token_store.dart';
 import '../../core/platform/android_native_bridge.dart';
@@ -66,6 +67,9 @@ class HubState {
   final SessionQueueData sessionQueue;
   final List<OfflineOutboxItem> offlineOutbox;
   final bool isFlushingOutbox;
+  final bool isInitializing;
+  final bool isShowingCachedData;
+  final DateTime? activeCacheUpdatedAt;
 
   const HubState({
     this.nodes = const [],
@@ -95,6 +99,9 @@ class HubState {
     this.sessionQueue = const SessionQueueData(),
     this.offlineOutbox = const [],
     this.isFlushingOutbox = false,
+    this.isInitializing = false,
+    this.isShowingCachedData = false,
+    this.activeCacheUpdatedAt,
   });
 
   String get effectiveSessionModel =>
@@ -162,6 +169,10 @@ class HubState {
     bool clearSessionQueue = false,
     List<OfflineOutboxItem>? offlineOutbox,
     bool? isFlushingOutbox,
+    bool? isInitializing,
+    bool? isShowingCachedData,
+    DateTime? activeCacheUpdatedAt,
+    bool clearActiveCacheUpdatedAt = false,
   }) {
     return HubState(
       nodes: nodes ?? this.nodes,
@@ -191,6 +202,11 @@ class HubState {
       sessionQueue: clearSessionQueue ? const SessionQueueData() : (sessionQueue ?? this.sessionQueue),
       offlineOutbox: offlineOutbox ?? this.offlineOutbox,
       isFlushingOutbox: isFlushingOutbox ?? this.isFlushingOutbox,
+      isInitializing: isInitializing ?? this.isInitializing,
+      isShowingCachedData: isShowingCachedData ?? this.isShowingCachedData,
+      activeCacheUpdatedAt: clearActiveCacheUpdatedAt
+          ? null
+          : (activeCacheUpdatedAt ?? this.activeCacheUpdatedAt),
     );
   }
 }
@@ -212,12 +228,16 @@ class HubController extends Notifier<HubState> {
   int _lastAskQuestionStep = -1;
   Future<List<HostNode>>? _inFlightRefreshNodes;
   bool _isFlushingOutbox = false;
+  CachedHubSnapshot _cacheSnapshot = const CachedHubSnapshot();
+  Timer? _cachePersistTimer;
+  String _subscribedSessionId = '';
 
   @override
   HubState build() {
     ref.onDispose(() {
       _disposed = true;
       _quotaTimer?.cancel();
+      _cachePersistTimer?.cancel();
       _disposeSocketSync();
       if (AndroidNativeBridge.isAndroidNative) {
         unawaited(AndroidNativeBridge.stopRunningNotification());
@@ -229,6 +249,7 @@ class HubController extends Notifier<HubState> {
   ApiClient get _api => ref.read(apiClientProvider);
 
   void _disposeSocketSync() {
+    _subscribedSessionId = '';
     _wsEventSub?.cancel();
     _wsEventSub = null;
     _wsStateSub?.cancel();
@@ -238,23 +259,193 @@ class HubController extends Notifier<HubState> {
     old?.dispose();
   }
 
+  void _subscribeSession(String sessionId, {int? sinceStep}) {
+    final socket = _socket;
+    if (socket == null || sessionId.isEmpty) return;
+    _subscribedSessionId = sessionId;
+    socket.subscribe(sessionId, sinceStep: sinceStep);
+  }
+
+  void _updateMemoryCacheForActiveSession({
+    required String nodeId,
+    required String sessionId,
+    required String title,
+    required String rootId,
+    required String activeModel,
+    required List<AgentMessage> messages,
+  }) {
+    if (nodeId.isEmpty || sessionId.isEmpty) return;
+    final confirmed = messages.where((m) => m.stepIndex >= 0).toList();
+    if (confirmed.isEmpty) return;
+    final sliced = confirmed.length > SessionCacheStore.maxMessagesPerSession
+        ? confirmed.sublist(confirmed.length - SessionCacheStore.maxMessagesPerSession)
+        : confirmed;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final nextSessions = Map<String, CachedSessionMessages>.from(_cacheSnapshot.sessionsByKey);
+    nextSessions[CachedHubSnapshot.sessionKey(nodeId, sessionId)] = CachedSessionMessages(
+      nodeId: nodeId,
+      sessionId: sessionId,
+      title: title,
+      rootId: rootId.isNotEmpty ? rootId : 'scratch',
+      activeModel: activeModel,
+      messages: sliced,
+      updatedAtMs: nowMs,
+    );
+    final nextLast = Map<String, String>.from(_cacheSnapshot.lastSessionIdByNode);
+    nextLast[nodeId] = sessionId;
+    _cacheSnapshot = CachedHubSnapshot(
+      nodes: _cacheSnapshot.nodes,
+      lastNodeId: nodeId,
+      lastSessionIdByNode: nextLast,
+      treesByNode: _cacheSnapshot.treesByNode,
+      sessionsByKey: nextSessions,
+    );
+  }
+
+  void _schedulePersistActiveSessionCache({bool immediate = false}) {
+    final nodeId = state.selectedNodeId;
+    final sid = state.activeSessionId;
+    if (nodeId.isEmpty || sid.isEmpty) return;
+    final msgs = state.messages;
+    if (msgs.where((m) => m.stepIndex >= 0).isEmpty) return;
+
+    final title = state.activeSessionTitle;
+    final rootId = state.activeRootId;
+    final activeModel = state.activeSessionModel;
+
+    _updateMemoryCacheForActiveSession(
+      nodeId: nodeId,
+      sessionId: sid,
+      title: title,
+      rootId: rootId,
+      activeModel: activeModel,
+      messages: msgs,
+    );
+
+    _cachePersistTimer?.cancel();
+    if (immediate) {
+      unawaited(
+        SessionCacheStore.saveSessionMessages(
+          nodeId: nodeId,
+          sessionId: sid,
+          title: title,
+          rootId: rootId,
+          activeModel: activeModel,
+          messages: msgs,
+        ),
+      );
+      return;
+    }
+
+    _cachePersistTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (_disposed) return;
+      unawaited(
+        SessionCacheStore.saveSessionMessages(
+          nodeId: nodeId,
+          sessionId: sid,
+          title: title,
+          rootId: rootId,
+          activeModel: activeModel,
+          messages: msgs,
+        ),
+      );
+    });
+  }
+
+  void _applyNodeCacheToState(String nodeId, {List<HostNode>? nodesOverride}) {
+    final cachedTree = _cacheSnapshot.treesByNode[nodeId];
+    final cachedSession = _cacheSnapshot.latestSessionForNode(nodeId);
+    final nextNodes = nodesOverride ??
+        (_cacheSnapshot.nodes.isNotEmpty
+            ? _cacheSnapshot.nodes
+                .map(
+                  (n) => HostNode(
+                    id: n.id,
+                    name: n.name,
+                    isOnline: false,
+                    engineAlive: false,
+                    isLocal: n.isLocal,
+                    lastSeen: n.lastSeen,
+                    canWrite: n.canWrite,
+                    canDelete: n.canDelete,
+                  ),
+                )
+                .toList()
+            : state.nodes);
+
+    state = state.copyWith(
+      nodes: nextNodes,
+      selectedNodeId: nodeId,
+      projects: cachedTree?.projects ?? const {},
+      generalSessions: cachedTree?.generalSessions ?? const [],
+      activeSessionId: cachedSession?.sessionId ?? '',
+      activeSessionTitle: cachedSession?.title ?? '暂无缓存会话',
+      activeRootId: cachedSession?.rootId ?? 'scratch',
+      messages: cachedSession?.messages ?? const [],
+      hasMoreMessages: false,
+      clearNextBeforeStep: true,
+      isLoadingMessages: false,
+      runningSessionIds: const {},
+      activeSessionModel: cachedSession?.activeModel ?? '',
+      clearPendingSwitchModel: true,
+      clearSessionChanges: true,
+      clearSessionQueue: true,
+      isShowingCachedData: cachedSession != null && cachedSession.messages.isNotEmpty,
+      activeCacheUpdatedAt: cachedSession?.updatedAt,
+      clearActiveCacheUpdatedAt: cachedSession == null,
+    );
+  }
+
   Future<void> initializeForUser(UserProfile user) async {
     _disposed = false;
+    state = state.copyWith(isInitializing: true);
     try {
-      final loadedOutbox = await OfflineOutboxStore.load();
+      final results = await Future.wait<dynamic>([
+        OfflineOutboxStore.load(),
+        SessionCacheStore.loadSnapshot(),
+      ]);
       if (_disposed) return;
+
+      final loadedOutbox = results[0] as List<OfflineOutboxItem>;
+      _cacheSnapshot = results[1] as CachedHubSnapshot;
+
       if (loadedOutbox.isNotEmpty) {
         state = state.copyWith(offlineOutbox: loadedOutbox);
       }
-
-      final (nodes, defaultNode) = await _api.getNodes();
-      if (_disposed) return;
 
       String? savedNode;
       try {
         final prefs = await SharedPreferences.getInstance();
         savedNode = prefs.getString(_selectedNodePrefKey);
       } catch (_) {}
+
+      var warmedNodeId = '';
+      if (savedNode != null && _cacheSnapshot.hasCacheForNode(savedNode)) {
+        warmedNodeId = savedNode;
+      } else if (_cacheSnapshot.lastNodeId.isNotEmpty &&
+          _cacheSnapshot.hasCacheForNode(_cacheSnapshot.lastNodeId)) {
+        warmedNodeId = _cacheSnapshot.lastNodeId;
+      } else if (_cacheSnapshot.nodes.isNotEmpty) {
+        warmedNodeId = _cacheSnapshot.nodes.first.id;
+      }
+
+      if (warmedNodeId.isNotEmpty) {
+        _applyNodeCacheToState(warmedNodeId);
+      }
+
+      List<HostNode> nodes = const [];
+      var defaultNode = '';
+      try {
+        final res = await _api.getNodes();
+        nodes = res.$1;
+        defaultNode = res.$2;
+      } catch (_) {
+        if (!_disposed) {
+          state = state.copyWith(isInitializing: false);
+        }
+        return;
+      }
+      if (_disposed) return;
 
       var targetNodeId = '';
       if (savedNode != null && nodes.any((n) => n.id == savedNode)) {
@@ -265,11 +456,32 @@ class HubController extends Notifier<HubState> {
         targetNodeId = nodes.first.id;
       }
 
-      state = state.copyWith(nodes: nodes, selectedNodeId: targetNodeId);
+      if (targetNodeId.isNotEmpty) {
+        _cacheSnapshot = CachedHubSnapshot(
+          nodes: nodes,
+          lastNodeId: targetNodeId,
+          lastSessionIdByNode: _cacheSnapshot.lastSessionIdByNode,
+          treesByNode: _cacheSnapshot.treesByNode,
+          sessionsByKey: _cacheSnapshot.sessionsByKey,
+        );
+        unawaited(SessionCacheStore.saveNodes(nodes, selectedNodeId: targetNodeId));
+      }
+
+      if (targetNodeId.isNotEmpty && targetNodeId != warmedNodeId && _cacheSnapshot.hasCacheForNode(targetNodeId)) {
+        _applyNodeCacheToState(targetNodeId, nodesOverride: nodes);
+      } else {
+        state = state.copyWith(nodes: nodes, selectedNodeId: targetNodeId);
+      }
+      state = state.copyWith(isInitializing: false);
+
       if (targetNodeId.isNotEmpty) {
         await _connectAndLoadNode(targetNodeId);
       }
-    } catch (_) {}
+    } catch (_) {
+      if (!_disposed) {
+        state = state.copyWith(isInitializing: false);
+      }
+    }
   }
 
   /// 向网关拉取最新节点列表与在线状态；并发调用自动合并为同一请求。
@@ -302,6 +514,9 @@ class HubController extends Notifier<HubState> {
   Future<void> reset() async {
     _quotaTimer?.cancel();
     _quotaTimer = null;
+    _cachePersistTimer?.cancel();
+    _cachePersistTimer = null;
+    _cacheSnapshot = const CachedHubSnapshot();
     _disposeSocketSync();
     _lastNotifiedRunningTitle = '';
     _lastNotifiedRunningBody = '';
@@ -310,6 +525,7 @@ class HubController extends Notifier<HubState> {
       unawaited(AndroidNativeBridge.stopRunningNotification());
     }
     unawaited(OfflineOutboxStore.clear());
+    unawaited(SessionCacheStore.clear());
     state = const HubState();
   }
 
@@ -333,6 +549,7 @@ class HubController extends Notifier<HubState> {
           refreshSessionTree(autoSelectFirst: state.activeSessionId.isEmpty)
               .then((_) => refreshFileRoots()),
           fetchQuota(),
+          fetchModels(),
         ]);
       }
       return null;
@@ -345,7 +562,18 @@ class HubController extends Notifier<HubState> {
       target = findTarget(latestNodes);
     }
     if (target == null) return '未找到目标节点';
+
     if (!target.isOnline && !target.isLocal) {
+      if (_cacheSnapshot.hasCacheForNode(nodeId)) {
+        _disposeSocketSync();
+        _quotaTimer?.cancel();
+        _applyNodeCacheToState(nodeId, nodesOverride: state.nodes);
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(_selectedNodePrefKey, nodeId);
+        } catch (_) {}
+        return null;
+      }
       return '【${target.name}】当前处于离线状态';
     }
 
@@ -354,24 +582,30 @@ class HubController extends Notifier<HubState> {
       await prefs.setString(_selectedNodePrefKey, nodeId);
     } catch (_) {}
 
-    state = state.copyWith(
-      selectedNodeId: nodeId,
-      projects: const {},
-      generalSessions: const [],
-      activeSessionId: '',
-      activeSessionTitle: '正在接入 ${target.name}...',
-      activeRootId: 'scratch',
-      messages: const [],
-      hasMoreMessages: false,
-      clearNextBeforeStep: true,
-      clearQuota: true,
-      activeSessionModel: '',
-      clearPendingSwitchModel: true,
-      clearSessionChanges: true,
-      clearSessionQueue: true,
-      cachedRoots: const [],
-      pendingAttachments: const [],
-    );
+    if (_cacheSnapshot.hasCacheForNode(nodeId)) {
+      _applyNodeCacheToState(nodeId, nodesOverride: state.nodes);
+    } else {
+      state = state.copyWith(
+        selectedNodeId: nodeId,
+        projects: const {},
+        generalSessions: const [],
+        activeSessionId: '',
+        activeSessionTitle: '正在接入 ${target.name}...',
+        activeRootId: 'scratch',
+        messages: const [],
+        hasMoreMessages: false,
+        clearNextBeforeStep: true,
+        clearQuota: true,
+        activeSessionModel: '',
+        clearPendingSwitchModel: true,
+        clearSessionChanges: true,
+        clearSessionQueue: true,
+        cachedRoots: const [],
+        pendingAttachments: const [],
+        isShowingCachedData: false,
+        clearActiveCacheUpdatedAt: true,
+      );
+    }
 
     await _connectAndLoadNode(nodeId);
     return null;
@@ -518,7 +752,7 @@ class HubController extends Notifier<HubState> {
     return fallback;
   }
 
-  Future<void> _syncActiveSessionSilent() async {
+  Future<void> _syncActiveSessionSilent({bool ensureSubscribed = false}) async {
     final nodeId = state.selectedNodeId;
     final sid = state.activeSessionId;
     if (_disposed || nodeId.isEmpty || sid.isEmpty) return;
@@ -554,11 +788,20 @@ class HubController extends Notifier<HubState> {
           : _extractLatestModel(merged, state.activeSessionModel);
       state = state.copyWith(
         messages: merged,
+        hasMoreMessages: page.hasMore || state.hasMoreMessages,
+        nextBeforeStep: page.nextBeforeStep ?? state.nextBeforeStep,
         runningSessionIds: nextRunning,
         activeSessionModel: detectedModel,
         clearPendingSwitchModel:
             detectedModel.isNotEmpty && state.pendingSwitchModel == detectedModel,
+        isShowingCachedData: false,
+        clearActiveCacheUpdatedAt: true,
       );
+      _schedulePersistActiveSessionCache(immediate: true);
+      if (ensureSubscribed || _subscribedSessionId != sid) {
+        final lastStep = merged.isNotEmpty ? merged.last.stepIndex : null;
+        _subscribeSession(sid, sinceStep: lastStep);
+      }
     } catch (_) {}
     unawaited(refreshSessionQueue());
     unawaited(refreshSessionChanges());
@@ -581,6 +824,7 @@ class HubController extends Notifier<HubState> {
                   engineAlive: tree.engineAlive,
                   isLocal: n.isLocal,
                   lastSeen: n.lastSeen,
+                  version: n.version,
                   canWrite: n.canWrite,
                   canDelete: n.canDelete,
                 )
@@ -593,17 +837,50 @@ class HubController extends Notifier<HubState> {
         generalSessions: tree.generalSessions,
         runningSessionIds: mergedRunning,
       );
+      final nextTrees = Map<String, CachedNodeTree>.from(_cacheSnapshot.treesByNode);
+      nextTrees[nodeId] = CachedNodeTree(
+        nodeId: nodeId,
+        projects: tree.projects,
+        generalSessions: tree.generalSessions,
+        updatedAtMs: DateTime.now().millisecondsSinceEpoch,
+      );
+      _cacheSnapshot = CachedHubSnapshot(
+        nodes: updatedNodes,
+        lastNodeId: _cacheSnapshot.lastNodeId,
+        lastSessionIdByNode: _cacheSnapshot.lastSessionIdByNode,
+        treesByNode: nextTrees,
+        sessionsByKey: _cacheSnapshot.sessionsByKey,
+      );
+      unawaited(SessionCacheStore.saveNodes(updatedNodes, selectedNodeId: nodeId));
+      unawaited(SessionCacheStore.saveSessionTree(nodeId, tree.projects, tree.generalSessions));
 
-      if (autoSelectFirst && state.activeSessionId.isEmpty) {
-        final first = _findFirstSession(
+      if (autoSelectFirst) {
+        final preferred = _findFirstSession(
           tree.projects,
           tree.generalSessions,
           runningIds: mergedRunning,
         );
-        if (first != null) {
-          await selectSession(first);
+        final matched = state.activeSessionId.isNotEmpty
+            ? _findSessionById(state.activeSessionId, tree.projects, tree.generalSessions)
+            : null;
+        final shouldSwitchToRunning = state.isShowingCachedData &&
+            preferred != null &&
+            preferred.id != state.activeSessionId &&
+            (preferred.isRunning || mergedRunning.contains(preferred.id));
+
+        if (state.activeSessionId.isEmpty || matched == null || shouldSwitchToRunning) {
+          if (preferred != null) {
+            await selectSession(preferred);
+          } else if (state.activeSessionId.isEmpty) {
+            state = state.copyWith(activeSessionTitle: '暂无会话');
+          }
         } else {
-          state = state.copyWith(activeSessionTitle: '暂无会话');
+          if (matched.title != state.activeSessionTitle) {
+            state = state.copyWith(activeSessionTitle: matched.title);
+          }
+          if (state.isShowingCachedData || _subscribedSessionId != state.activeSessionId) {
+            await _syncActiveSessionSilent(ensureSubscribed: true);
+          }
         }
       } else if (state.activeSessionId.isNotEmpty) {
         final matched = _findSessionById(state.activeSessionId, tree.projects, tree.generalSessions);
@@ -680,18 +957,24 @@ class HubController extends Notifier<HubState> {
       _socket?.unsubscribe(prevSid);
     }
 
+    final cached = _cacheSnapshot.getSession(nodeId, session.id);
+    final hasCached = cached != null && cached.messages.isNotEmpty;
+
     state = state.copyWith(
       activeSessionId: session.id,
       activeSessionTitle: session.title,
       activeRootId: session.rootId.isNotEmpty ? session.rootId : 'scratch',
-      messages: const [],
+      messages: hasCached ? cached.messages : const [],
       hasMoreMessages: false,
       clearNextBeforeStep: true,
-      activeSessionModel: '',
+      activeSessionModel: hasCached ? cached.activeModel : '',
       clearPendingSwitchModel: true,
       clearSessionChanges: true,
       clearSessionQueue: true,
-      isLoadingMessages: true,
+      isLoadingMessages: !hasCached,
+      isShowingCachedData: hasCached,
+      activeCacheUpdatedAt: hasCached ? cached.updatedAt : null,
+      clearActiveCacheUpdatedAt: !hasCached,
     );
 
     try {
@@ -718,10 +1001,13 @@ class HubController extends Notifier<HubState> {
         isLoadingMessages: false,
         runningSessionIds: nextRunning,
         activeSessionModel: detectedModel,
+        isShowingCachedData: false,
+        clearActiveCacheUpdatedAt: true,
       );
 
+      _schedulePersistActiveSessionCache(immediate: true);
       final lastStep = page.messages.isNotEmpty ? page.messages.last.stepIndex : null;
-      _socket?.subscribe(session.id, sinceStep: lastStep);
+      _subscribeSession(session.id, sinceStep: lastStep);
       _syncRunningNotification();
       unawaited(refreshSessionChanges());
       unawaited(refreshSessionQueue());
@@ -823,7 +1109,10 @@ class HubController extends Notifier<HubState> {
           runningSessionIds: nextRunning,
           activeSessionModel: nextActiveModel,
           clearPendingSwitchModel: clearPending,
+          isShowingCachedData: false,
+          clearActiveCacheUpdatedAt: true,
         );
+        _schedulePersistActiveSessionCache();
         _syncRunningNotification();
         _maybeNotifyAskQuestion(event.step);
         if (event.step.toolCalls.any((t) => _editToolNames.contains(t.name))) {
@@ -1393,6 +1682,17 @@ class HubController extends Notifier<HubState> {
       final (ok, msg) = await _api.deleteSession(nodeId, sessionId);
       if (!ok) return msg;
 
+      final nextSessions = Map<String, CachedSessionMessages>.from(_cacheSnapshot.sessionsByKey);
+      nextSessions.remove(CachedHubSnapshot.sessionKey(nodeId, sessionId));
+      _cacheSnapshot = CachedHubSnapshot(
+        nodes: _cacheSnapshot.nodes,
+        lastNodeId: _cacheSnapshot.lastNodeId,
+        lastSessionIdByNode: _cacheSnapshot.lastSessionIdByNode,
+        treesByNode: _cacheSnapshot.treesByNode,
+        sessionsByKey: nextSessions,
+      );
+      unawaited(SessionCacheStore.removeSession(nodeId, sessionId));
+
       if (state.activeSessionId == sessionId) {
         _socket?.unsubscribe(sessionId);
         state = state.copyWith(
@@ -1403,6 +1703,8 @@ class HubController extends Notifier<HubState> {
           clearNextBeforeStep: true,
           activeSessionModel: '',
           clearPendingSwitchModel: true,
+          isShowingCachedData: false,
+          clearActiveCacheUpdatedAt: true,
         );
       }
       await refreshSessionTree(autoSelectFirst: state.activeSessionId.isEmpty);

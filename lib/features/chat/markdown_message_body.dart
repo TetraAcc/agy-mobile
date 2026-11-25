@@ -1,8 +1,59 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:markdown/markdown.dart' as md;
 
 import '../../core/utils/latex_math_converter.dart';
+import '../../core/utils/search_highlight_utils.dart';
 import 'code_block_builder.dart';
+
+class _SearchHighlightInlineSyntax extends md.InlineSyntax {
+  _SearchHighlightInlineSyntax(String query)
+      : super(RegExp.escape(query), caseSensitive: false);
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final matched = match.group(0);
+    if (matched == null || matched.isEmpty) return false;
+    parser.addNode(md.Element.text('searchmark', matched));
+    return true;
+  }
+}
+
+class _SearchHighlightElementBuilder extends MarkdownElementBuilder {
+  final bool isDark;
+  final bool isFocusedMatch;
+
+  _SearchHighlightElementBuilder({
+    required this.isDark,
+    required this.isFocusedMatch,
+  });
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final baseStyle = parentStyle ?? preferredStyle ?? const TextStyle();
+    return Text.rich(
+      TextSpan(
+        text: element.textContent,
+        style: baseStyle.copyWith(
+          backgroundColor: SearchHighlightColors.background(
+            isDark: isDark,
+            isFocused: isFocusedMatch,
+          ),
+          color: SearchHighlightColors.foreground(
+            isDark: isDark,
+            isFocused: isFocusedMatch,
+          ),
+          fontWeight: isFocusedMatch ? FontWeight.w700 : FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
 
 class MarkdownMessageBody extends StatelessWidget {
   final String text;
@@ -12,6 +63,8 @@ class MarkdownMessageBody extends StatelessWidget {
   final void Function(String url) onOpenUrl;
   final void Function(String rawPath) onDownloadPath;
   final void Function(String rawPath)? onOpenMediaExternal;
+  final String highlightQuery;
+  final bool isFocusedMatch;
 
   const MarkdownMessageBody({
     super.key,
@@ -22,17 +75,42 @@ class MarkdownMessageBody extends StatelessWidget {
     required this.onOpenUrl,
     required this.onDownloadPath,
     this.onOpenMediaExternal,
+    this.highlightQuery = '',
+    this.isFocusedMatch = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final primary = Theme.of(context).colorScheme.primary;
     final normalizedText = LatexMathConverter.normalizeMarkdownMath(text);
+    final trimmedQuery = highlightQuery.trim();
+    final hasSearchMatch = trimmedQuery.isNotEmpty &&
+        normalizedText.toLowerCase().contains(trimmedQuery.toLowerCase());
+    final extensionSet = hasSearchMatch
+        ? md.ExtensionSet(
+            md.ExtensionSet.gitHubFlavored.blockSyntaxes,
+            [
+              ...md.ExtensionSet.gitHubFlavored.inlineSyntaxes,
+              _SearchHighlightInlineSyntax(trimmedQuery),
+            ],
+          )
+        : md.ExtensionSet.gitHubFlavored;
+
     return MarkdownBody(
       data: normalizedText,
       selectable: true,
+      extensionSet: extensionSet,
       builders: {
-        'code': CodeElementBuilder(isDark: isDark),
+        'code': CodeElementBuilder(
+          isDark: isDark,
+          highlightQuery: hasSearchMatch ? trimmedQuery : '',
+          isFocusedMatch: isFocusedMatch,
+        ),
+        if (hasSearchMatch)
+          'searchmark': _SearchHighlightElementBuilder(
+            isDark: isDark,
+            isFocusedMatch: isFocusedMatch,
+          ),
       },
       sizedImageBuilder: (MarkdownImageConfig config) {
         return _buildMarkdownImage(context, config.uri, config.title, config.alt);

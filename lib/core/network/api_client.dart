@@ -270,6 +270,40 @@ class ApiClient {
     );
   }
 
+  Future<List<HostNode>> getAdminNodes() async {
+    return _exec(
+      () => _dio.get<dynamic>('/api/v2/admin/nodes'),
+      (data) {
+        final map = Map<String, dynamic>.from(data as Map);
+        final rawNodes = map['nodes'] as List<dynamic>? ?? const [];
+        return rawNodes
+            .whereType<Map>()
+            .map((e) => HostNode.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+      },
+    );
+  }
+
+  Future<NodeUpdateStatus> getNodeUpdateStatus(String nodeId, {bool fetch = true}) async {
+    return _exec(
+      () => _dio.get<dynamic>(
+        '/api/v2/nodes/$nodeId/update/status',
+        queryParameters: {'fetch': fetch},
+      ),
+      (data) => NodeUpdateStatus.fromJson(Map<String, dynamic>.from(data as Map)),
+    );
+  }
+
+  Future<NodeUpdateApplyResult> applyNodeUpdate(String nodeId, {bool force = false}) async {
+    return _exec(
+      () => _dio.post<dynamic>(
+        '/api/v2/nodes/$nodeId/update/apply',
+        data: {'force': force},
+      ),
+      (data) => NodeUpdateApplyResult.fromJson(Map<String, dynamic>.from(data as Map)),
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Sessions & Messages
   // ---------------------------------------------------------------------------

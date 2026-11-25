@@ -29,6 +29,28 @@ class ToolCallItem {
       args: parsedArgs,
     );
   }
+
+  Map<String, dynamic> toJson({int maxArgValueChars = 400}) {
+    final compactArgs = <String, dynamic>{};
+    args.forEach((key, value) {
+      if (value is String && value.length > maxArgValueChars) {
+        compactArgs[key] = '${value.substring(0, maxArgValueChars)}...';
+      } else if (value is String || value is num || value is bool || value == null) {
+        compactArgs[key] = value;
+      } else {
+        try {
+          final encoded = jsonEncode(value);
+          if (encoded.length <= maxArgValueChars) {
+            compactArgs[key] = value;
+          }
+        } catch (_) {}
+      }
+    });
+    return {
+      'name': name,
+      if (compactArgs.isNotEmpty) 'args': compactArgs,
+    };
+  }
 }
 
 class AgentMessage {
@@ -92,6 +114,29 @@ class AgentMessage {
       timestamp: json['timestamp']?.toString() ?? '',
       model: json['model']?.toString() ?? '',
     );
+  }
+
+  Map<String, dynamic> toJson({
+    int maxContentChars = 12000,
+    int maxThinkingChars = 2500,
+  }) {
+    final trimmedContent = content.length > maxContentChars
+        ? '${content.substring(0, maxContentChars)}\n...(缓存预览已截断)'
+        : content;
+    final trimmedThinking = thinking.length > maxThinkingChars
+        ? '${thinking.substring(0, maxThinkingChars)}...'
+        : thinking;
+    return {
+      'step_index': stepIndex,
+      'source': source,
+      'msg_type': msgType,
+      'status': status,
+      'content': trimmedContent,
+      if (trimmedThinking.isNotEmpty) 'thinking': trimmedThinking,
+      if (toolCalls.isNotEmpty) 'tool_calls': toolCalls.map((t) => t.toJson()).toList(),
+      if (timestamp.isNotEmpty) 'timestamp': timestamp,
+      if (model.isNotEmpty) 'model': model,
+    };
   }
 }
 

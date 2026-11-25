@@ -222,7 +222,13 @@ def create_gateway_app(
         ok, message = await notifier.send_test_notification()
         return {"ok": ok, "message": message}
 
-    # Admin user governance endpoints
+    # Admin user & node governance endpoints
+    @app.get("/api/v2/admin/nodes", response_model=NodesResponse)
+    async def admin_list_nodes(_admin: UserProfile = Depends(require_admin)) -> NodesResponse:
+        if enable_monitor:
+            await registry.probe_all()
+        return NodesResponse(nodes=registry.get_all_nodes(), default_node=_admin.default_node)
+
     @app.get("/api/v2/admin/users")
     async def admin_list_users(_admin: UserProfile = Depends(require_admin)) -> dict[str, Any]:
         return {"users": [u.model_dump() for u in hub_db.list_users()]}
@@ -307,14 +313,25 @@ def create_gateway_app(
             )
         else:
             user = auth_service.authenticate_http(request)
-            require_delete = request.method == "DELETE"
-            require_write = request.method in ("POST", "PUT", "PATCH")
-            perms = auth_service.check_node_access(
-                user,
-                node_id,
-                require_write=require_write,
-                require_delete=require_delete,
-            )
+            if clean_subpath in ("update/status", "update/apply"):
+                if user.role != "admin":
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privilege required")
+                if node_id not in config.nodes:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown node: {node_id}")
+                perms = user.node_permissions.get(node_id) or UserPermissionGrant(
+                    node_id=node_id,
+                    can_write=True,
+                    can_delete=False,
+                )
+            else:
+                require_delete = request.method == "DELETE"
+                require_write = request.method in ("POST", "PUT", "PATCH")
+                perms = auth_service.check_node_access(
+                    user,
+                    node_id,
+                    require_write=require_write,
+                    require_delete=require_delete,
+                )
 
         node_cfg = config.nodes[node_id]
         upstream_path = f"/agent/{clean_subpath}"

@@ -15,6 +15,7 @@ import '../../core/theme/app_fonts.dart';
 import '../../core/theme/theme_provider.dart';
 import '../../core/utils/duration_utils.dart';
 import '../../core/utils/file_utils.dart';
+import '../../core/utils/search_highlight_utils.dart';
 import '../../models/models.dart';
 import '../auth/auth_controller.dart';
 import '../chat/bottom_input_bar.dart';
@@ -54,6 +55,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   bool _showScrollToBottom = false;
   bool _isChatSearching = false;
   String _chatSearchQuery = '';
+  int _activeSearchMatchPos = -1;
+  final Map<String, GlobalKey> _messageItemKeys = {};
+  int _searchJumpSeq = 0;
+  String _lastSearchSessionId = '';
   VoidCallback? _disposeWebPaste;
   String _commentSessionId = '';
   List<ReviewCommentItem> _draftComments = const [];
@@ -66,6 +71,117 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   List<ReviewCommentItem> _commentsForSession(String sessionId) {
     if (sessionId.isEmpty || sessionId != _commentSessionId) return const [];
     return _draftComments;
+  }
+
+  GlobalKey _messageKeyFor(String messageKey) {
+    return _messageItemKeys.putIfAbsent(messageKey, () => GlobalKey());
+  }
+
+  List<int> _collectMatchedMessageIndices(List<AgentMessage> allMessages, String rawQuery) {
+    final query = rawQuery.trim();
+    if (query.isEmpty) return const [];
+    final matched = <int>[];
+    for (var i = 0; i < allMessages.length; i++) {
+      if (messageMatchesSearchQuery(allMessages[i], query)) {
+        matched.add(i);
+      }
+    }
+    return matched;
+  }
+
+  void _closeChatSearch() {
+    setState(() {
+      _isChatSearching = false;
+      _chatSearchQuery = '';
+      _activeSearchMatchPos = -1;
+      _searchJumpSeq++;
+      _chatSearchController.clear();
+    });
+  }
+
+  void _onChatSearchQueryChanged(String val, List<AgentMessage> allMessages, bool hasThinking, bool hasLoadMore) {
+    final matched = _collectMatchedMessageIndices(allMessages, val);
+    final nextPos = matched.isEmpty ? -1 : matched.length - 1;
+    setState(() {
+      _chatSearchQuery = val;
+      _activeSearchMatchPos = nextPos;
+    });
+    if (nextPos >= 0) {
+      _scrollToMatchedMessage(
+        allMessages: allMessages,
+        msgIdx: matched[nextPos],
+        hasThinking: hasThinking,
+        hasLoadMore: hasLoadMore,
+      );
+    }
+  }
+
+  void _stepSearchMatch({
+    required int delta,
+    required List<AgentMessage> allMessages,
+    required List<int> matchedIndices,
+    required bool hasThinking,
+    required bool hasLoadMore,
+  }) {
+    if (matchedIndices.isEmpty) return;
+    final len = matchedIndices.length;
+    final current = (_activeSearchMatchPos >= 0 && _activeSearchMatchPos < len)
+        ? _activeSearchMatchPos
+        : len - 1;
+    final nextPos = (current + delta) % len;
+    final normalizedPos = nextPos < 0 ? nextPos + len : nextPos;
+    setState(() {
+      _activeSearchMatchPos = normalizedPos;
+    });
+    _scrollToMatchedMessage(
+      allMessages: allMessages,
+      msgIdx: matchedIndices[normalizedPos],
+      hasThinking: hasThinking,
+      hasLoadMore: hasLoadMore,
+    );
+  }
+
+  void _scrollToMatchedMessage({
+    required List<AgentMessage> allMessages,
+    required int msgIdx,
+    required bool hasThinking,
+    required bool hasLoadMore,
+    int attempt = 0,
+    int? seq,
+  }) {
+    if (msgIdx < 0 || msgIdx >= allMessages.length) return;
+    final jumpSeq = seq ?? ++_searchJumpSeq;
+    final targetKey = _messageKeyFor(allMessages[msgIdx].messageKey);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || jumpSeq != _searchJumpSeq) return;
+      final ctx = targetKey.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(
+          ctx,
+          duration: const Duration(milliseconds: 220),
+          alignment: 0.35,
+          curve: Curves.easeOutCubic,
+        );
+        return;
+      }
+      if (!_scrollController.hasClients || attempt >= 4) return;
+      final totalItems = allMessages.length + (hasThinking ? 1 : 0) + (hasLoadMore ? 1 : 0);
+      if (totalItems <= 1) return;
+      final listIdx = (hasThinking ? 1 : 0) + (allMessages.length - 1 - msgIdx);
+      final maxExtent = _scrollController.position.maxScrollExtent;
+      final ratio = (listIdx / (totalItems - 1)).clamp(0.0, 1.0);
+      final targetOffset = (maxExtent * ratio).clamp(0.0, maxExtent);
+      _scrollController.jumpTo(targetOffset);
+      _scrollToMatchedMessage(
+        allMessages: allMessages,
+        msgIdx: msgIdx,
+        hasThinking: hasThinking,
+        hasLoadMore: hasLoadMore,
+        attempt: attempt + 1,
+        seq: jumpSeq,
+      );
+    });
   }
 
   @override
@@ -681,6 +797,84 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     return result;
   }
 
+  Widget _buildCachedSessionBanner(
+    HubState hubState,
+    HubController hubNotifier,
+    bool isDark,
+    double contentMaxWidth,
+  ) {
+    final syncing = hubState.isInitializing || hubState.isConnecting;
+    final updatedAt = hubState.activeCacheUpdatedAt;
+    final timeStr = updatedAt != null
+        ? ' · ${updatedAt.hour.toString().padLeft(2, '0')}:${updatedAt.minute.toString().padLeft(2, '0')}'
+        : '';
+    final bgColor = syncing
+        ? (isDark ? const Color(0xFF1A1A1F) : const Color(0xFFF4F4F6))
+        : (isDark ? const Color(0xFF282114) : const Color(0xFFFFFBEB));
+    final borderColor = syncing
+        ? (isDark ? AppColors.darkBorder : AppColors.lightBorder)
+        : (isDark ? const Color(0xFF5C461B) : const Color(0xFFFDE68A));
+    final textColor = syncing
+        ? (isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary)
+        : AppColors.statusAmber(isDark);
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      decoration: BoxDecoration(
+        color: bgColor,
+        border: Border(bottom: BorderSide(color: borderColor, width: 0.7)),
+      ),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: contentMaxWidth),
+          child: Row(
+            children: [
+              if (syncing)
+                SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.8,
+                    color: textColor,
+                  ),
+                )
+              else
+                Icon(Icons.cloud_off_rounded, size: 14, color: textColor),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  syncing
+                      ? '正在同步最新对话（当前显示本地缓存$timeStr）'
+                      : '离线只读缓存（电脑断联时可浏览最近对话$timeStr）',
+                  style: TextStyle(fontSize: 11.5, color: textColor, fontWeight: FontWeight.w500),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (!syncing && hubState.selectedNodeId.isNotEmpty)
+                InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: () => unawaited(hubNotifier.switchNode(hubState.selectedNodeId)),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    child: Text(
+                      '重连',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        color: textColor,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   String _formatBytes(int bytes) {
     if (bytes <= 0) return '未知大小';
     if (bytes < 1024) return '$bytes B';
@@ -965,13 +1159,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(
-                    node.name,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                      color: isDark ? Colors.white : Colors.black87,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        node.name,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                          color: isDark ? Colors.white : Colors.black87,
+                        ),
+                      ),
+                      if (node.version.isNotEmpty)
+                        Text(
+                          'v${node.version}',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontFamily: 'monospace',
+                            color: isDark ? Colors.white38 : Colors.black45,
+                          ),
+                        ),
+                    ],
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -1106,33 +1315,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final contentMaxWidth = ResponsiveLayout.contentMaxWidth(context);
 
     final allMessages = hubState.messages;
-    final query = _chatSearchQuery.trim().toLowerCase();
-    final messages = (_isChatSearching && query.isNotEmpty)
-        ? allMessages.where((m) {
-            if (m.content.toLowerCase().contains(query)) return true;
-            if (m.thinking.toLowerCase().contains(query)) return true;
-            return m.toolCalls.any(
-              (tc) =>
-                  tc.name.toLowerCase().contains(query) ||
-                  tc.args.values.any((v) => v.toString().toLowerCase().contains(query)),
-            );
-          }).toList()
-        : allMessages;
+    if (_lastSearchSessionId != hubState.activeSessionId) {
+      _lastSearchSessionId = hubState.activeSessionId;
+      _messageItemKeys.clear();
+      _activeSearchMatchPos = -1;
+    }
+    final query = _chatSearchQuery.trim();
+    final isChatSearchActive = _isChatSearching && query.isNotEmpty;
+    final matchedIndices = isChatSearchActive
+        ? _collectMatchedMessageIndices(allMessages, query)
+        : const <int>[];
+    final effectiveMatchPos = matchedIndices.isEmpty
+        ? -1
+        : (_activeSearchMatchPos >= 0 && _activeSearchMatchPos < matchedIndices.length)
+            ? _activeSearchMatchPos
+            : matchedIndices.length - 1;
+    final focusedSearchMsgIdx = effectiveMatchPos >= 0 ? matchedIndices[effectiveMatchPos] : -1;
+    final messages = allMessages;
     final planSteps = hubState.activePlanSteps;
     final activeFocus = hubState.activeFocusText;
-    final isFilteringMessages = _isChatSearching && query.isNotEmpty;
-    final turnChangesByMsgIdx = isFilteringMessages
-        ? const <int, SessionTurnChange>{}
-        : _buildTurnChangesByMessageIndex(
-            messages,
-            hubState.sessionChanges.turns,
-          );
-    final turnDurationsByMsgIdx = isFilteringMessages
-        ? const <int, Duration>{}
-        : computeTurnDurationsByMsgIdx(messages);
+    final turnChangesByMsgIdx = _buildTurnChangesByMessageIndex(
+      messages,
+      hubState.sessionChanges.turns,
+    );
+    final turnDurationsByMsgIdx = computeTurnDurationsByMsgIdx(messages);
     final activeTurnStartedAt = findActiveTurnStartTime(allMessages);
-    final hasThinking = hubState.isActiveSessionRunning && !isFilteringMessages;
-    final hasLoadMore = hubState.hasMoreMessages && !isFilteringMessages;
+    final hasThinking = hubState.isActiveSessionRunning;
+    final hasLoadMore = hubState.hasMoreMessages;
     final totalItems = messages.length + (hasThinking ? 1 : 0) + (hasLoadMore ? 1 : 0);
 
     return PopScope(
@@ -1144,11 +1353,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           return;
         }
         if (_isChatSearching) {
-          setState(() {
-            _isChatSearching = false;
-            _chatSearchQuery = '';
-            _chatSearchController.clear();
-          });
+          _closeChatSearch();
           return;
         }
         final primaryFocus = FocusManager.instance.primaryFocus;
@@ -1251,13 +1456,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               icon: Icon(_isChatSearching ? Icons.search_off_rounded : Icons.search_rounded, size: 20),
               tooltip: '搜索对话内容',
               onPressed: () {
-                setState(() {
-                  _isChatSearching = !_isChatSearching;
-                  if (!_isChatSearching) {
-                    _chatSearchQuery = '';
-                    _chatSearchController.clear();
-                  }
-                });
+                if (_isChatSearching) {
+                  _closeChatSearch();
+                } else {
+                  setState(() => _isChatSearching = true);
+                }
               },
             ),
             IconButton(
@@ -1312,7 +1515,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                         child: TextField(
                           controller: _chatSearchController,
                           autofocus: true,
-                          onChanged: (val) => setState(() => _chatSearchQuery = val),
+                          textInputAction: TextInputAction.search,
+                          onChanged: (val) => _onChatSearchQueryChanged(
+                            val,
+                            allMessages,
+                            hasThinking,
+                            hasLoadMore,
+                          ),
+                          onSubmitted: (_) => _stepSearchMatch(
+                            delta: -1,
+                            allMessages: allMessages,
+                            matchedIndices: matchedIndices,
+                            hasThinking: hasThinking,
+                            hasLoadMore: hasLoadMore,
+                          ),
                           style: TextStyle(fontSize: 13, color: isDark ? Colors.white : Colors.black87),
                           decoration: InputDecoration(
                             isDense: true,
@@ -1322,24 +1538,60 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                           ),
                         ),
                       ),
-                      if (query.isNotEmpty)
+                      if (query.isNotEmpty) ...[
                         Padding(
-                          padding: const EdgeInsets.only(right: 6),
+                          padding: const EdgeInsets.only(right: 2),
                           child: Text(
-                            '${messages.length} 条',
-                            style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black45),
+                            matchedIndices.isEmpty
+                                ? '0/0'
+                                : '${effectiveMatchPos + 1}/${matchedIndices.length}',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w600,
+                              color: matchedIndices.isEmpty
+                                  ? (isDark ? const Color(0xFFFCA5A5) : const Color(0xFFDC2626))
+                                  : (isDark ? Colors.white70 : Colors.black54),
+                            ),
                           ),
                         ),
+                        IconButton(
+                          tooltip: '上一条匹配（更早）',
+                          icon: const Icon(Icons.keyboard_arrow_up_rounded, size: 20),
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                          onPressed: matchedIndices.isEmpty
+                              ? null
+                              : () => _stepSearchMatch(
+                                    delta: -1,
+                                    allMessages: allMessages,
+                                    matchedIndices: matchedIndices,
+                                    hasThinking: hasThinking,
+                                    hasLoadMore: hasLoadMore,
+                                  ),
+                        ),
+                        IconButton(
+                          tooltip: '下一条匹配（更新）',
+                          icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                          onPressed: matchedIndices.isEmpty
+                              ? null
+                              : () => _stepSearchMatch(
+                                    delta: 1,
+                                    allMessages: allMessages,
+                                    matchedIndices: matchedIndices,
+                                    hasThinking: hasThinking,
+                                    hasLoadMore: hasLoadMore,
+                                  ),
+                        ),
+                      ],
                       IconButton(
+                        tooltip: '关闭搜索',
                         icon: const Icon(Icons.close_rounded, size: 18),
                         visualDensity: VisualDensity.compact,
-                        onPressed: () {
-                          setState(() {
-                            _isChatSearching = false;
-                            _chatSearchQuery = '';
-                            _chatSearchController.clear();
-                          });
-                        },
+                        onPressed: _closeChatSearch,
                       ),
                     ],
                   ),
@@ -1353,12 +1605,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 child: SessionStepsBar(steps: planSteps, isDark: isDark),
               ),
             ),
+          if (hubState.isShowingCachedData && messages.isNotEmpty)
+            _buildCachedSessionBanner(hubState, hubNotifier, isDark, contentMaxWidth),
           Expanded(
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
               onTap: () => FocusScope.of(context).unfocus(),
-              child: hubState.isLoadingMessages
-                  ? const Center(child: CircularProgressIndicator())
+              child: (hubState.isLoadingMessages || (hubState.isInitializing && messages.isEmpty))
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const CircularProgressIndicator(),
+                          if (hubState.isInitializing) ...[
+                            const SizedBox(height: 12),
+                            Text(
+                              '正在连接节点并恢复最近对话...',
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                color: isDark
+                                    ? AppColors.darkTextSecondary
+                                    : AppColors.lightTextSecondary,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    )
                   : messages.isEmpty
                       ? Center(
                           child: Padding(
@@ -1396,6 +1669,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             ListView.builder(
                               controller: _scrollController,
                               reverse: true,
+                              cacheExtent: isChatSearchActive ? 1800 : null,
                               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
                               itemCount: totalItems,
@@ -1416,49 +1690,54 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                     final msgIdx = messages.length - 1 - shiftedIdx;
                                     final msg = messages[msgIdx];
                                     final msgTurnChanges = turnChangesByMsgIdx[msgIdx];
-                                    rowChild = MessageCard(
-                                      key: ValueKey(msg.messageKey),
-                                      msg: msg,
-                                      isDark: isDark,
-                                      resolveMediaUrl: (p) => hubNotifier.resolveMediaUrl(p),
-                                      mediaHeaders: hubNotifier.mediaHeaders,
-                                      onDownloadFile: (p, {filename}) => _downloadFile(p, filename: filename),
-                                      onOpenUrl: PlatformBridge.openExternalUrl,
-                                      onOpenMediaExternal: (p) => _openMediaExternal(p),
-                                      onOpenEditDiff: (filePath, stepIdx) => _openChangeReview(
-                                        initialFilePath: filePath,
-                                        initialStepIndex: stepIdx,
-                                        initialScope: 'step',
+                                    rowChild = KeyedSubtree(
+                                      key: _messageKeyFor(msg.messageKey),
+                                      child: MessageCard(
+                                        key: ValueKey(msg.messageKey),
+                                        msg: msg,
+                                        isDark: isDark,
+                                        searchQuery: isChatSearchActive ? query : '',
+                                        isFocusedSearchMatch: isChatSearchActive && msgIdx == focusedSearchMsgIdx,
+                                        resolveMediaUrl: (p) => hubNotifier.resolveMediaUrl(p),
+                                        mediaHeaders: hubNotifier.mediaHeaders,
+                                        onDownloadFile: (p, {filename}) => _downloadFile(p, filename: filename),
+                                        onOpenUrl: PlatformBridge.openExternalUrl,
+                                        onOpenMediaExternal: (p) => _openMediaExternal(p),
+                                        onOpenEditDiff: (filePath, stepIdx) => _openChangeReview(
+                                          initialFilePath: filePath,
+                                          initialStepIndex: stepIdx,
+                                          initialScope: 'step',
+                                        ),
+                                        onOpenToolDetail: _openToolDetail,
+                                        onSubmitQuickReply: _submitAskQuestionReply,
+                                        turnChanges: msgTurnChanges,
+                                        turnDuration: turnDurationsByMsgIdx[msgIdx],
+                                        modelLabel: msg.model.isNotEmpty
+                                            ? formatModelDisplayName(msg.model, hubState.availableModels)
+                                            : '',
+                                        onSwitchModel: hubState.canWrite
+                                            ? () => _showModelPicker(hubState, hubNotifier, isDark)
+                                            : null,
+                                        onOpenTurnReview: msgTurnChanges == null
+                                            ? null
+                                            : () => _openChangeReview(
+                                                  initialTurnId: msgTurnChanges.turnId,
+                                                  initialSessionChangesOverride: msgTurnChanges.toChangesData(
+                                                    sessionId: hubState.activeSessionId,
+                                                  ),
+                                                  initialScope: 'turn',
+                                                ),
+                                        onOpenTurnFile: msgTurnChanges == null
+                                            ? null
+                                            : (f) => _openChangeReview(
+                                                  initialFilePath: f.filePath,
+                                                  initialTurnId: msgTurnChanges.turnId,
+                                                  initialSessionChangesOverride: msgTurnChanges.toChangesData(
+                                                    sessionId: hubState.activeSessionId,
+                                                  ),
+                                                  initialScope: 'turn',
+                                                ),
                                       ),
-                                      onOpenToolDetail: _openToolDetail,
-                                      onSubmitQuickReply: _submitAskQuestionReply,
-                                      turnChanges: msgTurnChanges,
-                                      turnDuration: turnDurationsByMsgIdx[msgIdx],
-                                      modelLabel: msg.model.isNotEmpty
-                                          ? formatModelDisplayName(msg.model, hubState.availableModels)
-                                          : '',
-                                      onSwitchModel: hubState.canWrite
-                                          ? () => _showModelPicker(hubState, hubNotifier, isDark)
-                                          : null,
-                                      onOpenTurnReview: msgTurnChanges == null
-                                          ? null
-                                          : () => _openChangeReview(
-                                                initialTurnId: msgTurnChanges.turnId,
-                                                initialSessionChangesOverride: msgTurnChanges.toChangesData(
-                                                  sessionId: hubState.activeSessionId,
-                                                ),
-                                                initialScope: 'turn',
-                                              ),
-                                      onOpenTurnFile: msgTurnChanges == null
-                                          ? null
-                                          : (f) => _openChangeReview(
-                                                initialFilePath: f.filePath,
-                                                initialTurnId: msgTurnChanges.turnId,
-                                                initialSessionChangesOverride: msgTurnChanges.toChangesData(
-                                                  sessionId: hubState.activeSessionId,
-                                                ),
-                                                initialScope: 'turn',
-                                              ),
                                     );
                                   } else {
                                     rowChild = Padding(
@@ -1963,11 +2242,118 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
   double _notifyAskDelaySeconds = 10;
   bool _sendingTestNotify = false;
 
+  bool _loadingAdminNodes = false;
+  List<HostNode> _adminNodes = const [];
+  final Map<String, NodeUpdateStatus> _nodeUpdateStatuses = {};
+  final Map<String, String> _nodeUpdateErrors = {};
+  final Set<String> _checkingNodeIds = {};
+  final Set<String> _updatingNodeIds = {};
+
   @override
   void initState() {
     super.initState();
     _urlController = TextEditingController(text: widget.currentUrl);
     _loadNotifyStatus();
+    if (ref.read(authControllerProvider).user?.role == 'admin') {
+      _loadAdminNodes();
+    }
+  }
+
+  Future<void> _loadAdminNodes() async {
+    setState(() => _loadingAdminNodes = true);
+    try {
+      final list = await ref.read(apiClientProvider).getAdminNodes();
+      if (!mounted) return;
+      setState(() {
+        _adminNodes = list;
+        _loadingAdminNodes = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _adminNodes = ref.read(hubControllerProvider).nodes;
+        _loadingAdminNodes = false;
+      });
+    }
+  }
+
+  Future<void> _checkNodeUpdate(HostNode node) async {
+    if (_checkingNodeIds.contains(node.id) || _updatingNodeIds.contains(node.id)) return;
+    setState(() {
+      _checkingNodeIds.add(node.id);
+      _nodeUpdateErrors.remove(node.id);
+    });
+    try {
+      final st = await ref.read(apiClientProvider).getNodeUpdateStatus(node.id, fetch: true);
+      if (!mounted) return;
+      setState(() {
+        _nodeUpdateStatuses[node.id] = st;
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _nodeUpdateErrors[node.id] = e.statusCode == 404
+            ? '该节点版本过旧，尚未支持远程更新（请先在该电脑运行一次 update_windows_agent.ps1）'
+            : e.message;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _nodeUpdateErrors[node.id] = '检查失败: $e';
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _checkingNodeIds.remove(node.id));
+      }
+    }
+  }
+
+  Future<void> _applyNodeUpdate(HostNode node, {bool force = false}) async {
+    if (_updatingNodeIds.contains(node.id)) return;
+    setState(() {
+      _updatingNodeIds.add(node.id);
+      _nodeUpdateErrors.remove(node.id);
+    });
+    try {
+      final res = await ref.read(apiClientProvider).applyNodeUpdate(node.id, force: force);
+      if (!mounted) return;
+      if (res.ok) {
+        setState(() {
+          _nodeUpdateErrors[node.id] = res.message.isNotEmpty ? res.message : '节点更新指令已发送';
+          _nodeUpdateStatuses.remove(node.id);
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(res.message.isNotEmpty ? res.message : '${node.name} 正在重启升级...')),
+        );
+        if (res.restarting) {
+          Future.delayed(const Duration(seconds: 7), () {
+            if (!mounted) return;
+            _loadAdminNodes();
+            unawaited(ref.read(hubControllerProvider.notifier).refreshNodes());
+          });
+        }
+      } else {
+        setState(() {
+          _nodeUpdateErrors[node.id] = res.message.isNotEmpty ? res.message : '更新未执行';
+        });
+      }
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _nodeUpdateErrors[node.id] = e.statusCode == 404
+            ? '该节点版本过旧，请先手动更新一次'
+            : e.message;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _nodeUpdateErrors[node.id] = '更新失败: $e';
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _updatingNodeIds.remove(node.id));
+      }
+    }
   }
 
   Future<void> _loadNotifyStatus() async {
@@ -2312,6 +2698,157 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
                     style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
                   ),
                 ),
+              ],
+              if (ref.watch(authControllerProvider).user?.role == 'admin') ...[
+                const SizedBox(height: 16),
+                Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Text(
+                      '节点版本与远程更新',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
+                    ),
+                    const Spacer(),
+                    if (_loadingAdminNodes)
+                      const SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(strokeWidth: 1.6),
+                      )
+                    else
+                      InkWell(
+                        onTap: _loadAdminNodes,
+                        borderRadius: BorderRadius.circular(6),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.refresh_rounded, size: 13, color: isDark ? Colors.white54 : Colors.black54),
+                              const SizedBox(width: 3),
+                              Text(
+                                '刷新',
+                                style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black54),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                if (_adminNodes.isEmpty && !_loadingAdminNodes)
+                  Text(
+                    '暂无已注册节点',
+                    style: TextStyle(fontSize: 11.5, color: isDark ? Colors.white38 : Colors.black45),
+                  )
+                else
+                  ..._adminNodes.map((node) {
+                    final st = _nodeUpdateStatuses[node.id];
+                    final note = _nodeUpdateErrors[node.id] ?? st?.message ?? '';
+                    final isChecking = _checkingNodeIds.contains(node.id);
+                    final isUpdating = _updatingNodeIds.contains(node.id);
+                    final canTriggerUpdate = st != null && st.updateAvailable && st.canUpdate;
+                    final versionLabel = node.version.isNotEmpty ? 'v${node.version}' : '旧版 / 未知';
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: isDark ? const Color(0xFF111113) : const Color(0xFFF8F8F9),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                width: 7,
+                                height: 7,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: node.isOnline
+                                      ? AppColors.statusGreen(isDark)
+                                      : (isDark ? Colors.white24 : Colors.black26),
+                                ),
+                              ),
+                              const SizedBox(width: 7),
+                              Expanded(
+                                child: Text(
+                                  '${node.name} ($versionLabel)',
+                                  style: TextStyle(
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w600,
+                                    color: isDark ? Colors.white : Colors.black87,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              if (node.isOnline) ...[
+                                TextButton(
+                                  onPressed: (isChecking || isUpdating) ? null : () => _checkNodeUpdate(node),
+                                  style: TextButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                  child: Text(
+                                    isChecking ? '检查中...' : '检查更新',
+                                    style: const TextStyle(fontSize: 11.5),
+                                  ),
+                                ),
+                                if (canTriggerUpdate) ...[
+                                  const SizedBox(width: 4),
+                                  FilledButton(
+                                    onPressed: isUpdating
+                                        ? null
+                                        : () => _applyNodeUpdate(
+                                              node,
+                                              force: st.runningSessions > 0,
+                                            ),
+                                    style: FilledButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                      minimumSize: Size.zero,
+                                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                    ),
+                                    child: Text(
+                                      isUpdating
+                                          ? '更新中...'
+                                          : (st.runningSessions > 0 ? '强制更新' : '一键更新'),
+                                      style: const TextStyle(fontSize: 11.5),
+                                    ),
+                                  ),
+                                ],
+                              ] else
+                                Text(
+                                  '离线',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: isDark ? Colors.white38 : Colors.black38,
+                                  ),
+                                ),
+                            ],
+                          ),
+                          if (note.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              note,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: st != null && st.dirty
+                                    ? AppColors.statusAmber(isDark)
+                                    : (isDark ? Colors.white60 : Colors.black54),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    );
+                  }),
               ],
               const SizedBox(height: 16),
               Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
