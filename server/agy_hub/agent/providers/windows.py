@@ -18,6 +18,7 @@ import httpx
 from agy_hub.agent.config import AgentConfig
 from agy_hub.agent.providers.base import BaseEngineProvider
 from agy_hub.common.sandbox import RootRegistry
+from agy_hub.common.transcript import parse_all_workspace_paths
 from agy_hub.common.schemas import (
     ActionAckResponse,
     CreateSessionResponse,
@@ -475,6 +476,44 @@ class WindowsEngineProvider(BaseEngineProvider):
 
         return ActionAckResponse(ok=False, session_id=sid, message="Antigravity LanguageServer is not running")
 
+    def _snapshot_brain_dirs_sync(self) -> set[str]:
+        if not self.brain_dir.exists() or not self.brain_dir.is_dir():
+            return set()
+        try:
+            return {p.name for p in self.brain_dir.iterdir() if p.is_dir()}
+        except OSError:
+            return set()
+
+    def _lookup_project_id_by_workspace_sync(self, workspace_path: Path) -> str:
+        conn = self._connect_ro()
+        if conn is None:
+            return ""
+        target_norm = os.path.normcase(os.path.normpath(str(workspace_path.resolve())))
+        try:
+            cur = conn.cursor()
+            cols = [c[1] for c in cur.execute("PRAGMA table_info(conversation_summaries)").fetchall()]
+            if not cols or "project_id" not in cols or "workspace_uris" not in cols:
+                return ""
+            order_col = "last_modified_time" if "last_modified_time" in cols else "rowid"
+            rows = cur.execute(
+                f"SELECT project_id, workspace_uris FROM conversation_summaries "
+                f"WHERE project_id IS NOT NULL AND project_id != '' AND project_id != 'outside-of-project' "
+                f"ORDER BY {order_col} DESC LIMIT 500"
+            ).fetchall()
+            for pid, ws_uris in rows:
+                pid_str = str(pid or "").strip()
+                if not pid_str or pid_str == "outside-of-project":
+                    continue
+                for candidate in parse_all_workspace_paths(ws_uris):
+                    cand_norm = os.path.normcase(os.path.normpath(str(Path(candidate).resolve())))
+                    if cand_norm == target_norm:
+                        return pid_str
+        except Exception as exc:
+            logger.debug("Lookup project_id failed for %s: %s", workspace_path, exc)
+        finally:
+            conn.close()
+        return ""
+
     async def create_session(
         self,
         content: str,
@@ -482,9 +521,6 @@ class WindowsEngineProvider(BaseEngineProvider):
         mode: str = "auto",
         workspace_path: str | None = None,
     ) -> CreateSessionResponse:
-        if not self._ls_exe.exists():
-            return CreateSessionResponse(ok=False, session_id="", message="language_server.exe not found")
-
         hub = await asyncio.to_thread(self._discover_hub_sync)
         sub_env = self._build_agentapi_env(hub)
         if not sub_env.get("ANTIGRAVITY_LS_ADDRESS"):
@@ -497,16 +533,48 @@ class WindowsEngineProvider(BaseEngineProvider):
         raw_model = (model or "gemini-3.8-flash-high").strip().lower()
         model_flag = _MODEL_ALIAS_MAP.get(raw_model, raw_model)
 
-        target_cwd = self.default_workspace
+        target_cwd: Path | None = None
         if workspace_path:
             ws_candidate = Path(os.path.expanduser(workspace_path))
             if ws_candidate.exists() and ws_candidate.is_dir():
                 target_cwd = ws_candidate
 
+        before_dirs = await asyncio.to_thread(self._snapshot_brain_dirs_sync)
+
+        project_id = ""
+        if target_cwd is not None:
+            project_id = await asyncio.to_thread(self._lookup_project_id_by_workspace_sync, target_cwd)
+
+        # Prefer official Connect-RPC CreateConversation (sub-second + deterministic conversation.id)
+        if target_cwd is None or project_id:
+            rpc_payload: dict[str, Any] = {
+                "model": model_flag,
+                "prompt": [{"text": content}],
+            }
+            if project_id:
+                rpc_payload["projectId"] = project_id
+            try:
+                resp = await self._conversation_rpc_post("CreateConversation", rpc_payload, timeout=8.0)
+                if isinstance(resp, dict):
+                    conv_obj = resp.get("conversation") if isinstance(resp.get("conversation"), dict) else {}
+                    conv_id = str(conv_obj.get("id") or resp.get("conversationId") or "").strip()
+                    if conv_id:
+                        return CreateSessionResponse(
+                            ok=True,
+                            session_id=conv_id,
+                            message=f"Session created via RPC (mode={mode})",
+                        )
+            except Exception as exc:
+                logger.warning("CreateConversation RPC failed (%s), falling back to agentapi", exc)
+
+        if not self._ls_exe.exists():
+            return CreateSessionResponse(ok=False, session_id="", message="language_server.exe not found")
+
+        run_cwd = target_cwd or self.default_workspace
         cmd = [str(self._ls_exe), "agentapi", "new-conversation", f"--model={model_flag}", content]
         proc = await asyncio.create_subprocess_exec(
             *cmd,
-            cwd=str(target_cwd) if target_cwd.exists() else None,
+            cwd=str(run_cwd) if run_cwd.exists() else None,
             env=sub_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -522,9 +590,27 @@ class WindowsEngineProvider(BaseEngineProvider):
             new_cid = ""
             try:
                 parsed = json.loads(out_text)
-                new_cid = str(parsed.get("response", {}).get("newConversation", {}).get("conversationId", ""))
+                if isinstance(parsed, dict):
+                    new_cid = str(
+                        (parsed.get("response") or {}).get("newConversation", {}).get("conversationId")
+                        or (parsed.get("conversation") or {}).get("id")
+                        or parsed.get("conversationId")
+                        or ""
+                    ).strip()
             except Exception:
                 pass
+            if not new_cid:
+                m_uuid = re.search(
+                    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+                    out_text,
+                )
+                if m_uuid:
+                    new_cid = m_uuid.group(0)
+            if not new_cid:
+                after_dirs = await asyncio.to_thread(self._snapshot_brain_dirs_sync)
+                added = sorted(after_dirs - before_dirs)
+                if len(added) == 1:
+                    new_cid = added[0]
             return CreateSessionResponse(ok=True, session_id=new_cid, message=f"Session created (mode={mode})")
 
         err_text = stderr_b.decode("utf-8", errors="replace").strip() or out_text or "Failed to create session"

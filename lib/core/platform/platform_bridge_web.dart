@@ -105,6 +105,71 @@ VoidCallback implRegisterWebDropAndPaste(void Function(PickedLocalFile file) onF
   };
 }
 
+VoidCallback implRegisterWebZoomShortcuts({
+  required void Function(double delta) onStepZoom,
+  required VoidCallback onResetZoom,
+}) {
+  var pinchAccum = 0.0;
+  var lastWheelMs = 0;
+
+  final wheelHandler = ((web.Event evt) {
+    final wheelEvt = evt as web.WheelEvent;
+    if (!wheelEvt.ctrlKey && !wheelEvt.metaKey) return;
+    evt.preventDefault();
+    evt.stopPropagation();
+
+    final dy = wheelEvt.deltaY;
+    if (dy == 0) return;
+
+    // 触控板双指捏合会高频产生小幅度 Ctrl+Wheel，累加后再步进；鼠标滚轮使用 40ms 节流
+    if (dy.abs() < 20) {
+      pinchAccum += dy;
+      if (pinchAccum.abs() >= 18) {
+        final step = pinchAccum < 0 ? 0.05 : -0.05;
+        pinchAccum = 0.0;
+        onStepZoom(step);
+      }
+      return;
+    }
+
+    pinchAccum = 0.0;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - lastWheelMs < 40) return;
+    lastWheelMs = nowMs;
+    onStepZoom(dy < 0 ? 0.05 : -0.05);
+  }).toJS;
+
+  final keyHandler = ((web.Event evt) {
+    final keyEvt = evt as web.KeyboardEvent;
+    if (!(keyEvt.ctrlKey || keyEvt.metaKey) || keyEvt.altKey) return;
+
+    final key = keyEvt.key;
+    final code = keyEvt.code;
+    if (key == '+' || key == '=' || code == 'Equal' || code == 'NumpadAdd') {
+      evt.preventDefault();
+      evt.stopPropagation();
+      onStepZoom(0.05);
+    } else if (key == '-' || key == '_' || code == 'Minus' || code == 'NumpadSubtract') {
+      evt.preventDefault();
+      evt.stopPropagation();
+      onStepZoom(-0.05);
+    } else if (key == '0' || code == 'Digit0' || code == 'Numpad0') {
+      evt.preventDefault();
+      evt.stopPropagation();
+      onResetZoom();
+    }
+  }).toJS;
+
+  final captureOptions = web.AddEventListenerOptions(capture: true, passive: false);
+  web.window.addEventListener('wheel', wheelHandler, captureOptions);
+  web.window.addEventListener('keydown', keyHandler, captureOptions);
+
+  return () {
+    web.window.removeEventListener('wheel', wheelHandler, true.toJS);
+    web.window.removeEventListener('keydown', keyHandler, true.toJS);
+  };
+}
+
 Future<Uint8List?> implReadLocalFileBytes(String path) async => null;
 
 Future<void> implDeleteLocalFile(String path) async {}

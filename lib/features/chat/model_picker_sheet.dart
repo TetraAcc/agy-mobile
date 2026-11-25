@@ -430,9 +430,12 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
                   Flexible(
                     child: orderedGroups.isEmpty
                         ? Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 28),
+                            padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 16),
                             child: Text(
-                              '未找到匹配的模型，可点击右上角「自定义」直接输入模型 ID',
+                              widget.models.isEmpty && query.isEmpty
+                                  ? '正在加载当前节点可用模型，请稍后重试或点击右上角「自定义」输入模型 ID'
+                                  : '未找到匹配的模型，可点击右上角「自定义」直接输入模型 ID',
+                              textAlign: TextAlign.center,
                               style: TextStyle(
                                 fontSize: 12.5,
                                 color: isDark ? Colors.white54 : Colors.black45,

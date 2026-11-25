@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -18,6 +19,8 @@ from agy_hub.common.sandbox import RootRegistry
 from agy_hub.common.schemas import (
     ActionAckResponse,
     CreateSessionResponse,
+    ModelOption,
+    ModelsResponse,
     QuotaBucket,
     QuotaGroup,
     QuotaResponse,
@@ -38,11 +41,15 @@ class DeckEngineProvider(BaseEngineProvider):
         self._default_workspace = Path(os.path.expanduser(config.default_workspace or "~/")).resolve()
         default_bin = shutil.which("agy") or os.path.expanduser("~/.local/bin/agy")
         self._agy_bin = Path(os.path.expanduser(config.agy_bin or default_bin))
+        self._settings_path = self._brain_dir.parent / "settings.json"
         self._running_procs: dict[str, asyncio.subprocess.Process] = {}
         self._anonymous_procs: set[asyncio.subprocess.Process] = set()
         self._recent_cli_errors: dict[str, tuple[str, str]] = {}
         self._cached_quota: QuotaResponse | None = None
         self._last_quota_sync: float = 0.0
+        self._cached_models: ModelsResponse | None = None
+        self._last_models_sync: float = 0.0
+        self._models_lock = asyncio.Lock()
         super().__init__(config, registry)
 
     @property
@@ -163,6 +170,14 @@ class DeckEngineProvider(BaseEngineProvider):
         except Exception as exc:
             return ActionAckResponse(ok=False, session_id=sid, message=f"Failed to start Deck CLI: {exc}")
 
+    def _snapshot_brain_dirs_sync(self) -> set[str]:
+        if not self.brain_dir.exists() or not self.brain_dir.is_dir():
+            return set()
+        try:
+            return {p.name for p in self.brain_dir.iterdir() if p.is_dir()}
+        except OSError:
+            return set()
+
     async def create_session(
         self,
         content: str,
@@ -179,6 +194,7 @@ class DeckEngineProvider(BaseEngineProvider):
             if ws_candidate.exists() and ws_candidate.is_dir():
                 target_cwd = ws_candidate
 
+        before_dirs = await asyncio.to_thread(self._snapshot_brain_dirs_sync)
         cmd = [str(self._agy_bin), "-p", content, *self._build_cli_flags(model, mode)]
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -188,9 +204,24 @@ class DeckEngineProvider(BaseEngineProvider):
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
-            self._anonymous_procs.add(proc)
-            asyncio.create_task(self._reap_managed_process(None, proc))
-            return CreateSessionResponse(ok=True, session_id="", message="Deck CLI session started")
+            detected_sid = ""
+            for _ in range(10):
+                await asyncio.sleep(0.2)
+                after_dirs = await asyncio.to_thread(self._snapshot_brain_dirs_sync)
+                added = sorted(after_dirs - before_dirs)
+                if len(added) == 1:
+                    detected_sid = added[0]
+                    break
+                if proc.returncode is not None:
+                    break
+
+            if detected_sid:
+                self._running_procs[detected_sid] = proc
+                asyncio.create_task(self._reap_managed_process(detected_sid, proc))
+            else:
+                self._anonymous_procs.add(proc)
+                asyncio.create_task(self._reap_managed_process(None, proc))
+            return CreateSessionResponse(ok=True, session_id=detected_sid, message="Deck CLI session started")
         except Exception as exc:
             return CreateSessionResponse(ok=False, session_id="", message=f"Failed to create Deck session: {exc}")
 
@@ -219,17 +250,11 @@ class DeckEngineProvider(BaseEngineProvider):
         except Exception as exc:
             return ActionAckResponse(ok=False, session_id=sid, message=f"Failed to stop process: {exc}")
 
-    async def fetch_quota(self) -> QuotaResponse:
-        if self._cached_quota and (time.time() - self._last_quota_sync) < 300.0:
-            return self._cached_quota
-
-        if not self._agy_bin.exists():
-            return QuotaResponse(groups=[], description=f"agy CLI not found: {self._agy_bin}")
-
-        output = ""
+    async def _run_cli_query(self, args: list[str], timeout: float = 15.0) -> str:
+        """Run a short read-only agy CLI query via systemd-run first, falling back to direct execution."""
         for cmd in (
-            ["systemd-run", "--user", "--pipe", str(self._agy_bin), "-p", "/quota"],
-            [str(self._agy_bin), "-p", "/quota"],
+            ["systemd-run", "--user", "--pipe", str(self._agy_bin), *args],
+            [str(self._agy_bin), *args],
         ):
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -237,16 +262,162 @@ class DeckEngineProvider(BaseEngineProvider):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+                stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                 candidate = stdout_b.decode("utf-8", errors="replace").strip()
                 if not candidate and cmd[0] != "systemd-run":
                     candidate = stderr_b.decode("utf-8", errors="replace").strip()
-                if candidate:
-                    output = candidate
-                    break
+                if proc.returncode == 0 and candidate:
+                    return candidate
             except Exception:
                 continue
+        return ""
 
+    @staticmethod
+    def parse_cli_models_output(raw_text: str) -> list[ModelOption]:
+        """Parse `agy models` TSV output into ModelOption items, filtering headers and placeholders."""
+        options: list[ModelOption] = []
+        seen_ids: set[str] = set()
+        skip_prefixes = (
+            "running as unit:",
+            "fetching available models",
+            "usage:",
+            "error:",
+            "flags:",
+        )
+        for line in raw_text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            low = stripped.lower()
+            if any(low.startswith(prefix) for prefix in skip_prefixes):
+                continue
+
+            parts = [p.strip() for p in stripped.split("\t") if p.strip()]
+            if len(parts) < 2:
+                parts = [p.strip() for p in re.split(r"\s{2,}", stripped, maxsplit=1) if p.strip()]
+            if len(parts) < 2:
+                continue
+
+            model_id, label = parts[0], parts[1]
+            if (
+                not model_id
+                or any(ch.isspace() for ch in model_id)
+                or model_id.startswith("-")
+                or model_id.upper().startswith("MODEL_PLACEHOLDER_")
+                or model_id in seen_ids
+            ):
+                continue
+
+            seen_ids.add(model_id)
+            clean_label = label or BaseEngineProvider.prettify_model_id(model_id)
+            options.append(
+                ModelOption(
+                    id=model_id,
+                    label=clean_label,
+                    group=BaseEngineProvider.infer_model_group(model_id, clean_label),
+                )
+            )
+        return options
+
+    def _read_default_model_hint_sync(self) -> str:
+        """Read preferred model name/ID from ~/.gemini/antigravity-cli/settings.json."""
+        if not self._settings_path.exists():
+            return ""
+        try:
+            data = json.loads(self._settings_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return str(data.get("model") or "").strip()
+        except Exception:
+            pass
+        return ""
+
+    def _apply_quota_overlay(self, catalog: ModelsResponse) -> ModelsResponse:
+        """Overlay cached 5h/primary quota fractions onto matching Deck model groups without mutating cached copy."""
+        if not self._cached_quota or not self._cached_quota.groups:
+            return catalog
+
+        group_quota: dict[str, tuple[float, str]] = {}
+        for grp in self._cached_quota.groups:
+            if not grp.buckets:
+                continue
+            chosen = next((b for b in grp.buckets if b.window == "5h" and not b.disabled), None)
+            if chosen is None:
+                chosen = next((b for b in grp.buckets if not b.disabled), None)
+            if chosen is None:
+                chosen = grp.buckets[0]
+            group_quota[grp.display_name.lower()] = (float(chosen.remaining_fraction), str(chosen.reset_time or ""))
+
+        if not group_quota:
+            return catalog
+
+        updated_models: list[ModelOption] = []
+        for m in catalog.models:
+            grp_key = m.group.lower()
+            matched_quota: tuple[float, str] | None = None
+            for q_name, q_val in group_quota.items():
+                if grp_key in ("gemini", "claude", "gpt") and grp_key in q_name:
+                    matched_quota = q_val
+                    break
+            if matched_quota is not None:
+                frac, reset_time = matched_quota
+                updated_models.append(
+                    m.model_copy(update={"remaining_fraction": frac, "reset_time": reset_time})
+                )
+            else:
+                updated_models.append(m.model_copy())
+
+        return catalog.model_copy(update={"models": updated_models})
+
+    async def fetch_models(self) -> ModelsResponse:
+        """Query Steam Deck `agy models` for real account-entitled models instead of static fallbacks."""
+        now = time.time()
+        if self._cached_models and (now - self._last_models_sync) < 300.0:
+            return self._apply_quota_overlay(self._cached_models)
+
+        async with self._models_lock:
+            now = time.time()
+            if self._cached_models and (now - self._last_models_sync) < 300.0:
+                return self._apply_quota_overlay(self._cached_models)
+
+            if not self._agy_bin.exists():
+                if self._cached_models:
+                    return self._apply_quota_overlay(self._cached_models)
+                return await super().fetch_models()
+
+            raw = await self._run_cli_query(["models"], timeout=15.0)
+            options = self.parse_cli_models_output(raw) if raw else []
+            if options:
+                default_hint = await asyncio.to_thread(self._read_default_model_hint_sync)
+                hint_low = default_hint.lower()
+                default_idx = 0
+                if hint_low:
+                    for idx, opt in enumerate(options):
+                        if opt.id.lower() == hint_low or opt.label.lower() == hint_low:
+                            default_idx = idx
+                            break
+
+                options[default_idx] = options[default_idx].model_copy(update={"is_default": True})
+                catalog = ModelsResponse(
+                    models=options,
+                    default_model=options[default_idx].id,
+                    supports_mid_session_switch=True,
+                )
+                self._cached_models = catalog
+                self._last_models_sync = time.time()
+                return self._apply_quota_overlay(catalog)
+
+            if self._cached_models:
+                return self._apply_quota_overlay(self._cached_models)
+            return await super().fetch_models()
+
+    async def fetch_quota(self) -> QuotaResponse:
+        if self._cached_quota and (time.time() - self._last_quota_sync) < 300.0:
+            return self._cached_quota
+
+        if not self._agy_bin.exists():
+            return QuotaResponse(groups=[], description=f"agy CLI not found: {self._agy_bin}")
+
+        output = await self._run_cli_query(["-p", "/quota"], timeout=15.0)
         groups = self.parse_cli_quota_output(output)
         if groups:
             self._cached_quota = QuotaResponse(groups=groups, description="Steam Deck CLI native quota")

@@ -3,10 +3,12 @@ import 'package:agy_remote/core/config/session_cache_store.dart';
 import 'package:agy_remote/core/platform/android_native_bridge.dart';
 import 'package:agy_remote/core/theme/app_colors.dart';
 import 'package:agy_remote/core/theme/app_fonts.dart';
+import 'package:agy_remote/core/theme/theme_provider.dart';
 import 'package:agy_remote/core/utils/duration_utils.dart';
 import 'package:agy_remote/core/utils/file_utils.dart';
 import 'package:agy_remote/core/utils/latex_math_converter.dart';
 import 'package:agy_remote/models/models.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -557,6 +559,40 @@ void main() {
       expect(await AppUpdateService.getIgnoredVersion(), '2.4.0');
       await AppUpdateService.clearIgnoredVersion();
       expect(await AppUpdateService.getIgnoredVersion(), '');
+    });
+
+    test('ThemeController 界面字号缩放边界 clamp 与持久化恢复', () async {
+      SharedPreferences.setMockInitialValues({'app_font_scale': 1.25});
+
+      final container1 = ProviderContainer();
+      addTearDown(container1.dispose);
+      final notifier = container1.read(themeProvider.notifier);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(container1.read(themeProvider).fontScale, closeTo(1.25, 0.001));
+
+      await notifier.stepFontScale(0.10);
+      expect(container1.read(themeProvider).fontScale, closeTo(1.35, 0.001));
+
+      await notifier.setFontScale(9.9);
+      expect(container1.read(themeProvider).fontScale, closeTo(ThemeState.maxFontScale, 0.001));
+
+      await notifier.setFontScale(0.1);
+      expect(container1.read(themeProvider).fontScale, closeTo(ThemeState.minFontScale, 0.001));
+
+      await notifier.setFontScale(1.15);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getDouble('app_font_scale'), closeTo(1.15, 0.001));
+
+      // 新容器初始化应自动恢复 1.15
+      final container2 = ProviderContainer();
+      addTearDown(container2.dispose);
+      container2.read(themeProvider);
+      await Future<void>.delayed(Duration.zero);
+      expect(container2.read(themeProvider).fontScale, closeTo(1.15, 0.001));
+
+      await container2.read(themeProvider.notifier).resetFontScale();
+      expect(container2.read(themeProvider).fontScale, closeTo(1.0, 0.001));
     });
   });
 }

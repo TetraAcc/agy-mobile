@@ -9,6 +9,7 @@ import 'package:agy_remote/core/platform/platform_bridge.dart';
 import 'package:agy_remote/features/auth/auth_controller.dart';
 import 'package:agy_remote/features/auth/login_screen.dart';
 import 'package:agy_remote/features/chat/bottom_input_bar.dart';
+import 'package:agy_remote/features/chat/code_block_builder.dart';
 import 'package:agy_remote/features/chat/context_menu_sheet.dart';
 import 'package:agy_remote/features/chat/markdown_message_body.dart';
 import 'package:agy_remote/features/chat/message_card.dart';
@@ -1694,5 +1695,30 @@ void main() {
     await tester.pumpWidget(buildDrawer(canWrite: false));
     await tester.pump();
     expect(find.byIcon(Icons.push_pin_outlined), findsNothing);
+  });
+
+  testWidgets('CodeBlockWidget 遵循 MediaQuery.textScaler 按比例缩放代码字号', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: MediaQuery(
+          data: MediaQueryData(textScaler: TextScaler.linear(1.4)),
+          child: Scaffold(
+            body: CodeBlockWidget(
+              code: 'print("hello")',
+              language: 'python',
+              isDark: true,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final richText = tester.widget<RichText>(
+      find.byWidgetPredicate(
+        (w) => w is RichText && w.text.toPlainText().contains('print("hello")'),
+      ),
+    );
+    expect(richText.text.style?.fontSize, closeTo(12.5 * 1.4, 0.01));
   });
 }

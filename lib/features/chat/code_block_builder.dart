@@ -172,7 +172,9 @@ class _CodeBlockWidgetState extends State<CodeBlockWidget> {
                           language: widget.language.toLowerCase(),
                           theme: _buildSeamlessHighlightTheme(),
                           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                          textStyle: codeTextStyle,
+                          textStyle: codeTextStyle.copyWith(
+                            fontSize: MediaQuery.textScalerOf(context).scale(12.5),
+                          ),
                         ),
                 ),
               );

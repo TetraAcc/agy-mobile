@@ -94,6 +94,7 @@ class FakeApiClient extends ApiClient {
       modeMessages = [];
   final List<String?> sentModels = [];
   String pageActiveModel = '';
+  Map<String, List<OfficialModelOption>>? fakeModelsByNode;
   List<OfficialModelOption> fakeModels = const [
     OfficialModelOption(
       id: 'gemini-4-neon-high',
@@ -114,6 +115,8 @@ class FakeApiClient extends ApiClient {
   bool messagesIsRunning = false;
   bool failPinSession = false;
   final List<(String sessionId, bool pinned)> pinCalls = [];
+  Completer<(bool, String, String)>? pendingCreateSessionCompleter;
+  bool returnEmptyMessagesForNewSession = false;
 
   FakeApiClient()
       : super(
@@ -206,29 +209,31 @@ class FakeApiClient extends ApiClient {
     }
     return SessionMessagesPage(
       sessionId: sessionId,
-      messages: [
-        const AgentMessage(
-          stepIndex: 10,
-          source: 'USER_EXPLICIT',
-          msgType: 'USER_INPUT',
-          status: 'DONE',
-          content: '第一条提问',
-          thinking: '',
-          toolCalls: [],
-          timestamp: '',
-        ),
-        if (appendResumeReply)
-          const AgentMessage(
-            stepIndex: 12,
-            source: 'MODEL',
-            msgType: 'PLANNER_RESPONSE',
-            status: 'DONE',
-            content: '后台期间新增回复',
-            thinking: '',
-            toolCalls: [],
-            timestamp: '',
-          ),
-      ],
+      messages: (returnEmptyMessagesForNewSession && sessionId == 's-new')
+          ? const []
+          : [
+              const AgentMessage(
+                stepIndex: 10,
+                source: 'USER_EXPLICIT',
+                msgType: 'USER_INPUT',
+                status: 'DONE',
+                content: '第一条提问',
+                thinking: '',
+                toolCalls: [],
+                timestamp: '',
+              ),
+              if (appendResumeReply)
+                const AgentMessage(
+                  stepIndex: 12,
+                  source: 'MODEL',
+                  msgType: 'PLANNER_RESPONSE',
+                  status: 'DONE',
+                  content: '后台期间新增回复',
+                  thinking: '',
+                  toolCalls: [],
+                  timestamp: '',
+                ),
+            ],
       hasMore: sessionId == 's1',
       nextBeforeStep: sessionId == 's1' ? 10 : null,
       isRunning: messagesIsRunning,
@@ -237,10 +242,27 @@ class FakeApiClient extends ApiClient {
   }
 
   @override
+  Future<(bool, String, String)> createSession(
+    String nodeId, {
+    required String content,
+    String? model,
+    String mode = 'auto',
+    String? workspacePath,
+    String? rootId,
+  }) async {
+    if (pendingCreateSessionCompleter != null) {
+      return pendingCreateSessionCompleter!.future;
+    }
+    return (true, returnCreatedSessionId ? 's-new' : '', 'created');
+  }
+
+  @override
   Future<({List<OfficialModelOption> models, String defaultModel})> getModels(String nodeId) async {
+    final list = fakeModelsByNode?[nodeId] ?? fakeModels;
+    final def = list.where((m) => m.isDefault).firstOrNull ?? (list.isNotEmpty ? list.first : null);
     return (
-      models: fakeModels,
-      defaultModel: fakeModels.isNotEmpty ? fakeModels.first.id : '',
+      models: list,
+      defaultModel: def?.id ?? '',
     );
   }
 
@@ -281,18 +303,6 @@ class FakeApiClient extends ApiClient {
   Future<(bool, String)> stopSession(String nodeId, String sessionId) async {
     stoppedSessions.add('$nodeId/$sessionId');
     return (true, 'stopped');
-  }
-
-  @override
-  Future<(bool, String, String)> createSession(
-    String nodeId, {
-    required String content,
-    String? model,
-    String mode = 'auto',
-    String? workspacePath,
-    String? rootId,
-  }) async {
-    return (true, returnCreatedSessionId ? 's-new' : '', 'created');
   }
 
   @override
@@ -1198,5 +1208,196 @@ void main() {
     expect(resFail.error, isNotNull);
     final afterRollback = container.read(hubControllerProvider).projects['Demo']!;
     expect(afterRollback.firstWhere((e) => e.id == 's1').isPinned, false);
+  });
+
+  test('HubController.createNewSession 0ms 乐观切入新对话并保活用户提问与侧边栏占位，失败自动回滚', () async {
+    final completer1 = Completer<(bool, String, String)>();
+    final fakeApi = FakeApiClient()
+      ..pendingCreateSessionCompleter = completer1
+      ..returnEmptyMessagesForNewSession = true;
+    final createdSockets = <String, FakeEventSocket>{};
+
+    final container = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(fakeApi),
+        tokenStoreProvider.overrideWithValue(MemoryTokenStore(initialAccess: 'tok')),
+        eventSocketFactoryProvider.overrideWithValue(({
+          required ServerConfig serverConfig,
+          required String nodeId,
+          required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
+        }) {
+          final sock = FakeEventSocket(nodeId);
+          createdSockets[nodeId] = sock;
+          return sock;
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const user = UserProfile(
+      id: 1,
+      username: 'tetra',
+      displayName: 'Tetra',
+      role: 'admin',
+      defaultNode: 'win',
+      allowedNodes: ['win'],
+      nodePermissions: {
+        'win': UserPermissionGrant(nodeId: 'win', canWrite: true, canDelete: true),
+      },
+    );
+
+    final hub = container.read(hubControllerProvider.notifier);
+    await hub.initializeForUser(user);
+    await Future<void>.delayed(Duration.zero);
+    expect(container.read(hubControllerProvider).activeSessionId, 's1');
+
+    // 1. 发起新建会话：即使后端请求仍在飞，界面已经 0ms 切入新会话视图并显示提问气泡与思考中状态
+    final createFuture = hub.createNewSession(
+      content: '这是一个很长很需要立即给出创建反馈的新问题',
+      mode: 'auto',
+      model: 'gemini-4-neon-high',
+    );
+
+    var cur = container.read(hubControllerProvider);
+    expect(cur.isCreatingSession, true);
+    expect(cur.isActiveSessionRunning, true);
+    expect(cur.activeSessionTitle, '这是一个很长很需要立即给出创建反馈的新问题');
+    expect(cur.messages.length, 1);
+    expect(cur.messages.first.isUser, true);
+    expect(cur.messages.first.content, '这是一个很长很需要立即给出创建反馈的新问题');
+
+    // 2. 后端返回 s-new，此时 getSessionMessages 仍返回空列表 []：
+    //    必须保留乐观用户提问气泡与 running 状态，立即订阅 WS，并在侧边栏可见 s-new
+    completer1.complete((true, 's-new', 'created'));
+    final err1 = await createFuture;
+    expect(err1, isNull);
+    await Future<void>.delayed(Duration.zero);
+
+    cur = container.read(hubControllerProvider);
+    expect(cur.isCreatingSession, false);
+    expect(cur.activeSessionId, 's-new');
+    expect(cur.isActiveSessionRunning, true);
+    expect(cur.messages.length, 1);
+    expect(cur.messages.first.content, '这是一个很长很需要立即给出创建反馈的新问题');
+    expect(cur.generalSessions.any((s) => s.id == 's-new'), true);
+    expect(createdSockets['win']!.subscribedIds.contains('s-new'), true);
+
+    // 3. 当后端创建失败时，干净回滚到创建前会话 s-new
+    final completer2 = Completer<(bool, String, String)>();
+    fakeApi.pendingCreateSessionCompleter = completer2;
+    final failFuture = hub.createNewSession(
+      content: '失败测试问题',
+      mode: 'auto',
+      model: 'gemini-4-neon-high',
+    );
+    expect(container.read(hubControllerProvider).isCreatingSession, true);
+    completer2.complete((false, '', 'Antigravity 未运行'));
+    final err2 = await failFuture;
+    expect(err2, 'Antigravity 未运行');
+
+    cur = container.read(hubControllerProvider);
+    expect(cur.isCreatingSession, false);
+    expect(cur.activeSessionId, 's-new');
+  });
+
+  test('HubController 切换节点时按节点隔离模型目录且不残留前序节点独占模型', () async {
+    final winModels = [
+      const OfficialModelOption(
+        id: 'gemini-4-neon-high',
+        displayName: 'Gemini 4 Neon (High)',
+        group: 'Gemini',
+        isDefault: true,
+      ),
+      const OfficialModelOption(
+        id: 'claude-sonnet-5-5-medium',
+        displayName: 'Claude Sonnet 5.5 (Medium)',
+        group: 'Claude',
+      ),
+    ];
+    final deckModels = [
+      const OfficialModelOption(
+        id: 'gemini-4-hydrogen-high',
+        displayName: 'Gemini 4 Hydrogen (High)',
+        group: 'Gemini',
+        isDefault: true,
+      ),
+      const OfficialModelOption(
+        id: 'gemini-3.8-flash-medium',
+        displayName: 'Gemini 3.8 Flash (Medium)',
+        group: 'Gemini',
+      ),
+      const OfficialModelOption(
+        id: 'claude-sonnet-4-6',
+        displayName: 'Claude Sonnet 4.6 (Thinking)',
+        group: 'Claude',
+      ),
+    ];
+
+    final fakeApi = FakeApiClient()
+      ..fakeModelsByNode = {
+        'win': winModels,
+        'deck': deckModels,
+      };
+
+    final container = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(fakeApi),
+        tokenStoreProvider.overrideWithValue(MemoryTokenStore(initialAccess: 'tok')),
+        eventSocketFactoryProvider.overrideWithValue(({
+          required ServerConfig serverConfig,
+          required String nodeId,
+          required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
+        }) => FakeEventSocket(nodeId)),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const user = UserProfile(
+      id: 1,
+      username: 'tetra',
+      displayName: 'Tetra',
+      role: 'admin',
+      defaultNode: 'win',
+      allowedNodes: ['win', 'deck'],
+      nodePermissions: {
+        'win': UserPermissionGrant(nodeId: 'win', canWrite: true, canDelete: true),
+        'deck': UserPermissionGrant(nodeId: 'deck', canWrite: true, canDelete: true),
+      },
+    );
+
+    final hub = container.read(hubControllerProvider.notifier);
+    await hub.initializeForUser(user);
+    await Future<void>.delayed(Duration.zero);
+
+    var cur = container.read(hubControllerProvider);
+    expect(cur.selectedNodeId, 'win');
+    expect(cur.availableModels.map((m) => m.id).toList(), ['gemini-4-neon-high', 'claude-sonnet-5-5-medium']);
+    expect(cur.selectedModel, 'gemini-4-neon-high');
+
+    // 切换到 Steam Deck 节点：必须完全替换为 Deck 模型，不能残留 Windows 的 gemini-4-neon-high
+    final switchErr = await hub.switchNode('deck');
+    expect(switchErr, isNull);
+    await Future<void>.delayed(Duration.zero);
+
+    cur = container.read(hubControllerProvider);
+    expect(cur.selectedNodeId, 'deck');
+    expect(
+      cur.availableModels.map((m) => m.id).toList(),
+      ['gemini-4-hydrogen-high', 'gemini-3.8-flash-medium', 'claude-sonnet-4-6'],
+    );
+    expect(cur.availableModels.any((m) => m.id == 'gemini-4-neon-high'), false);
+    expect(cur.selectedModel, 'gemini-4-hydrogen-high');
+
+    // 切回 Windows 节点：立即并准确恢复 Windows 模型目录
+    final backErr = await hub.switchNode('win');
+    expect(backErr, isNull);
+    await Future<void>.delayed(Duration.zero);
+
+    cur = container.read(hubControllerProvider);
+    expect(cur.selectedNodeId, 'win');
+    expect(cur.availableModels.map((m) => m.id).toList(), ['gemini-4-neon-high', 'claude-sonnet-5-5-medium']);
+    expect(cur.selectedModel, 'gemini-4-neon-high');
   });
 }

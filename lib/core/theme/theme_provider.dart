@@ -10,9 +10,20 @@ import 'app_fonts.dart';
 import 'font_loader_service.dart';
 
 class ThemeState {
+  static const double minFontScale = 0.80;
+  static const double maxFontScale = 1.60;
+  static const double defaultFontScale = 1.0;
+  static const double fontScaleStep = 0.05;
+
+  static double clampFontScale(double value) {
+    final clamped = value.clamp(minFontScale, maxFontScale).toDouble();
+    return (clamped * 100).round() / 100.0;
+  }
+
   final ThemeMode themeMode;
   final AccentThemeOption accent;
   final AppFontOption font;
+  final double fontScale;
   final String? loadingFontId;
   final int fontRevision;
 
@@ -20,6 +31,7 @@ class ThemeState {
     this.themeMode = ThemeMode.dark,
     required this.accent,
     this.font = AppFonts.system,
+    this.fontScale = defaultFontScale,
     this.loadingFontId,
     this.fontRevision = 0,
   });
@@ -28,6 +40,7 @@ class ThemeState {
     ThemeMode? themeMode,
     AccentThemeOption? accent,
     AppFontOption? font,
+    double? fontScale,
     String? loadingFontId,
     bool clearLoadingFont = false,
     int? fontRevision,
@@ -36,6 +49,7 @@ class ThemeState {
       themeMode: themeMode ?? this.themeMode,
       accent: accent ?? this.accent,
       font: font ?? this.font,
+      fontScale: fontScale != null ? clampFontScale(fontScale) : this.fontScale,
       loadingFontId: clearLoadingFont ? null : (loadingFontId ?? this.loadingFontId),
       fontRevision: fontRevision ?? this.fontRevision,
     );
@@ -46,6 +60,7 @@ class ThemeController extends Notifier<ThemeState> {
   static const _darkModeKey = 'is_dark_mode';
   static const _accentKey = 'accent_theme';
   static const _fontKey = 'app_font_id';
+  static const _fontScaleKey = 'app_font_scale';
 
   @override
   ThemeState build() {
@@ -63,10 +78,12 @@ class ThemeController extends Notifier<ThemeState> {
       final isDark = prefs.getBool(_darkModeKey) ?? true;
       final accentId = prefs.getString(_accentKey) ?? 'emerald';
       final fontOpt = AppFonts.getById(prefs.getString(_fontKey));
+      final savedScale = prefs.getDouble(_fontScaleKey);
       state = state.copyWith(
         themeMode: isDark ? ThemeMode.dark : ThemeMode.light,
         accent: AppColors.getThemeById(accentId),
         font: fontOpt,
+        fontScale: savedScale != null ? ThemeState.clampFontScale(savedScale) : null,
       );
       if (fontOpt.remoteFile != null) {
         final serverCfg = await ServerConfig.load();
@@ -124,6 +141,20 @@ class ThemeController extends Notifier<ThemeState> {
     } catch (_) {}
     return loaded;
   }
+
+  Future<void> setFontScale(double scale) async {
+    final next = ThemeState.clampFontScale(scale);
+    if ((state.fontScale - next).abs() < 0.001) return;
+    state = state.copyWith(fontScale: next);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_fontScaleKey, next);
+    } catch (_) {}
+  }
+
+  Future<void> stepFontScale(double delta) => setFontScale(state.fontScale + delta);
+
+  Future<void> resetFontScale() => setFontScale(ThemeState.defaultFontScale);
 }
 
 final themeProvider = NotifierProvider<ThemeController, ThemeState>(ThemeController.new);

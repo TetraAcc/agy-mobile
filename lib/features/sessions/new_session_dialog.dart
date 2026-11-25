@@ -43,7 +43,15 @@ class _NewSessionDialogState extends State<NewSessionDialog> {
     super.initState();
     _promptController = TextEditingController();
     _selectedMode = (widget.initialMode == 'turbo' || widget.initialMode.isEmpty) ? 'auto' : widget.initialMode;
-    _selectedModel = widget.initialModel;
+    final cleanInitModel = widget.initialModel.trim();
+    if (cleanInitModel.isNotEmpty) {
+      _selectedModel = cleanInitModel;
+    } else if (widget.models.isNotEmpty) {
+      final defOpt = widget.models.where((m) => m.isDefault).firstOrNull;
+      _selectedModel = (defOpt ?? widget.models.first).id;
+    } else {
+      _selectedModel = '';
+    }
     _selectedProject = widget.initialProjectName;
   }
 

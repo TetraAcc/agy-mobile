@@ -473,6 +473,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         availableProjects: projectMap,
         initialProjectName: initialProjectName,
         onStart: (prompt, mode, model, wsPath, rootId) async {
+          HapticFeedback.lightImpact();
           final err = await ref.read(hubControllerProvider.notifier).createNewSession(
                 content: prompt,
                 mode: mode,
@@ -482,6 +483,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               );
           if (err != null) {
             _showSnack(err, isError: true);
+          } else {
+            _showSnack('已开启新对话，等待 Agent 响应...');
           }
         },
       ),
@@ -1743,7 +1746,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                     alignment: Alignment.centerLeft,
                                     child: _LiveThinkingIndicator(
                                       isDark: isDark,
-                                      focusText: activeFocus,
+                                      focusText: hubState.isCreatingSession
+                                          ? '正在创建新对话并发送指令...'
+                                          : activeFocus,
                                       startedAt: activeTurnStartedAt,
                                     ),
                                   );
@@ -3028,6 +3033,118 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
                   );
                 }).toList(),
               ),
+              const SizedBox(height: 16),
+              Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Text(
+                    '界面字号',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: primary.withValues(alpha: isDark ? 0.16 : 0.10),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      '${(themeState.fontScale * 100).round()}%',
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: primary),
+                    ),
+                  ),
+                  const Spacer(),
+                  if ((themeState.fontScale - ThemeState.defaultFontScale).abs() > 0.001)
+                    TextButton(
+                      onPressed: () => themeNotifier.resetFontScale(),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: const Text('重置', style: TextStyle(fontSize: 11.5)),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  IconButton(
+                    tooltip: '减小字号',
+                    icon: const Icon(Icons.text_decrease_rounded, size: 18),
+                    visualDensity: VisualDensity.compact,
+                    onPressed: themeState.fontScale <= ThemeState.minFontScale + 0.001
+                        ? null
+                        : () => themeNotifier.stepFontScale(-ThemeState.fontScaleStep),
+                  ),
+                  Expanded(
+                    child: Slider(
+                      value: themeState.fontScale.clamp(ThemeState.minFontScale, ThemeState.maxFontScale),
+                      min: ThemeState.minFontScale,
+                      max: ThemeState.maxFontScale,
+                      divisions: 16,
+                      label: '${(themeState.fontScale * 100).round()}%',
+                      onChanged: (val) => themeNotifier.setFontScale(val),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '增大字号',
+                    icon: const Icon(Icons.text_increase_rounded, size: 18),
+                    visualDensity: VisualDensity.compact,
+                    onPressed: themeState.fontScale >= ThemeState.maxFontScale - 0.001
+                        ? null
+                        : () => themeNotifier.stepFontScale(ThemeState.fontScaleStep),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: const [
+                  (label: '紧凑 90%', scale: 0.90),
+                  (label: '标准 100%', scale: 1.00),
+                  (label: '舒适 115%', scale: 1.15),
+                  (label: '大号 130%', scale: 1.30),
+                ].map((preset) {
+                  final selected = (themeState.fontScale - preset.scale).abs() < 0.015;
+                  return InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () => themeNotifier.setFontScale(preset.scale),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: selected
+                            ? primary.withValues(alpha: isDark ? 0.16 : 0.10)
+                            : (isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5)),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: selected
+                              ? primary.withValues(alpha: 0.7)
+                              : (isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
+                          width: selected ? 1.1 : 1,
+                        ),
+                      ),
+                      child: Text(
+                        preset.label,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                          color: selected ? primary : (isDark ? Colors.white70 : Colors.black87),
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+              if (kIsWeb) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'Web 端支持 Ctrl + 滚轮、Ctrl + / - 快捷缩放，Ctrl + 0 恢复默认',
+                  style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black45),
+                ),
+              ],
               const SizedBox(height: 16),
               Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
               const SizedBox(height: 12),

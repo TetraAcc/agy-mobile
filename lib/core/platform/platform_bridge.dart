@@ -26,6 +26,15 @@ class PlatformBridge {
   static VoidCallback registerWebDropAndPaste(void Function(PickedLocalFile file) onFile) =>
       impl.implRegisterWebDropAndPaste(onFile);
 
+  static VoidCallback registerWebZoomShortcuts({
+    required void Function(double delta) onStepZoom,
+    required VoidCallback onResetZoom,
+  }) =>
+      impl.implRegisterWebZoomShortcuts(
+        onStepZoom: onStepZoom,
+        onResetZoom: onResetZoom,
+      );
+
   static Future<Uint8List?> readLocalFileBytes(String path) =>
       impl.implReadLocalFileBytes(path);
 

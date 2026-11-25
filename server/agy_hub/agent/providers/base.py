@@ -879,7 +879,7 @@ class BaseEngineProvider(ABC):
                     except Exception:
                         continue
                     m = str(obj.get("model", "") or "").strip()
-                    if m and m not in seen_set:
+                    if m and not m.upper().startswith("MODEL_PLACEHOLDER_") and m not in seen_set:
                         seen_set.add(m)
                         seen.append(m)
             except OSError:

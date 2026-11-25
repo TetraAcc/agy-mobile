@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'core/platform/platform_bridge.dart';
 import 'core/theme/app_colors.dart';
 import 'core/theme/theme_provider.dart';
 import 'features/auth/auth_controller.dart';
@@ -17,11 +20,61 @@ void main() {
   runApp(const ProviderScope(child: AgyRemoteApp()));
 }
 
-class AgyRemoteApp extends ConsumerWidget {
+class AgyRemoteApp extends ConsumerStatefulWidget {
   const AgyRemoteApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<AgyRemoteApp> createState() => _AgyRemoteAppState();
+}
+
+class _AgyRemoteAppState extends ConsumerState<AgyRemoteApp> {
+  VoidCallback? _disposeWebZoom;
+  Timer? _zoomToastTimer;
+  bool _showZoomBadge = false;
+  int _zoomBadgePercent = 100;
+
+  @override
+  void initState() {
+    super.initState();
+    if (kIsWeb) {
+      _disposeWebZoom = PlatformBridge.registerWebZoomShortcuts(
+        onStepZoom: (delta) {
+          final current = ref.read(themeProvider).fontScale;
+          final target = ThemeState.clampFontScale(current + delta);
+          unawaited(ref.read(themeProvider.notifier).setFontScale(target));
+          _triggerZoomBadge(target);
+        },
+        onResetZoom: () {
+          unawaited(ref.read(themeProvider.notifier).resetFontScale());
+          _triggerZoomBadge(ThemeState.defaultFontScale);
+        },
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _zoomToastTimer?.cancel();
+    _disposeWebZoom?.call();
+    super.dispose();
+  }
+
+  void _triggerZoomBadge(double scale) {
+    if (!mounted) return;
+    setState(() {
+      _zoomBadgePercent = (scale * 100).round();
+      _showZoomBadge = true;
+    });
+    _zoomToastTimer?.cancel();
+    _zoomToastTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) {
+        setState(() => _showZoomBadge = false);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final themeState = ref.watch(themeProvider);
     final authState = ref.watch(authControllerProvider);
 
@@ -31,6 +84,9 @@ class AgyRemoteApp extends ConsumerWidget {
       themeMode: themeState.themeMode,
       builder: (ctx, child) {
         final isDark = Theme.of(ctx).brightness == Brightness.dark;
+        final mediaQuery = MediaQuery.of(ctx);
+        final combinedFactor =
+            (mediaQuery.textScaler.scale(1.0) * themeState.fontScale).clamp(0.75, 2.2).toDouble();
         final overlayStyle = SystemUiOverlayStyle(
           statusBarColor: Colors.transparent,
           statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
@@ -42,7 +98,66 @@ class AgyRemoteApp extends ConsumerWidget {
         );
         return AnnotatedRegion<SystemUiOverlayStyle>(
           value: overlayStyle,
-          child: child ?? const SizedBox.shrink(),
+          child: Stack(
+            children: [
+              MediaQuery(
+                data: mediaQuery.copyWith(textScaler: TextScaler.linear(combinedFactor)),
+                child: child ?? const SizedBox.shrink(),
+              ),
+              if (_showZoomBadge)
+                Positioned(
+                  top: mediaQuery.padding.top + 14,
+                  left: 0,
+                  right: 0,
+                  child: IgnorePointer(
+                    child: Center(
+                      child: AnimatedOpacity(
+                        opacity: _showZoomBadge ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 160),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                          decoration: BoxDecoration(
+                            color: (isDark ? const Color(0xFF202026) : const Color(0xFF18181B))
+                                .withValues(alpha: 0.92),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.14),
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.24),
+                                blurRadius: 12,
+                                offset: const Offset(0, 4),
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.format_size_rounded,
+                                size: 15,
+                                color: Theme.of(ctx).colorScheme.primary,
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                '字号 $_zoomBadgePercent%',
+                                style: const TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.white,
+                                  decoration: TextDecoration.none,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         );
       },
       theme: ThemeData(

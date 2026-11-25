@@ -35,6 +35,13 @@ VoidCallback implRegisterWebDropAndPaste(void Function(PickedLocalFile file) onF
   return () {};
 }
 
+VoidCallback implRegisterWebZoomShortcuts({
+  required void Function(double delta) onStepZoom,
+  required VoidCallback onResetZoom,
+}) {
+  return () {};
+}
+
 Future<Uint8List?> implReadLocalFileBytes(String path) async {
   if (path.trim().isEmpty) return null;
   try {

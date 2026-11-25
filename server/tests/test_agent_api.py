@@ -639,3 +639,213 @@ async def test_pinned_sessions_use_annotations_pbtxt_as_source_of_truth_and_bidi
             assert sid1 not in provider.get_pinned_session_ids()
             stored_order = json.loads(json.loads(app_storage_path.read_text(encoding="utf-8"))["pinned_conversations_order"])
             assert sid1 not in stored_order
+
+
+async def test_windows_create_session_prefers_conversation_rpc_and_resolves_project_id(
+    tmp_path: Path,
+) -> None:
+    import httpx
+    from agy_hub.agent.config import AgentConfig
+    from agy_hub.agent.providers.windows import WindowsEngineProvider
+    from agy_hub.common.sandbox import RootRegistry
+    from tests.conftest import create_sample_official_db
+
+    brain_dir = tmp_path / "brain"
+    db_path = tmp_path / "conversation_summaries.db"
+    daemon_dir = tmp_path / "daemon"
+    scratch_dir = tmp_path / "scratch"
+    ws_dir = tmp_path / "MySpecialProject"
+    brain_dir.mkdir(parents=True)
+    daemon_dir.mkdir(parents=True)
+    scratch_dir.mkdir(parents=True)
+    ws_dir.mkdir(parents=True)
+
+    create_sample_official_db(db_path, ws_dir)
+    (daemon_dir / "hub_999.json").write_text(
+        json.dumps({"httpPort": 54444, "csrfToken": "csrf-create-test"}),
+        encoding="utf-8",
+    )
+
+    create_payloads: list[dict] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/product.v1.ConversationService/CreateConversation"):
+            body = json.loads(request.content.decode("utf-8"))
+            create_payloads.append(body)
+            idx = len(create_payloads)
+            return httpx.Response(
+                200,
+                json={"conversation": {"id": f"cccccccc-cccc-4ccc-8ccc-00000000000{idx}"}},
+            )
+        return httpx.Response(200, json={})
+
+    cfg = AgentConfig(
+        platform="windows",
+        internal_secret=TEST_INTERNAL_SECRET,
+        brain_dir=str(brain_dir),
+        db_path=str(db_path),
+        default_workspace=str(scratch_dir),
+        daemon_dir=str(daemon_dir),
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_handler)) as mock_client:
+        provider = WindowsEngineProvider(cfg, RootRegistry(), http_client=mock_client)
+
+        # 1. General session (no workspace_path) calls CreateConversation immediately
+        r1 = await provider.create_session("你好，测试新建通用会话", model="gemini-4-neon-high")
+        assert r1.ok is True
+        assert r1.session_id == "cccccccc-cccc-4ccc-8ccc-000000000001"
+        assert create_payloads[0] == {
+            "model": "gemini-4-neon-high",
+            "prompt": [{"text": "你好，测试新建通用会话"}],
+        }
+
+        # 2. Workspace session resolves project_id ("proj-alpha") from conversation_summaries.db
+        r2 = await provider.create_session(
+            "帮我看下项目代码",
+            model="claude-sonnet-5-5-medium",
+            workspace_path=str(ws_dir),
+        )
+        assert r2.ok is True
+        assert r2.session_id == "cccccccc-cccc-4ccc-8ccc-000000000002"
+        assert create_payloads[1] == {
+            "model": "claude-sonnet-5-5-medium",
+            "prompt": [{"text": "帮我看下项目代码"}],
+            "projectId": "proj-alpha",
+        }
+
+
+async def test_deck_cli_models_parser_and_fetch_models(tmp_path: Path, monkeypatch) -> None:
+    from agy_hub.agent.config import AgentConfig
+    from agy_hub.common.sandbox import RootRegistry
+    from agy_hub.common.schemas import QuotaBucket, QuotaGroup, QuotaResponse
+
+    raw_models_output = (
+        "Running as unit: run-p12345.service\n"
+        "Fetching available models...\n"
+        "MODEL_PLACEHOLDER_M319\tPlaceholder Model\n"
+        "gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)\n"
+        "gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)\n"
+        "gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)\n"
+        "gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)\n"
+        "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+        "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\n"
+        "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n"
+        "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n"
+        "claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)\n"
+        "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n"
+    )
+    parsed = DeckEngineProvider.parse_cli_models_output(raw_models_output)
+    assert len(parsed) == 10
+    assert all(not m.id.startswith("MODEL_PLACEHOLDER_") for m in parsed)
+    assert parsed[0].group == "Gemini"
+    assert parsed[7].group == "Claude"
+    assert parsed[9].group == "GPT"
+
+    base_dir = tmp_path / "antigravity-cli"
+    brain_dir = base_dir / "brain"
+    brain_dir.mkdir(parents=True)
+    agy_bin = tmp_path / "agy"
+    agy_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    (base_dir / "settings.json").write_text(
+        json.dumps({"model": "Gemini 4 Hydrogen (High)"}),
+        encoding="utf-8",
+    )
+
+    cfg = AgentConfig(
+        platform="deck",
+        internal_secret=TEST_INTERNAL_SECRET,
+        brain_dir=str(brain_dir),
+        db_path=str(base_dir / "conversation_summaries.db"),
+        default_workspace=str(tmp_path),
+        agy_bin=str(agy_bin),
+    )
+    provider = DeckEngineProvider(cfg, RootRegistry())
+
+    cli_calls = 0
+
+    async def fake_run_cli(args: list[str], timeout: float = 15.0) -> str:
+        nonlocal cli_calls
+        cli_calls += 1
+        assert args == ["models"]
+        return raw_models_output
+
+    monkeypatch.setattr(provider, "_run_cli_query", fake_run_cli)
+
+    provider._cached_quota = QuotaResponse(
+        groups=[
+            QuotaGroup(
+                display_name="Gemini Models",
+                buckets=[
+                    QuotaBucket(
+                        bucket_id="5h",
+                        display_name="Five Hour Limit Remaining",
+                        window="5h",
+                        remaining_fraction=0.97,
+                        reset_time="2026-11-25T22:37:38Z",
+                    ),
+                    QuotaBucket(
+                        bucket_id="weekly",
+                        display_name="Weekly Limit Remaining",
+                        window="weekly",
+                        remaining_fraction=0.96,
+                    ),
+                ],
+            ),
+            QuotaGroup(
+                display_name="Claude and GPT models",
+                buckets=[
+                    QuotaBucket(
+                        bucket_id="5h",
+                        display_name="Five Hour Limit Remaining",
+                        window="5h",
+                        remaining_fraction=0.88,
+                        reset_time="2026-11-26T00:09:55Z",
+                    ),
+                ],
+            ),
+        ]
+    )
+
+    catalog = await provider.fetch_models()
+    assert cli_calls == 1
+    assert len(catalog.models) == 10
+    assert catalog.default_model == "gemini-4-hydrogen-high"
+    assert catalog.models[0].is_default is True
+    assert abs((catalog.models[0].remaining_fraction or 0.0) - 0.97) < 1e-6
+    assert abs((catalog.models[7].remaining_fraction or 0.0) - 0.88) < 1e-6
+    assert abs((catalog.models[9].remaining_fraction or 0.0) - 0.88) < 1e-6
+
+    # Second call within TTL hits cache without spawning subprocess again
+    catalog_cached = await provider.fetch_models()
+    assert cli_calls == 1
+    assert catalog_cached.default_model == "gemini-4-hydrogen-high"
+
+
+def test_base_scan_recent_transcript_filters_model_placeholders(tmp_path: Path) -> None:
+    from agy_hub.agent.config import AgentConfig
+    from agy_hub.common.sandbox import RootRegistry
+
+    brain_dir = tmp_path / "brain"
+    sid = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1"
+    logs_dir = brain_dir / sid / ".system_generated" / "logs"
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "transcript.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"step_index": 1, "model": "MODEL_PLACEHOLDER_M319"}),
+                json.dumps({"step_index": 2, "model": "gemini-3.8-flash-medium"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    cfg = AgentConfig(
+        platform="deck",
+        internal_secret=TEST_INTERNAL_SECRET,
+        brain_dir=str(brain_dir),
+        db_path=str(tmp_path / "d.db"),
+        default_workspace=str(tmp_path),
+    )
+    provider = DeckEngineProvider(cfg, RootRegistry())
+    scanned = provider._scan_recent_transcript_models_sync()
+    assert "MODEL_PLACEHOLDER_M319" not in scanned
+    assert scanned == ["gemini-3.8-flash-medium"]

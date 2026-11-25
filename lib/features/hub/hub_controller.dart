@@ -131,6 +131,8 @@ class HubState {
   bool get isConnecting => wsState == WsConnState.connecting;
   bool get canWrite => currentNode?.canWrite ?? false;
   bool get canDelete => currentNode?.canDelete ?? false;
+  bool get isCreatingSession =>
+      activeSessionId.startsWith(HubController.creatingSessionPrefix);
   bool get isActiveSessionRunning =>
       activeSessionId.isNotEmpty && runningSessionIds.contains(activeSessionId);
   List<PlanStepItem> get activePlanSteps => PlanStepItem.extractLatestSteps(messages);
@@ -231,6 +233,10 @@ class HubController extends Notifier<HubState> {
   CachedHubSnapshot _cacheSnapshot = const CachedHubSnapshot();
   Timer? _cachePersistTimer;
   String _subscribedSessionId = '';
+  ({String nodeId, SessionItem item, String? projectName, DateTime createdAt})? _pendingCreatedSession;
+  final Map<String, ({List<OfficialModelOption> models, String defaultModel})> _modelsByNode = {};
+
+  static const String creatingSessionPrefix = '__creating_';
 
   @override
   HubState build() {
@@ -352,9 +358,29 @@ class HubController extends Notifier<HubState> {
     });
   }
 
+  ({List<OfficialModelOption> models, String selectedModel}) _catalogStateForNode(String nodeId) {
+    final cached = _modelsByNode[nodeId];
+    if (cached == null || cached.models.isEmpty) {
+      return (models: const [], selectedModel: '');
+    }
+    var nextSelected = '';
+    if (state.selectedNodeId == nodeId &&
+        state.selectedModel.isNotEmpty &&
+        cached.models.any((m) => m.id == state.selectedModel)) {
+      nextSelected = state.selectedModel;
+    } else if (cached.defaultModel.isNotEmpty &&
+        cached.models.any((m) => m.id == cached.defaultModel)) {
+      nextSelected = cached.defaultModel;
+    } else {
+      nextSelected = cached.models.first.id;
+    }
+    return (models: cached.models, selectedModel: nextSelected);
+  }
+
   void _applyNodeCacheToState(String nodeId, {List<HostNode>? nodesOverride}) {
     final cachedTree = _cacheSnapshot.treesByNode[nodeId];
     final cachedSession = _cacheSnapshot.latestSessionForNode(nodeId);
+    final catalogState = _catalogStateForNode(nodeId);
     final nextNodes = nodesOverride ??
         (_cacheSnapshot.nodes.isNotEmpty
             ? _cacheSnapshot.nodes
@@ -386,6 +412,8 @@ class HubController extends Notifier<HubState> {
       clearNextBeforeStep: true,
       isLoadingMessages: false,
       runningSessionIds: const {},
+      selectedModel: catalogState.selectedModel,
+      availableModels: catalogState.models,
       activeSessionModel: cachedSession?.activeModel ?? '',
       clearPendingSwitchModel: true,
       clearSessionChanges: true,
@@ -517,6 +545,7 @@ class HubController extends Notifier<HubState> {
     _cachePersistTimer?.cancel();
     _cachePersistTimer = null;
     _cacheSnapshot = const CachedHubSnapshot();
+    _modelsByNode.clear();
     _disposeSocketSync();
     _lastNotifiedRunningTitle = '';
     _lastNotifiedRunningBody = '';
@@ -585,6 +614,7 @@ class HubController extends Notifier<HubState> {
     if (_cacheSnapshot.hasCacheForNode(nodeId)) {
       _applyNodeCacheToState(nodeId, nodesOverride: state.nodes);
     } else {
+      final catalogState = _catalogStateForNode(nodeId);
       state = state.copyWith(
         selectedNodeId: nodeId,
         projects: const {},
@@ -596,6 +626,8 @@ class HubController extends Notifier<HubState> {
         hasMoreMessages: false,
         clearNextBeforeStep: true,
         clearQuota: true,
+        selectedModel: catalogState.selectedModel,
+        availableModels: catalogState.models,
         activeSessionModel: '',
         clearPendingSwitchModel: true,
         clearSessionChanges: true,
@@ -814,7 +846,32 @@ class HubController extends Notifier<HubState> {
       final tree = await _api.getSessionTree(nodeId);
       if (_disposed || state.selectedNodeId != nodeId) return;
 
+      var projectsForUi = tree.projects;
+      var generalForUi = tree.generalSessions;
       final mergedRunning = Set<String>.from(tree.runningSessionIds);
+
+      final pending = _pendingCreatedSession;
+      if (pending != null && pending.nodeId == nodeId) {
+        final expired = DateTime.now().difference(pending.createdAt) > const Duration(seconds: 25);
+        final existsInTree =
+            _findSessionById(pending.item.id, projectsForUi, generalForUi) != null;
+        if (existsInTree || expired) {
+          _pendingCreatedSession = null;
+        } else {
+          final inserted = _insertPlaceholderSession(
+            projects: projectsForUi,
+            general: generalForUi,
+            item: pending.item,
+            preferredProject: pending.projectName,
+          );
+          projectsForUi = inserted.$1;
+          generalForUi = inserted.$2;
+          if (pending.item.isRunning) {
+            mergedRunning.add(pending.item.id);
+          }
+        }
+      }
+
       final updatedNodes = state.nodes
           .map((n) => n.id == nodeId
               ? HostNode(
@@ -833,15 +890,15 @@ class HubController extends Notifier<HubState> {
 
       state = state.copyWith(
         nodes: updatedNodes,
-        projects: tree.projects,
-        generalSessions: tree.generalSessions,
+        projects: projectsForUi,
+        generalSessions: generalForUi,
         runningSessionIds: mergedRunning,
       );
       final nextTrees = Map<String, CachedNodeTree>.from(_cacheSnapshot.treesByNode);
       nextTrees[nodeId] = CachedNodeTree(
         nodeId: nodeId,
-        projects: tree.projects,
-        generalSessions: tree.generalSessions,
+        projects: projectsForUi,
+        generalSessions: generalForUi,
         updatedAtMs: DateTime.now().millisecondsSinceEpoch,
       );
       _cacheSnapshot = CachedHubSnapshot(
@@ -852,16 +909,16 @@ class HubController extends Notifier<HubState> {
         sessionsByKey: _cacheSnapshot.sessionsByKey,
       );
       unawaited(SessionCacheStore.saveNodes(updatedNodes, selectedNodeId: nodeId));
-      unawaited(SessionCacheStore.saveSessionTree(nodeId, tree.projects, tree.generalSessions));
+      unawaited(SessionCacheStore.saveSessionTree(nodeId, projectsForUi, generalForUi));
 
       if (autoSelectFirst) {
         final preferred = _findFirstSession(
-          tree.projects,
-          tree.generalSessions,
+          projectsForUi,
+          generalForUi,
           runningIds: mergedRunning,
         );
         final matched = state.activeSessionId.isNotEmpty
-            ? _findSessionById(state.activeSessionId, tree.projects, tree.generalSessions)
+            ? _findSessionById(state.activeSessionId, projectsForUi, generalForUi)
             : null;
         final shouldSwitchToRunning = state.isShowingCachedData &&
             preferred != null &&
@@ -1624,6 +1681,46 @@ class HubController extends Notifier<HubState> {
     await OfflineOutboxStore.save(next);
   }
 
+  (Map<String, List<SessionItem>>, List<SessionItem>) _insertPlaceholderSession({
+    required Map<String, List<SessionItem>> projects,
+    required List<SessionItem> general,
+    required SessionItem item,
+    String? preferredProject,
+  }) {
+    if (_findSessionById(item.id, projects, general) != null) {
+      return (projects, general);
+    }
+    if (preferredProject != null && preferredProject.isNotEmpty && projects.containsKey(preferredProject)) {
+      final list = List<SessionItem>.from(projects[preferredProject]!);
+      final firstNonPinned = list.indexWhere((s) => !s.isPinned);
+      list.insert(firstNonPinned >= 0 ? firstNonPinned : list.length, item);
+      final nextProjects = Map<String, List<SessionItem>>.from(projects);
+      nextProjects[preferredProject] = list;
+      return (nextProjects, general);
+    }
+    final nextGeneral = List<SessionItem>.from(general);
+    final firstNonPinned = nextGeneral.indexWhere((s) => !s.isPinned);
+    nextGeneral.insert(firstNonPinned >= 0 ? firstNonPinned : nextGeneral.length, item);
+    return (projects, nextGeneral);
+  }
+
+  String? _resolveProjectNameByWorkspace(
+    Map<String, List<SessionItem>> projects,
+    String? workspacePath,
+  ) {
+    final normTarget = (workspacePath ?? '').trim().replaceAll('\\', '/').toLowerCase();
+    if (normTarget.isEmpty) return null;
+    for (final entry in projects.entries) {
+      for (final s in entry.value) {
+        final normItem = s.workspacePath.trim().replaceAll('\\', '/').toLowerCase();
+        if (normItem.isNotEmpty && normItem == normTarget) {
+          return entry.key;
+        }
+      }
+    }
+    return null;
+  }
+
   Future<String?> createNewSession({
     required String content,
     required String mode,
@@ -1635,8 +1732,88 @@ class HubController extends Notifier<HubState> {
     if (nodeId.isEmpty) return '未选中节点';
     if (!state.canWrite) return '当前节点为只读权限';
 
-    state = state.copyWith(selectedMode: mode, selectedModel: model);
+    final trimmed = content.trim();
+    final firstLine = trimmed.split('\n').first.trim();
+    final previewTitle = firstLine.isEmpty
+        ? '新任务'
+        : (firstLine.length > 28 ? '${firstLine.substring(0, 28)}...' : firstLine);
+    final pendingSid = '$creatingSessionPrefix${DateTime.now().microsecondsSinceEpoch}';
+
+    final prevSessionId = state.activeSessionId;
+    final prevTitle = state.activeSessionTitle;
+    final prevRootId = state.activeRootId;
+    final prevMessages = state.messages;
+    final prevHasMore = state.hasMoreMessages;
+    final prevNextBefore = state.nextBeforeStep;
+    final prevActiveModel = state.activeSessionModel;
+    final prevRunning = state.runningSessionIds;
+
+    _lastAskQuestionStep = -1;
+    if (prevSessionId.isNotEmpty && !prevSessionId.startsWith(creatingSessionPrefix)) {
+      _socket?.unsubscribe(prevSessionId);
+    }
+
+    final optimisticUserMsg = AgentMessage(
+      stepIndex: -1,
+      source: 'USER_EXPLICIT',
+      msgType: 'USER_INPUT',
+      status: 'DONE',
+      content: content,
+      thinking: '',
+      toolCalls: const [],
+      timestamp: DateTime.now().toIso8601String(),
+    );
+
+    // 0ms immediate optimistic transition into the new conversation view
+    state = state.copyWith(
+      selectedMode: mode,
+      selectedModel: model,
+      activeSessionId: pendingSid,
+      activeSessionTitle: previewTitle,
+      activeRootId: (rootId != null && rootId.isNotEmpty) ? rootId : 'scratch',
+      messages: [optimisticUserMsg],
+      hasMoreMessages: false,
+      clearNextBeforeStep: true,
+      activeSessionModel: model,
+      clearPendingSwitchModel: true,
+      clearSessionChanges: true,
+      clearSessionQueue: true,
+      isLoadingMessages: false,
+      isShowingCachedData: false,
+      clearActiveCacheUpdatedAt: true,
+      runningSessionIds: {...prevRunning, pendingSid},
+    );
+
+    void rollbackIfStillPending() {
+      if (_disposed) return;
+      final cleanedRunning = Set<String>.from(state.runningSessionIds)..remove(pendingSid);
+      if (state.activeSessionId != pendingSid) {
+        state = state.copyWith(runningSessionIds: cleanedRunning);
+        return;
+      }
+      state = state.copyWith(
+        activeSessionId: prevSessionId,
+        activeSessionTitle: prevTitle,
+        activeRootId: prevRootId,
+        messages: prevMessages,
+        hasMoreMessages: prevHasMore,
+        nextBeforeStep: prevNextBefore,
+        clearNextBeforeStep: prevNextBefore == null,
+        activeSessionModel: prevActiveModel,
+        runningSessionIds: cleanedRunning,
+      );
+      if (prevSessionId.isNotEmpty && !prevSessionId.startsWith(creatingSessionPrefix)) {
+        final lastStep = prevMessages.isNotEmpty ? prevMessages.last.stepIndex : null;
+        _subscribeSession(prevSessionId, sinceStep: lastStep);
+      }
+    }
+
     try {
+      final knownIdsBefore = <String>{
+        for (final list in state.projects.values)
+          for (final s in list) s.id,
+        for (final s in state.generalSessions) s.id,
+      };
       final (ok, newSid, msg) = await _api.createSession(
         nodeId,
         content: content,
@@ -1645,31 +1822,165 @@ class HubController extends Notifier<HubState> {
         workspacePath: workspacePath,
         rootId: rootId,
       );
-      if (!ok) return msg.isNotEmpty ? msg : '创建新会话失败';
+      if (!ok) {
+        rollbackIfStillPending();
+        return msg.isNotEmpty ? msg : '创建新会话失败';
+      }
 
-      await refreshSessionTree();
+      if (_disposed || state.selectedNodeId != nodeId) return null;
+
       if (newSid.isNotEmpty) {
-        final matched = _findSessionById(newSid, state.projects, state.generalSessions);
-        final nextRunning = Set<String>.from(state.runningSessionIds)..add(newSid);
-        state = state.copyWith(runningSessionIds: nextRunning);
-        await selectSession(
-          matched ??
-              SessionItem(
-                id: newSid,
-                title: content.length > 28 ? '${content.substring(0, 28)}...' : content,
-                rootId: rootId ?? 'scratch',
-                workspacePath: workspacePath ?? '',
-              ),
+        final matchedProject = _resolveProjectNameByWorkspace(state.projects, workspacePath);
+        final placeholder = SessionItem(
+          id: newSid,
+          title: previewTitle,
+          preview: trimmed,
+          updatedAt: '刚刚',
+          lastModified: DateTime.now().toUtc().toIso8601String(),
+          isRunning: true,
+          workspacePath: workspacePath ?? '',
+          rootId: (rootId != null && rootId.isNotEmpty) ? rootId : 'scratch',
         );
-        if (!_disposed && state.activeSessionId == newSid && state.activeSessionModel.isEmpty) {
-          state = state.copyWith(activeSessionModel: model);
+        _pendingCreatedSession = (
+          nodeId: nodeId,
+          item: placeholder,
+          projectName: matchedProject,
+          createdAt: DateTime.now(),
+        );
+
+        final inserted = _insertPlaceholderSession(
+          projects: state.projects,
+          general: state.generalSessions,
+          item: placeholder,
+          preferredProject: matchedProject,
+        );
+        final nextRunning = Set<String>.from(state.runningSessionIds)
+          ..remove(pendingSid)
+          ..add(newSid);
+        final stillInPending = state.activeSessionId == pendingSid;
+
+        state = state.copyWith(
+          projects: inserted.$1,
+          generalSessions: inserted.$2,
+          runningSessionIds: nextRunning,
+          activeSessionId: stillInPending ? newSid : state.activeSessionId,
+          activeSessionModel: stillInPending && state.activeSessionModel.isEmpty ? model : state.activeSessionModel,
+        );
+
+        if (stillInPending) {
+          _subscribeSession(newSid);
+          _syncRunningNotification();
+          unawaited(_hydrateCreatedSessionSilently(nodeId, newSid, optimisticUserMsg));
         }
+        unawaited(refreshSessionTree(autoSelectFirst: false));
+        Future<void>.delayed(const Duration(milliseconds: 1800), () {
+          if (!_disposed && state.selectedNodeId == nodeId) {
+            unawaited(refreshSessionTree(autoSelectFirst: false));
+          }
+        });
+      } else {
+        // Fallback when node agent did not immediately return session_id
+        await _pollAndAttachAnonymousNewSession(
+          nodeId: nodeId,
+          pendingSid: pendingSid,
+          knownIdsBefore: knownIdsBefore,
+          model: model,
+          optimisticUserMsg: optimisticUserMsg,
+        );
       }
       return null;
     } on ApiException catch (e) {
+      rollbackIfStillPending();
       return e.message;
     } catch (e) {
+      rollbackIfStillPending();
       return '创建会话异常: $e';
+    }
+  }
+
+  Future<void> _hydrateCreatedSessionSilently(
+    String nodeId,
+    String sid,
+    AgentMessage optimisticUserMsg,
+  ) async {
+    try {
+      final page = await _api.getSessionMessages(nodeId, sid);
+      if (_disposed || state.selectedNodeId != nodeId || state.activeSessionId != sid) return;
+      if (page.messages.isEmpty) {
+        // Keep optimistic user bubble until first transcript line arrives
+        if (state.messages.isEmpty) {
+          state = state.copyWith(messages: [optimisticUserMsg]);
+        }
+        return;
+      }
+      final existingConfirmSteps = page.messages.map((m) => '${m.stepIndex}_${m.msgType}').toSet();
+      final merged = List<AgentMessage>.from(page.messages);
+      for (final m in state.messages) {
+        if (m.stepIndex > 0 && !existingConfirmSteps.contains('${m.stepIndex}_${m.msgType}')) {
+          merged.add(m);
+        }
+      }
+      merged.sort((a, b) => a.stepIndex.compareTo(b.stepIndex));
+      final detectedModel = page.activeModel.isNotEmpty
+          ? page.activeModel
+          : _extractLatestModel(merged);
+      state = state.copyWith(
+        messages: merged,
+        hasMoreMessages: page.hasMore,
+        nextBeforeStep: page.nextBeforeStep,
+        clearNextBeforeStep: page.nextBeforeStep == null,
+        activeSessionModel: detectedModel.isNotEmpty ? detectedModel : state.activeSessionModel,
+      );
+      _schedulePersistActiveSessionCache(immediate: true);
+    } catch (_) {}
+  }
+
+  Future<void> _pollAndAttachAnonymousNewSession({
+    required String nodeId,
+    required String pendingSid,
+    required Set<String> knownIdsBefore,
+    required String model,
+    required AgentMessage optimisticUserMsg,
+  }) async {
+    for (var attempt = 0; attempt < 5; attempt++) {
+      await refreshSessionTree(autoSelectFirst: false);
+      if (_disposed || state.selectedNodeId != nodeId || state.activeSessionId != pendingSid) {
+        final cleaned = Set<String>.from(state.runningSessionIds)..remove(pendingSid);
+        state = state.copyWith(runningSessionIds: cleaned);
+        return;
+      }
+      final candidates = <SessionItem>[
+        for (final list in state.projects.values) ...list,
+        ...state.generalSessions,
+      ].where((s) => !knownIdsBefore.contains(s.id)).toList();
+      if (candidates.isNotEmpty) {
+        candidates.sort((a, b) {
+          final rDiff = (b.isRunning || state.runningSessionIds.contains(b.id) ? 1 : 0) -
+              (a.isRunning || state.runningSessionIds.contains(a.id) ? 1 : 0);
+          if (rDiff != 0) return rDiff;
+          return b.lastModified.compareTo(a.lastModified);
+        });
+        final found = candidates.first;
+        final nextRunning = Set<String>.from(state.runningSessionIds)
+          ..remove(pendingSid)
+          ..add(found.id);
+        state = state.copyWith(
+          activeSessionId: found.id,
+          activeSessionTitle: found.title.isNotEmpty ? found.title : state.activeSessionTitle,
+          activeRootId: found.rootId.isNotEmpty ? found.rootId : state.activeRootId,
+          runningSessionIds: nextRunning,
+          activeSessionModel: state.activeSessionModel.isEmpty ? model : state.activeSessionModel,
+        );
+        _subscribeSession(found.id);
+        _syncRunningNotification();
+        unawaited(_hydrateCreatedSessionSilently(nodeId, found.id, optimisticUserMsg));
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 1400));
+    }
+    if (!_disposed && state.activeSessionId == pendingSid) {
+      final cleaned = Set<String>.from(state.runningSessionIds)..remove(pendingSid);
+      state = state.copyWith(runningSessionIds: cleaned);
     }
   }
 
@@ -1862,8 +2173,9 @@ class HubController extends Notifier<HubState> {
       final res = await _api.getModels(nodeId);
       if (_disposed || state.selectedNodeId != nodeId) return;
       if (res.models.isEmpty) return;
+      _modelsByNode[nodeId] = res;
       var nextSelected = state.selectedModel;
-      if (!res.models.any((m) => m.id == nextSelected)) {
+      if (nextSelected.isEmpty || !res.models.any((m) => m.id == nextSelected)) {
         nextSelected = res.defaultModel.isNotEmpty ? res.defaultModel : res.models.first.id;
       }
       state = state.copyWith(
