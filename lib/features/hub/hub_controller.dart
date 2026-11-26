@@ -2388,6 +2388,36 @@ class HubController extends Notifier<HubState> {
     return null;
   }
 
+  Future<({String rootId, String relPath})?> resolveFileTargetWithRefresh(
+    String pathOrUri, {
+    String? rootId,
+  }) =>
+      _resolveFileTargetWithRefresh(pathOrUri, rootId: rootId);
+
+  String get activeWorkspacePath {
+    final sid = state.activeSessionId;
+    if (sid.isNotEmpty) {
+      for (final list in state.projects.values) {
+        for (final s in list) {
+          if (s.id == sid && s.workspacePath.trim().isNotEmpty) {
+            return s.workspacePath.trim();
+          }
+        }
+      }
+      for (final s in state.generalSessions) {
+        if (s.id == sid && s.workspacePath.trim().isNotEmpty) {
+          return s.workspacePath.trim();
+        }
+      }
+    }
+    for (final r in state.cachedRoots) {
+      if (r.id == state.activeRootId && r.path.trim().isNotEmpty) {
+        return r.path.trim();
+      }
+    }
+    return '';
+  }
+
   Future<({String rootId, String relPath})?> _resolveFileTargetWithRefresh(
     String pathOrUri, {
     String? rootId,

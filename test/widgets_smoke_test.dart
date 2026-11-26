@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:agy_remote/core/config/composer_prefs.dart';
 import 'package:agy_remote/core/config/offline_outbox_store.dart';
 import 'package:agy_remote/core/config/quick_commands_prefs.dart';
 import 'package:agy_remote/core/config/responsive_layout.dart';
 import 'package:agy_remote/core/config/server_config.dart';
+import 'package:agy_remote/core/network/token_store.dart';
 import 'package:agy_remote/core/platform/platform_bridge.dart';
 import 'package:agy_remote/features/auth/auth_controller.dart';
 import 'package:agy_remote/features/auth/login_screen.dart';
@@ -16,6 +18,7 @@ import 'package:agy_remote/features/chat/message_card.dart';
 import 'package:agy_remote/features/chat/model_picker_sheet.dart';
 import 'package:agy_remote/features/chat/offline_outbox_bar.dart';
 import 'package:agy_remote/features/chat/quick_commands_sheet.dart';
+import 'package:agy_remote/features/chat/rich_presence_cards.dart';
 import 'package:agy_remote/features/chat/session_queue_bar.dart';
 import 'package:agy_remote/features/chat/session_steps_bar.dart';
 import 'package:agy_remote/features/hub/download_progress_dialog.dart';
@@ -24,6 +27,7 @@ import 'package:agy_remote/features/sessions/quota_drawer.dart';
 import 'package:agy_remote/features/workspace/change_review_sheet.dart';
 import 'package:agy_remote/features/workspace/file_viewer_sheet.dart';
 import 'package:agy_remote/features/workspace/session_changes_bar.dart';
+import 'package:agy_remote/features/workspace/terminal_panel.dart';
 import 'package:agy_remote/features/workspace/workspace_file_picker_dialog.dart';
 import 'package:agy_remote/models/models.dart';
 import 'package:flutter/foundation.dart';
@@ -31,6 +35,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 class _TestAuthController extends AuthController {
   @override
@@ -1721,4 +1726,457 @@ void main() {
     );
     expect(richText.text.style?.fontSize, closeTo(12.5 * 1.4, 0.01));
   });
+
+  testWidgets('ChangeReviewSheet 行级 Diff 在窄屏下默认随容器自动折行且支持切换单行横滚', (tester) async {
+    const longLine =
+        '+这是一段非常非常长的行级 Diff 修改内容，用于在窄屏或收窄浏览器窗口时验证文本是否会自动折行完整显示而不会向右溢出被裁切掉。';
+    const changes = SessionChangesData(
+      sessionId: 's-wrap',
+      totalFiles: 1,
+      totalAdded: 1,
+      totalRemoved: 1,
+      files: [
+        SessionFileChange(
+          filePath: 'lib/demo/long_diff.dart',
+          fileName: 'long_diff.dart',
+          directory: 'lib/demo',
+          editCount: 1,
+          addedLines: 1,
+          removedLines: 1,
+          hunks: [
+            SessionEditHunk(
+              hunkId: 'h-wrap',
+              stepIndex: 5,
+              toolName: 'edit_file',
+              startLine: 10,
+              endLine: 12,
+              addedLines: 1,
+              removedLines: 1,
+              beforeText: 'old line',
+              afterText: 'new long line',
+              unifiedDiff: '@@ -10,1 +10,1 @@\n-old line\n$longLine',
+            ),
+          ],
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MediaQuery(
+          data: const MediaQueryData(size: Size(320, 760)),
+          child: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 320,
+                height: 700,
+                child: ChangeReviewSheet(
+                  initialSessionChanges: changes,
+                  initialFilePath: 'lib/demo/long_diff.dart',
+                  onFillPrompt: (_) {},
+                  onSendPrompt: (_) async => null,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // `.dart` 文件默认进入行级 Diff 模式，且默认开启自动换行
+    expect(find.text('自动换行'), findsOneWidget);
+    final diffTextFinder = find.text(longLine);
+    expect(diffTextFinder, findsOneWidget);
+
+    // 默认自动换行时不应存在横向滚动容器包裹 Diff 文本，且文本宽不超过窄屏容器并发生多行折行
+    expect(
+      find.byWidgetPredicate(
+        (w) => w is SingleChildScrollView && w.scrollDirection == Axis.horizontal,
+      ),
+      findsNothing,
+    );
+    final diffSize = tester.getSize(diffTextFinder);
+    expect(diffSize.width, lessThanOrEqualTo(320));
+    expect(diffSize.height, greaterThan(30));
+
+    // 点击 Diff 行依然弹出批注对话框
+    await tester.tap(diffTextFinder);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('添加批注'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+
+    // 点击切换到「单行横滚」模式
+    await tester.tap(find.text('自动换行'));
+    await tester.pumpAndSettle();
+    expect(find.text('单行横滚'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (w) => w is SingleChildScrollView && w.scrollDirection == Axis.horizontal,
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('MessageCard 渲染插件 Rich Presence 卡片、Gmail 重登引导、MCP 工具胶囊并忽略代码块内示例标签', (tester) async {
+    String? submittedReply;
+    const msg = AgentMessage(
+      stepIndex: 20,
+      source: 'MODEL',
+      msgType: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      content: 'Gmail 授权已过期，请先重新登录：\n\n'
+          '<plugin-card catalog-id="gmail"></plugin-card>\n\n'
+          '代码说明中的示例标签不应触发卡片：`<plugin-card catalog-id="canva"></plugin-card>`',
+      thinking: '',
+      toolCalls: [
+        ToolCallItem(
+          name: 'run_command',
+          args: {
+            'CommandLine': 'gmail readonly search "is:unread" --max 5',
+            'toolSummary': '查询未读邮件',
+          },
+        ),
+        ToolCallItem(
+          name: 'call_mcp_tool',
+          args: {
+            'ServerName': 'cloudflare_cloudflare',
+            'ToolName': 'docs',
+          },
+        ),
+        ToolCallItem(
+          name: 'list_plugin_accounts',
+          args: {},
+        ),
+      ],
+      timestamp: '',
+    );
+
+    // 确认解析器跳过行内代码里的 canva，只提取真实 gmail 标签
+    final parsedCards = RichPresenceParser.extractPluginCards(msg.content);
+    expect(parsedCards.length, 1);
+    expect(parsedCards.first.slug, 'gmail');
+    expect(parsedCards.first.isAuthRequired, true);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: MessageCard(
+              msg: msg,
+              isDark: true,
+              nodeName: 'Windows PC',
+              resolveMediaUrl: (p) => p,
+              onDownloadFile: (_, {filename}) {},
+              onOpenUrl: (_) {},
+              onOpenToolDetail: (_, __) {},
+              onSubmitQuickReply: (reply) async {
+                submittedReply = reply;
+                return null;
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 1. 工具胶囊呈现专属插件/MCP 标签
+    expect(find.text('Gmail: 查询未读邮件'), findsOneWidget);
+    expect(find.text('MCP: cloudflare/docs'), findsOneWidget);
+    expect(find.text('检查插件账号'), findsOneWidget);
+
+    // 2. Gmail 插件卡片展示登录提示、节点名称及重试按钮，不出现裸 <plugin-card> 文本或误解析的 Canva 卡片
+    expect(find.text('Gmail'), findsOneWidget);
+    expect(find.text('需重新登录'), findsOneWidget);
+    expect(find.textContaining('【Windows PC】'), findsOneWidget);
+    expect(find.text('Canva'), findsNothing);
+
+    // 3. 点击「我已登录，重试」触发快捷回复并切换为已通知状态
+    await tester.tap(find.text('我已登录，重试'));
+    await tester.pumpAndSettle();
+    expect(submittedReply, contains('Gmail'));
+    expect(find.text('已通知重试'), findsOneWidget);
+  });
+
+  testWidgets('MessageCard 对无插件标签的浏览器人机验证场景渲染人工接管提示卡片', (tester) async {
+    String? reply;
+    const msg = AgentMessage(
+      stepIndex: 21,
+      source: 'MODEL',
+      msgType: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      content: '当前结账页触发了 PAYMENT_REQUIRED，请在浏览器中完成支付后通知我继续。',
+      thinking: '',
+      toolCalls: [
+        ToolCallItem(name: 'webview_browser', args: {}),
+      ],
+      timestamp: '',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: MessageCard(
+              msg: msg,
+              isDark: false,
+              nodeName: 'Steam Deck',
+              resolveMediaUrl: (p) => p,
+              onDownloadFile: (_, {filename}) {},
+              onOpenUrl: (_) {},
+              onSubmitQuickReply: (text) async {
+                reply = text;
+                return null;
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('浏览器操作'), findsOneWidget);
+    expect(find.text('需要宿主机浏览器人工接管'), findsOneWidget);
+    expect(find.textContaining('【Steam Deck】'), findsOneWidget);
+
+    await tester.tap(find.text('我已处理，继续'));
+    await tester.pumpAndSettle();
+    expect(reply, contains('继续执行'));
+    expect(find.text('已通知继续执行'), findsOneWidget);
+  });
+
+  testWidgets('FileViewerSheet 嵌入式模式支持行号高亮、Markdown 渲染切换与独立下载按钮', (tester) async {
+    var downloadCount = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 520,
+            height: 640,
+            child: FileViewerSheet(
+              rootId: 'scratch',
+              name: 'guide.md',
+              path: 'docs/guide.md',
+              content: '# 标题一\n\n第二行正文\n第三行重点',
+              totalLines: 4,
+              truncated: false,
+              size: 64,
+              canWrite: true,
+              isEmbedded: true,
+              highlightStartLine: 3,
+              highlightEndLine: 4,
+              onDownload: () => downloadCount++,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 指定行号高亮时应默认停留在源码视图并在路径栏显示行号区间
+    expect(find.textContaining('L3-L4'), findsOneWidget);
+    expect(find.text('第三行重点'), findsOneWidget);
+    expect(find.byTooltip('切换 Markdown 预览'), findsOneWidget);
+
+    // 切换到 Markdown 渲染视图
+    await tester.tap(find.byTooltip('切换 Markdown 预览'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('切换源码视图'), findsOneWidget);
+    expect(find.text('标题一'), findsOneWidget);
+
+    // 点击独立下载按钮
+    await tester.tap(find.byTooltip('下载文件'));
+    await tester.pump();
+    expect(downloadCount, 1);
+  });
+
+  testWidgets('MessageCard 对话文件卡片优先触发智能预览并保留独立下载按钮，二进制包直接下载', (tester) async {
+    String? openedPath;
+    String? downloadedPath;
+
+    const msg = AgentMessage(
+      stepIndex: 30,
+      source: 'MODEL',
+      msgType: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      content: '已生成脚本与打包产物：\n'
+          '脚本路径：C:/repo/script.py\n'
+          '打包产物：C:/repo/release.zip',
+      thinking: '',
+      toolCalls: [],
+      timestamp: '',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: MessageCard(
+              msg: msg,
+              isDark: true,
+              resolveMediaUrl: (p) => p,
+              onOpenFile: (p, {filename}) => openedPath = p,
+              onDownloadFile: (p, {filename}) => downloadedPath = p,
+              onOpenUrl: (_) {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 点击 script.py 文件卡片的「预览」按钮应走 onOpenFile 而不是 onDownloadFile
+    await tester.tap(find.text('预览'));
+    await tester.pump();
+    expect(openedPath, contains('script.py'));
+    expect(downloadedPath, isNull);
+
+    // 点击卡片右侧独立下载图标应触发 onDownloadFile
+    await tester.tap(find.byTooltip('下载文件'));
+    await tester.pump();
+    expect(downloadedPath, contains('script.py'));
+
+    // 点击二进制文件 release.zip 卡片上的「下载」按钮直接触发下载
+    openedPath = null;
+    downloadedPath = null;
+    await tester.tap(find.text('下载'));
+    await tester.pump();
+    expect(openedPath, isNull);
+    expect(downloadedPath, contains('release.zip'));
+  });
+
+  testWidgets('TerminalPanel 建立 PTY WebSocket 后渲染终端并支持快捷键与 Deck 接入当前会话', (tester) async {
+    final incoming = StreamController<dynamic>.broadcast();
+    final sentFrames = <Map<String, dynamic>>[];
+    Uri? connectedUri;
+    final fakeChannel = _FakeTerminalWsChannel(
+      incoming: incoming,
+      onSend: (raw) {
+        if (raw is String) {
+          sentFrames.add(Map<String, dynamic>.from(jsonDecode(raw) as Map));
+        }
+      },
+    );
+    addTearDown(() async {
+      await incoming.close();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 560,
+            height: 620,
+            child: TerminalPanel(
+              serverConfig: const ServerConfig('https://hub.example.com'),
+              tokenStore: MemoryTokenStore(initialAccess: 'tok-test'),
+              nodeId: 'deck-node',
+              nodeName: 'Steam Deck',
+              initialCwd: '/home/deck/work',
+              activeSessionId: 'sid-deck-42',
+              isEmbedded: true,
+              wsConnectOverride: (uri, {headers}) {
+                connectedUri = uri;
+                return fakeChannel;
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(connectedUri?.path, '/ws/v2/nodes/deck-node/terminal');
+    expect(connectedUri?.queryParameters['cwd'], '/home/deck/work');
+
+    // 服务端返回 ready + output 帧
+    incoming.add(jsonEncode({
+      'type': 'ready',
+      'shell': 'bash',
+      'platform': 'deck',
+      'cwd': '/home/deck/work',
+    }));
+    incoming.add(jsonEncode({
+      'type': 'output',
+      'data': 'deck@steamdeck:~/work\$ ',
+    }));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Steam Deck · bash'), findsOneWidget);
+    expect(find.text('接入当前会话'), findsOneWidget);
+    expect(find.text('/rewind'), findsOneWidget);
+
+    // 点击「接入当前会话」应发送 agy --conversation=sid-deck-42\r
+    await tester.tap(find.text('接入当前会话'));
+    await tester.pump();
+    expect(
+      sentFrames.any((f) => f['type'] == 'input' && f['data'] == 'agy --conversation=sid-deck-42\r'),
+      true,
+    );
+
+    // 点击 Ctrl+C 和滚动到可视区域后的 /rewind 快捷键应发送对应控制序列
+    await tester.tap(find.text('Ctrl+C'));
+    await tester.ensureVisible(find.text('/rewind'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('/rewind'));
+    await tester.pump();
+    expect(
+      sentFrames.any((f) => f['type'] == 'input' && f['data'] == '\x03'),
+      true,
+    );
+    expect(
+      sentFrames.any((f) => f['type'] == 'input' && f['data'] == '/rewind\r'),
+      true,
+    );
+  });
+}
+
+class _FakeTerminalWsSink extends Fake implements WebSocketSink {
+  final void Function(dynamic data) onSend;
+  final Completer<void> _done = Completer<void>();
+
+  _FakeTerminalWsSink(this.onSend);
+
+  @override
+  void add(dynamic data) => onSend(data);
+
+  @override
+  Future close([int? closeCode, String? closeReason]) async {
+    if (!_done.isCompleted) {
+      _done.complete();
+    }
+  }
+
+  @override
+  Future get done => _done.future;
+}
+
+class _FakeTerminalWsChannel extends Fake implements WebSocketChannel {
+  final StreamController<dynamic> incoming;
+  late final _FakeTerminalWsSink _sink;
+
+  _FakeTerminalWsChannel({
+    required this.incoming,
+    required void Function(dynamic data) onSend,
+  }) {
+    _sink = _FakeTerminalWsSink(onSend);
+  }
+
+  @override
+  Stream<dynamic> get stream => incoming.stream;
+
+  @override
+  WebSocketSink get sink => _sink;
+
+  @override
+  int? get closeCode => null;
+
+  @override
+  String? get closeReason => null;
+
+  @override
+  Future<void> get ready => Future<void>.value();
 }

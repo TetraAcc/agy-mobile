@@ -132,9 +132,12 @@ async def proxy_ws_to_node(
     ws_connector: Any = None,
     node_id: str = "",
     on_session_subscription_change: Callable[[str, str, bool], None] | None = None,
+    upstream_query: str = "",
 ) -> None:
     """Bridge a single authenticated client WebSocket to the target Node Agent."""
     upstream_url = _to_ws_url(node_cfg.base_url, upstream_path)
+    if upstream_query:
+        upstream_url = f"{upstream_url}?{upstream_query}"
     perm_json = json.dumps(
         {"can_write": perms.can_write, "can_delete": perms.can_delete},
         separators=(",", ":"),

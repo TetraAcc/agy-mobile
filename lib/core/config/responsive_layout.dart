@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 class ResponsiveLayout {
   static const double tabletBreakpoint = 600.0;
   static const double wideSidebarBreakpoint = 900.0;
+  static const double sidePanelBreakpoint = 1080.0;
   static const double permanentSidebarWidth = 296.0;
 
   static double screenWidth(BuildContext context) => MediaQuery.sizeOf(context).width;
@@ -19,6 +20,9 @@ class ResponsiveLayout {
 
   static bool usePermanentSidebar(BuildContext context) =>
       screenWidth(context) >= wideSidebarBreakpoint;
+
+  static bool useSideWorkspacePanel(BuildContext context) =>
+      screenWidth(context) >= sidePanelBreakpoint;
 
   /// Optimal centered reading & composer column width.
   static double contentMaxWidth(BuildContext context) {

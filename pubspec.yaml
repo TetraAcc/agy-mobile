@@ -1,7 +1,7 @@
 name: agy_remote
 description: "Cross-platform remote hub for Google Antigravity"
 publish_to: 'none'
-version: 2.3.3+5016
+version: 2.3.4+5017
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
@@ -20,6 +20,7 @@ dependencies:
   markdown: ^7.2.2
   flutter_highlight: ^0.7.0
   web: ^1.1.0
+  xterm: ^4.0.0
 
 dev_dependencies:
   flutter_test:

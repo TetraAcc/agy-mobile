@@ -27,6 +27,7 @@ from agy_hub.agent.message_queue import SessionMessageQueueManager
 from agy_hub.agent.providers.base import BaseEngineProvider, InvalidSessionIdError
 from agy_hub.agent.providers.deck import DeckEngineProvider
 from agy_hub.agent.providers.windows import WindowsEngineProvider
+from agy_hub.agent.terminal import PtySession, TerminalManager, TerminalUnavailableError
 from agy_hub.agent.updater import NodeSelfUpdater
 from agy_hub.agent.watcher import SessionEventHub
 from agy_hub.common.sandbox import BinaryFileError, RootRegistry, SandboxError, is_sensitive_path
@@ -86,6 +87,7 @@ def create_agent_app(
     event_hub = SessionEventHub(engine_provider, poll_interval=config.poll_interval_seconds)
     queue_manager = SessionMessageQueueManager(engine_provider)
     self_updater = updater or NodeSelfUpdater()
+    terminal_manager = TerminalManager(max_sessions=config.max_terminal_sessions)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -93,6 +95,7 @@ def create_agent_app(
         try:
             yield
         finally:
+            await terminal_manager.close_all()
             await queue_manager.shutdown()
             await event_hub.shutdown()
             await engine_provider.aclose()
@@ -104,6 +107,7 @@ def create_agent_app(
     app.state.event_hub = event_hub
     app.state.queue_manager = queue_manager
     app.state.updater = self_updater
+    app.state.terminal_manager = terminal_manager
 
     @app.get("/internal/health")
     async def internal_health() -> dict[str, Any]:
@@ -717,5 +721,142 @@ def create_agent_app(
             pass
         finally:
             await event_hub.remove_connection(websocket)
+
+    @app.websocket("/agent/ws/terminal")
+    async def ws_terminal(websocket: WebSocket) -> None:
+        caller = verify_ws_gateway_signature(websocket, config.internal_secret)
+        if caller is None:
+            await websocket.close(code=4401, reason="Invalid internal signature")
+            return
+        if not caller.can_write:
+            await websocket.close(code=4403, reason="Write permission required for terminal")
+            return
+        if not config.enable_terminal:
+            await websocket.close(code=4403, reason="Terminal disabled on this node")
+            return
+        if not terminal_manager.can_open():
+            await websocket.close(code=4429, reason="Too many active terminal sessions")
+            return
+
+        qp = websocket.query_params
+        try:
+            cols = int(qp.get("cols", "96"))
+        except ValueError:
+            cols = 96
+        try:
+            rows = int(qp.get("rows", "28"))
+        except ValueError:
+            rows = 28
+
+        raw_cwd = (qp.get("cwd") or "").strip()
+        target_cwd = engine_provider.default_workspace
+        if raw_cwd:
+            cand = Path(os.path.expanduser(raw_cwd))
+            if cand.exists() and cand.is_dir():
+                target_cwd = cand
+
+        await websocket.accept()
+        session = PtySession(
+            cwd=target_cwd,
+            cols=cols,
+            rows=rows,
+            platform_name=engine_provider.platform_name,
+        )
+        out_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=256)
+        loop = asyncio.get_running_loop()
+
+        def _enqueue(evt: dict[str, Any]) -> None:
+            try:
+                out_queue.put_nowait(evt)
+            except asyncio.QueueFull:
+                try:
+                    out_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    out_queue.put_nowait(evt)
+                except asyncio.QueueFull:
+                    pass
+
+        try:
+            session.start(
+                loop,
+                on_output=lambda text: _enqueue({"type": "output", "data": text}),
+                on_exit=lambda code: _enqueue({"type": "exit", "code": code}),
+            )
+        except TerminalUnavailableError as exc:
+            await websocket.send_text(json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False))
+            await websocket.close(code=4500, reason="Terminal unavailable")
+            return
+        except Exception as exc:
+            await websocket.send_text(json.dumps({"type": "error", "message": f"启动终端失败: {exc}"}, ensure_ascii=False))
+            await websocket.close(code=4500, reason="Terminal start error")
+            return
+
+        terminal_manager.register(session)
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "ready",
+                    "shell": session.shell_name,
+                    "cwd": str(session.cwd),
+                    "platform": engine_provider.platform_name,
+                    "cols": session.cols,
+                    "rows": session.rows,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        async def _pump_pty_to_ws() -> None:
+            while True:
+                evt = await out_queue.get()
+                await websocket.send_text(json.dumps(evt, ensure_ascii=False))
+                if evt.get("type") == "exit":
+                    break
+
+        async def _pump_ws_to_pty() -> None:
+            while True:
+                raw_text = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw_text)
+                except Exception:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                cmd_type = str(msg.get("type") or "").strip().lower()
+                if cmd_type == "input":
+                    data = msg.get("data")
+                    if isinstance(data, str) and data:
+                        session.write(data)
+                elif cmd_type == "resize":
+                    try:
+                        c = int(msg.get("cols", session.cols))
+                        r = int(msg.get("rows", session.rows))
+                        session.resize(c, r)
+                    except (TypeError, ValueError):
+                        pass
+                elif cmd_type == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong"}))
+
+        t_out = asyncio.create_task(_pump_pty_to_ws())
+        t_in = asyncio.create_task(_pump_ws_to_pty())
+        try:
+            done, pending = await asyncio.wait({t_out, t_in}, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in done:
+                if not task.cancelled():
+                    _ = task.exception()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            terminal_manager.unregister(session)
+            session.close()
+            try:
+                await websocket.close()
+            except Exception:
+                pass
 
     return app

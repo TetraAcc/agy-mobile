@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../../core/config/responsive_layout.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/utils/file_utils.dart';
 import '../../models/models.dart';
@@ -68,7 +67,7 @@ class ChangeReviewSheet extends StatefulWidget {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      constraints: ResponsiveLayout.workspaceSheetConstraints(context),
+      constraints: const BoxConstraints(maxWidth: 1080.0),
       backgroundColor: isDark ? const Color(0xFF111113) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -109,6 +108,7 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
   String? _sessionError;
   String? _selectedFilePath;
   bool _inlineWordMode = true;
+  bool _wrapDiffLines = true;
 
   // Git state
   List<GitRepoItem> _gitRepos = const [];
@@ -777,35 +777,49 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            TextButton.icon(
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        SizedBox(
+          width: double.infinity,
+          child: Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                onPressed: () => setState(() => _selectedFilePath = null),
+                icon: const Icon(Icons.arrow_back_rounded, size: 16),
+                label: Text('全部文件 (${_sessionChanges.files.length})', style: const TextStyle(fontSize: 12)),
               ),
-              onPressed: () => setState(() => _selectedFilePath = null),
-              icon: const Icon(Icons.arrow_back_rounded, size: 16),
-              label: Text('全部文件 (${_sessionChanges.files.length})', style: const TextStyle(fontSize: 12)),
-            ),
-            const Spacer(),
-            SegmentedButton<bool>(
-              segments: const [
-                ButtonSegment<bool>(value: true, label: Text('句词对比', style: TextStyle(fontSize: 11.5))),
-                ButtonSegment<bool>(value: false, label: Text('行级 Diff', style: TextStyle(fontSize: 11.5))),
-              ],
-              selected: {_inlineWordMode},
-              showSelectedIcon: false,
-              style: ButtonStyle(
-                visualDensity: VisualDensity.compact,
-                padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 10)),
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  if (!_inlineWordMode) _buildWrapToggleButton(isDark, primary, borderColor),
+                  SegmentedButton<bool>(
+                    segments: const [
+                      ButtonSegment<bool>(value: true, label: Text('句词对比', style: TextStyle(fontSize: 11.5))),
+                      ButtonSegment<bool>(value: false, label: Text('行级 Diff', style: TextStyle(fontSize: 11.5))),
+                    ],
+                    selected: {_inlineWordMode},
+                    showSelectedIcon: false,
+                    style: ButtonStyle(
+                      visualDensity: VisualDensity.compact,
+                      padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 10)),
+                    ),
+                    onSelectionChanged: (sel) {
+                      if (sel.isNotEmpty) setState(() => _inlineWordMode = sel.first);
+                    },
+                  ),
+                ],
               ),
-              onSelectionChanged: (sel) {
-                if (sel.isNotEmpty) setState(() => _inlineWordMode = sel.first);
-              },
-            ),
-          ],
+            ],
+          ),
         ),
         const SizedBox(height: 6),
         Row(
@@ -884,26 +898,36 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
             ),
             child: Row(
               children: [
-                Text(
-                  '${hunk.lineLabel} (${hunk.toolName})',
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    fontFamily: 'monospace',
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white70 : Colors.black87,
+                Expanded(
+                  child: Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          '${hunk.lineLabel} (${hunk.toolName})',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontFamily: 'monospace',
+                            fontWeight: FontWeight.w600,
+                            color: isDark ? Colors.white70 : Colors.black87,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '+${hunk.addedLines}',
+                        style: const TextStyle(fontSize: 11, fontFamily: 'monospace', fontWeight: FontWeight.bold, color: Color(0xFF4ADE80)),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        '-${hunk.removedLines}',
+                        style: const TextStyle(fontSize: 11, fontFamily: 'monospace', fontWeight: FontWeight.bold, color: Color(0xFFF87171)),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  '+${hunk.addedLines}',
-                  style: const TextStyle(fontSize: 11, fontFamily: 'monospace', fontWeight: FontWeight.bold, color: Color(0xFF4ADE80)),
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  '-${hunk.removedLines}',
-                  style: const TextStyle(fontSize: 11, fontFamily: 'monospace', fontWeight: FontWeight.bold, color: Color(0xFFF87171)),
-                ),
-                const Spacer(),
+                const SizedBox(width: 6),
                 TextButton.icon(
                   style: TextButton.styleFrom(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -990,61 +1014,120 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
     );
   }
 
+  Widget _buildWrapToggleButton(bool isDark, Color primary, Color borderColor) {
+    return Tooltip(
+      message: _wrapDiffLines ? '当前自动换行（点击切换单行横滚）' : '当前单行横滚（点击切换自动换行）',
+      child: InkWell(
+        onTap: () => setState(() => _wrapDiffLines = !_wrapDiffLines),
+        borderRadius: BorderRadius.circular(6),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+          decoration: BoxDecoration(
+            color: _wrapDiffLines
+                ? primary.withValues(alpha: isDark ? 0.16 : 0.10)
+                : (isDark ? const Color(0xFF18181B) : const Color(0xFFF4F4F5)),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: _wrapDiffLines ? primary.withValues(alpha: 0.6) : borderColor,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.wrap_text_rounded,
+                size: 13.5,
+                color: _wrapDiffLines ? primary : (isDark ? Colors.white60 : Colors.black54),
+              ),
+              const SizedBox(width: 4),
+              Text(
+                _wrapDiffLines ? '自动换行' : '单行横滚',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: _wrapDiffLines ? FontWeight.w600 : FontWeight.w500,
+                  color: _wrapDiffLines ? primary : (isDark ? Colors.white70 : Colors.black87),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildUnifiedDiffLines(
     String diffText, {
     required bool isDark,
     required ValueChanged<String> onTapLine,
   }) {
     final lines = diffText.isEmpty ? <String>[] : diffText.split('\n');
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: lines.map((line) {
-          Color? bgColor;
-          var textColor = isDark ? const Color(0xFFE4E4E7) : const Color(0xFF222226);
-          var fontWeight = FontWeight.normal;
-          var tappable = false;
+    final lineWidgets = lines.map((line) {
+      Color? bgColor;
+      var textColor = isDark ? const Color(0xFFE4E4E7) : const Color(0xFF222226);
+      var fontWeight = FontWeight.normal;
+      var tappable = false;
 
-          if (line.startsWith('+') && !line.startsWith('+++')) {
-            bgColor = const Color(0x2822C55E);
-            textColor = isDark ? const Color(0xFF4ADE80) : const Color(0xFF15803D);
-            tappable = true;
-          } else if (line.startsWith('-') && !line.startsWith('---')) {
-            bgColor = const Color(0x28EF4444);
-            textColor = isDark ? const Color(0xFFF87171) : const Color(0xFFB91C1C);
-            tappable = true;
-          } else if (line.startsWith('@@')) {
-            bgColor = const Color(0x1F38BDF8);
-            textColor = const Color(0xFF38BDF8);
-            fontWeight = FontWeight.bold;
-          } else if (line.startsWith('diff --git')) {
-            textColor = Theme.of(context).colorScheme.primary;
-            fontWeight = FontWeight.bold;
-          }
+      if (line.startsWith('+') && !line.startsWith('+++')) {
+        bgColor = const Color(0x2822C55E);
+        textColor = isDark ? const Color(0xFF4ADE80) : const Color(0xFF15803D);
+        tappable = true;
+      } else if (line.startsWith('-') && !line.startsWith('---')) {
+        bgColor = const Color(0x28EF4444);
+        textColor = isDark ? const Color(0xFFF87171) : const Color(0xFFB91C1C);
+        tappable = true;
+      } else if (line.startsWith('@@')) {
+        bgColor = const Color(0x1F38BDF8);
+        textColor = const Color(0xFF38BDF8);
+        fontWeight = FontWeight.bold;
+      } else if (line.startsWith('diff --git')) {
+        textColor = Theme.of(context).colorScheme.primary;
+        fontWeight = FontWeight.bold;
+      }
 
-          final row = Container(
-            color: bgColor,
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-            child: Text(
-              line,
-              style: TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 11.5,
-                color: textColor,
-                fontWeight: fontWeight,
-                height: 1.45,
-              ),
+      final row = Container(
+        width: _wrapDiffLines ? double.infinity : null,
+        color: bgColor,
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        child: Text(
+          line,
+          softWrap: _wrapDiffLines,
+          style: TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 11.5,
+            color: textColor,
+            fontWeight: fontWeight,
+            height: 1.48,
+          ),
+        ),
+      );
+
+      if (!tappable) return row;
+      return InkWell(
+        onTap: () => onTapLine(line),
+        child: row,
+      );
+    }).toList();
+
+    if (_wrapDiffLines) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: lineWidgets,
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (ctx, constraints) {
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: constraints.maxWidth),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: lineWidgets,
             ),
-          );
-
-          if (!tappable) return row;
-          return InkWell(
-            onTap: () => onTapLine(line),
-            child: row,
-          );
-        }).toList(),
-      ),
+          ),
+        );
+      },
     );
   }
 
@@ -1144,62 +1227,77 @@ class _ChangeReviewSheetState extends State<ChangeReviewSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                decoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF18181B) : const Color(0xFFF4F4F5),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: borderColor),
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    value: _selectedRepo?.id,
-                    isExpanded: true,
-                    isDense: true,
-                    dropdownColor: isDark ? const Color(0xFF222226) : Colors.white,
-                    items: _gitRepos
-                        .map(
-                          (r) => DropdownMenuItem<String>(
-                            value: r.id,
-                            child: Text(
-                              r.displayLabel,
-                              style: TextStyle(fontSize: 12.5, color: isDark ? Colors.white : Colors.black87),
-                              overflow: TextOverflow.ellipsis,
+        SizedBox(
+          width: double.infinity,
+          child: Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(minWidth: 160, maxWidth: 320),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF18181B) : const Color(0xFFF4F4F5),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: borderColor),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: _selectedRepo?.id,
+                      isExpanded: true,
+                      isDense: true,
+                      dropdownColor: isDark ? const Color(0xFF222226) : Colors.white,
+                      items: _gitRepos
+                          .map(
+                            (r) => DropdownMenuItem<String>(
+                              value: r.id,
+                              child: Text(
+                                r.displayLabel,
+                                style: TextStyle(fontSize: 12.5, color: isDark ? Colors.white : Colors.black87),
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: (val) {
-                      if (val == null) return;
-                      final target = _gitRepos.firstWhere((r) => r.id == val);
-                      unawaited(_loadGitDiff(target, _gitScope));
-                    },
+                          )
+                          .toList(),
+                      onChanged: (val) {
+                        if (val == null) return;
+                        final target = _gitRepos.firstWhere((r) => r.id == val);
+                        unawaited(_loadGitDiff(target, _gitScope));
+                      },
+                    ),
                   ),
                 ),
               ),
-            ),
-            const SizedBox(width: 8),
-            SegmentedButton<String>(
-              segments: const [
-                ButtonSegment<String>(value: 'uncommitted', label: Text('未提交', style: TextStyle(fontSize: 11.5))),
-                ButtonSegment<String>(value: 'head', label: Text('最近提交', style: TextStyle(fontSize: 11.5))),
-              ],
-              selected: {_gitScope},
-              showSelectedIcon: false,
-              style: ButtonStyle(
-                visualDensity: VisualDensity.compact,
-                padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 10)),
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  _buildWrapToggleButton(isDark, primary, borderColor),
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment<String>(value: 'uncommitted', label: Text('未提交', style: TextStyle(fontSize: 11.5))),
+                      ButtonSegment<String>(value: 'head', label: Text('最近提交', style: TextStyle(fontSize: 11.5))),
+                    ],
+                    selected: {_gitScope},
+                    showSelectedIcon: false,
+                    style: ButtonStyle(
+                      visualDensity: VisualDensity.compact,
+                      padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 10)),
+                    ),
+                    onSelectionChanged: (sel) {
+                      if (sel.isNotEmpty && _selectedRepo != null) {
+                        unawaited(_loadGitDiff(_selectedRepo!, sel.first));
+                      }
+                    },
+                  ),
+                ],
               ),
-              onSelectionChanged: (sel) {
-                if (sel.isNotEmpty && _selectedRepo != null) {
-                  unawaited(_loadGitDiff(_selectedRepo!, sel.first));
-                }
-              },
-            ),
-          ],
+            ],
+          ),
         ),
         const SizedBox(height: 8),
         if (statusLines.isNotEmpty) ...[

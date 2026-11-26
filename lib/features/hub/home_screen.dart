@@ -33,6 +33,7 @@ import '../workspace/change_review_sheet.dart';
 import '../workspace/file_viewer_sheet.dart';
 import '../workspace/session_artifacts_sheet.dart';
 import '../workspace/session_changes_bar.dart';
+import '../workspace/terminal_panel.dart';
 import '../workspace/tool_detail_sheet.dart';
 import '../workspace/workspace_file_picker_dialog.dart';
 import 'download_progress_dialog.dart';
@@ -68,6 +69,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   final List<SharedIncomingPayload> _queuedShares = [];
   bool _drainingShares = false;
   bool _isSidebarCollapsed = false;
+  bool _rightPanelOpen = false;
+  int _rightPanelTab = 0; // 0: 文件预览, 1: 远程终端
+  double _rightPanelWidth = 480.0;
+  bool _terminalMounted = false;
+  ({
+    FileContentData data,
+    bool canWrite,
+    int? startLine,
+    int? endLine,
+  })? _sidePreviewFile;
+  bool _loadingSidePreview = false;
+  String? _sidePreviewError;
+  int _sidePreviewReqId = 0;
   String _currentAppVersion = kFallbackAppVersion;
   AppReleaseInfo? _availableAppUpdate;
 
@@ -524,9 +538,81 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     );
   }
 
-  Future<String?> _readAndOpenTextFile(String rootId, String relPath) async {
+  Future<String?> _readAndOpenTextFile(
+    String rootId,
+    String relPath, {
+    int? startLine,
+    int? endLine,
+  }) async {
     final hub = ref.read(hubControllerProvider.notifier);
     final hubState = ref.read(hubControllerProvider);
+    final useSidePanel = mounted && ResponsiveLayout.useSideWorkspacePanel(context);
+
+    if (useSidePanel) {
+      final reqId = ++_sidePreviewReqId;
+      setState(() {
+        _rightPanelOpen = true;
+        _rightPanelTab = 0;
+        _loadingSidePreview = true;
+        _sidePreviewError = null;
+      });
+      try {
+        final data = await hub.readFileContent(rootId, relPath);
+        if (!mounted || reqId != _sidePreviewReqId) return null;
+        if (data.content.contains('\x00') || FileUtils.isBinaryFile(data.name)) {
+          setState(() {
+            _loadingSidePreview = false;
+            if (_sidePreviewFile == null && !_terminalMounted) {
+              _rightPanelOpen = false;
+            }
+          });
+          _showSnack('📦 文件 [${data.name}] 为二进制文件，已自动转为下载通道');
+          return await _downloadFileResult(relPath, rootId: rootId, filename: data.name);
+        }
+        final isProtectedBrain = rootId == 'brain' &&
+            (relPath.contains('.system_generated') || relPath.contains('.user_uploaded'));
+        setState(() {
+          _loadingSidePreview = false;
+          _sidePreviewError = null;
+          _sidePreviewFile = (
+            data: data,
+            canWrite: hubState.canWrite && !isProtectedBrain,
+            startLine: startLine,
+            endLine: endLine,
+          );
+        });
+        return null;
+      } on BinaryFileApiException {
+        if (mounted && reqId == _sidePreviewReqId) {
+          setState(() {
+            _loadingSidePreview = false;
+            if (_sidePreviewFile == null && !_terminalMounted) {
+              _rightPanelOpen = false;
+            }
+          });
+        }
+        return await _downloadFileResult(relPath, rootId: rootId);
+      } on ApiException catch (e) {
+        final msg = '读取失败: ${e.message}';
+        if (mounted && reqId == _sidePreviewReqId) {
+          setState(() {
+            _loadingSidePreview = false;
+            _sidePreviewError = msg;
+          });
+        }
+        return msg;
+      } catch (e) {
+        final msg = '读取异常: $e';
+        if (mounted && reqId == _sidePreviewReqId) {
+          setState(() {
+            _loadingSidePreview = false;
+            _sidePreviewError = msg;
+          });
+        }
+        return msg;
+      }
+    }
+
     try {
       final data = await hub.readFileContent(rootId, relPath);
       if (!mounted) return null;
@@ -543,6 +629,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         size: data.size,
         mtime: data.mtime,
         canWrite: hubState.canWrite && !isProtectedBrain,
+        highlightStartLine: startLine,
+        highlightEndLine: endLine,
         onSave: (newContent, expectedMtime) => hub.saveFileContent(
           data.rootId,
           data.path,
@@ -560,6 +648,199 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     } catch (e) {
       return '读取异常: $e';
     }
+  }
+
+  void _openTerminalPanel(HubState hubState) {
+    if (hubState.selectedNodeId.isEmpty) {
+      _showSnack('当前尚未连接节点', isError: true);
+      return;
+    }
+    if (widget.user.role != 'admin' || !hubState.canWrite) {
+      _showSnack('仅具备写权限的管理员可打开远程终端', isError: true);
+      return;
+    }
+    if (ResponsiveLayout.useSideWorkspacePanel(context)) {
+      setState(() {
+        if (_rightPanelOpen && _rightPanelTab == 1) {
+          _rightPanelOpen = false;
+          _terminalMounted = false;
+        } else {
+          _rightPanelOpen = true;
+          _rightPanelTab = 1;
+          _terminalMounted = true;
+        }
+      });
+      return;
+    }
+    final api = ref.read(apiClientProvider);
+    final hub = ref.read(hubControllerProvider.notifier);
+    TerminalPanel.showSheet(
+      context,
+      serverConfig: api.serverConfig,
+      tokenStore: api.tokenStore,
+      onRefreshAuth: api.tryRefreshSession,
+      nodeId: hubState.selectedNodeId,
+      nodeName: hubState.currentNode?.name ?? hubState.selectedNodeId,
+      initialCwd: hub.activeWorkspacePath,
+      activeSessionId: hubState.activeSessionId,
+    );
+  }
+
+  void _openImagePreviewDialog(String cleanPath, {String? rootId, String? filename}) {
+    final hub = ref.read(hubControllerProvider.notifier);
+    final mediaUrl = hub.resolveMediaUrl(cleanPath, rootId: rootId);
+    final headers = hub.mediaHeaders;
+    final displayName = (filename != null && filename.trim().isNotEmpty)
+        ? filename.trim()
+        : FileUtils.extractFilename(cleanPath);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: isDark ? const Color(0xFF141418) : Colors.white,
+        insetPadding: const EdgeInsets.all(20),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 960, maxHeight: 740),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.image_outlined,
+                      size: 18,
+                      color: isDark ? Colors.cyanAccent : Colors.blue,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        displayName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                      tooltip: '外部打开',
+                      onPressed: () {
+                        Navigator.of(ctx).pop();
+                        _openMediaExternal(cleanPath, rootId: rootId);
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.download_rounded, size: 18),
+                      tooltip: '下载图片',
+                      onPressed: () {
+                        Navigator.of(ctx).pop();
+                        _downloadFile(cleanPath, rootId: rootId, filename: displayName);
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                      tooltip: '关闭',
+                      onPressed: () => Navigator.of(ctx).pop(),
+                    ),
+                  ],
+                ),
+              ),
+              Divider(
+                height: 1,
+                color: isDark ? const Color(0xFF27272A) : const Color(0xFFE4E4E7),
+              ),
+              Flexible(
+                child: Container(
+                  width: double.infinity,
+                  color: isDark ? const Color(0xFF0A0A0D) : const Color(0xFFF4F4F5),
+                  child: InteractiveViewer(
+                    minScale: 0.4,
+                    maxScale: 5.0,
+                    child: Center(
+                      child: Image.network(
+                        mediaUrl,
+                        headers: headers,
+                        fit: BoxFit.contain,
+                        loadingBuilder: (_, child, progress) {
+                          if (progress == null) return child;
+                          return const Padding(
+                            padding: EdgeInsets.all(36),
+                            child: CircularProgressIndicator(strokeWidth: 2.2),
+                          );
+                        },
+                        errorBuilder: (_, __, ___) => Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.broken_image_outlined, size: 36, color: Colors.grey),
+                              const SizedBox(height: 8),
+                              const Text('图片预览加载失败', style: TextStyle(fontSize: 12.5)),
+                              const SizedBox(height: 10),
+                              OutlinedButton.icon(
+                                onPressed: () {
+                                  Navigator.of(ctx).pop();
+                                  _downloadFile(cleanPath, rootId: rootId, filename: displayName);
+                                },
+                                icon: const Icon(Icons.download_rounded, size: 16),
+                                label: const Text('转为下载'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openChatFile(
+    String rawPath, {
+    String? rootId,
+    String? filename,
+  }) async {
+    final target = FileUtils.parseFileLinkTarget(rawPath);
+    final cleanPath = target.cleanPath.trim();
+    if (cleanPath.isEmpty) return;
+
+    if (FileUtils.isImageFile(cleanPath)) {
+      _openImagePreviewDialog(cleanPath, rootId: rootId, filename: filename);
+      return;
+    }
+    if (FileUtils.isPdfFile(cleanPath) || FileUtils.isMediaStreamFile(cleanPath)) {
+      await _openMediaExternal(cleanPath, rootId: rootId);
+      return;
+    }
+    if (FileUtils.isBinaryFile(cleanPath)) {
+      await _downloadFile(cleanPath, rootId: rootId, filename: filename);
+      return;
+    }
+
+    final hub = ref.read(hubControllerProvider.notifier);
+    final resolved = await hub.resolveFileTargetWithRefresh(cleanPath, rootId: rootId);
+    if (!mounted) return;
+    if (resolved != null && resolved.relPath.isNotEmpty) {
+      final err = await _readAndOpenTextFile(
+        resolved.rootId,
+        resolved.relPath,
+        startLine: target.startLine,
+        endLine: target.endLine,
+      );
+      if (err != null && mounted && !ResponsiveLayout.useSideWorkspacePanel(context)) {
+        _showSnack(err, isError: true);
+      }
+      return;
+    }
+    await _downloadFile(cleanPath, rootId: rootId, filename: filename);
   }
 
   Future<void> _openWorkspaceFilePicker() async {
@@ -1342,6 +1623,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   @override
   Widget build(BuildContext context) {
     ref.listen<HubState>(hubControllerProvider, (prev, next) {
+      if (prev != null && prev.selectedNodeId != next.selectedNodeId) {
+        if (mounted) {
+          setState(() {
+            _sidePreviewReqId++;
+            _sidePreviewFile = null;
+            _loadingSidePreview = false;
+            _sidePreviewError = null;
+            _terminalMounted = false;
+            if (next.selectedNodeId.isEmpty) {
+              _rightPanelOpen = false;
+            }
+          });
+        }
+      }
       if (next.selectedNodeId.isNotEmpty && _queuedShares.isNotEmpty) {
         unawaited(_drainQueuedShares());
       }
@@ -1354,6 +1649,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
     final usePermanentSidebar = ResponsiveLayout.usePermanentSidebar(context);
     final showPermanentSidebar = usePermanentSidebar && !_isSidebarCollapsed;
+    final useSideWorkspacePanel = ResponsiveLayout.useSideWorkspacePanel(context);
+    final canUseTerminal = widget.user.role == 'admin' &&
+        hubState.canWrite &&
+        hubState.selectedNodeId.isNotEmpty;
     final contentMaxWidth = ResponsiveLayout.contentMaxWidth(context);
 
     final allMessages = hubState.messages;
@@ -1512,6 +1811,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               onPressed: _openSessionArtifacts,
             ),
           ],
+          if (canUseTerminal)
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              icon: Icon(
+                Icons.terminal_rounded,
+                size: 20,
+                color: (useSideWorkspacePanel && _rightPanelOpen && _rightPanelTab == 1)
+                    ? Theme.of(context).colorScheme.primary
+                    : null,
+              ),
+              tooltip: (useSideWorkspacePanel && _rightPanelOpen && _rightPanelTab == 1)
+                  ? '关闭右侧终端'
+                  : '远程终端 (PTY)',
+              onPressed: () => _openTerminalPanel(hubState),
+            ),
+          if (useSideWorkspacePanel && _sidePreviewFile != null && !_rightPanelOpen)
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.vertical_split_rounded, size: 20),
+              tooltip: '展开右侧文件预览',
+              onPressed: () {
+                setState(() {
+                  _rightPanelOpen = true;
+                  _rightPanelTab = 0;
+                });
+              },
+            ),
           IconButton(
             visualDensity: VisualDensity.compact,
             icon: Icon(isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded, size: 20),
@@ -1764,10 +2090,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                         key: ValueKey(msg.messageKey),
                                         msg: msg,
                                         isDark: isDark,
+                                        nodeName: hubState.currentNode?.name ?? '',
                                         searchQuery: isChatSearchActive ? query : '',
                                         isFocusedSearchMatch: isChatSearchActive && msgIdx == focusedSearchMsgIdx,
                                         resolveMediaUrl: (p) => hubNotifier.resolveMediaUrl(p),
                                         mediaHeaders: hubNotifier.mediaHeaders,
+                                        onOpenFile: (p, {filename}) => _openChatFile(p, filename: filename),
                                         onDownloadFile: (p, {filename}) => _downloadFile(p, filename: filename),
                                         onOpenUrl: PlatformBridge.openExternalUrl,
                                         onOpenMediaExternal: (p) => _openMediaExternal(p),
@@ -1777,7 +2105,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                           initialScope: 'step',
                                         ),
                                         onOpenToolDetail: _openToolDetail,
-                                        onSubmitQuickReply: _submitAskQuestionReply,
+                                        onSubmitQuickReply: hubState.canWrite ? _submitAskQuestionReply : null,
                                         turnChanges: msgTurnChanges,
                                         turnDuration: turnDurationsByMsgIdx[msgIdx],
                                         modelLabel: msg.model.isNotEmpty
@@ -1987,9 +2315,321 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               ],
             ),
           ),
+          if (useSideWorkspacePanel && _rightPanelOpen) ...[
+            MouseRegion(
+              cursor: SystemMouseCursors.resizeColumn,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onHorizontalDragUpdate: (details) {
+                  final screenW = MediaQuery.sizeOf(context).width;
+                  final maxW = (screenW * 0.54).clamp(360.0, 760.0);
+                  setState(() {
+                    _rightPanelWidth = (_rightPanelWidth - details.delta.dx).clamp(320.0, maxW);
+                  });
+                },
+                child: Container(
+                  width: 6,
+                  color: Colors.transparent,
+                  child: Center(
+                    child: Container(
+                      width: 1,
+                      color: isDark ? AppColors.darkBorder : AppColors.lightBorder,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            SizedBox(
+              width: _rightPanelWidth.clamp(
+                320.0,
+                (MediaQuery.sizeOf(context).width * 0.54).clamp(360.0, 760.0),
+              ),
+              child: _buildRightWorkspacePanel(
+                hubState: hubState,
+                hubNotifier: hubNotifier,
+                isDark: isDark,
+                canUseTerminal: canUseTerminal,
+              ),
+            ),
+          ],
         ],
       ),
       ),
+    );
+  }
+
+  Widget _buildRightWorkspacePanel({
+    required HubState hubState,
+    required HubController hubNotifier,
+    required bool isDark,
+    required bool canUseTerminal,
+  }) {
+    final effectiveTab = (!canUseTerminal && _rightPanelTab == 1) ? 0 : _rightPanelTab;
+    final primary = Theme.of(context).colorScheme.primary;
+    final bgColor = isDark ? const Color(0xFF111216) : Colors.white;
+    final headerBg = isDark ? const Color(0xFF16181E) : const Color(0xFFF6F7F9);
+    final borderColor = isDark ? AppColors.darkBorder : AppColors.lightBorder;
+    final previewFileName = _sidePreviewFile?.data.name ?? '';
+
+    Widget buildTabChip({
+      required int tabIndex,
+      required IconData icon,
+      required String label,
+      bool showLiveDot = false,
+    }) {
+      final active = effectiveTab == tabIndex;
+      return InkWell(
+        onTap: () {
+          setState(() {
+            _rightPanelTab = tabIndex;
+            if (tabIndex == 1 && canUseTerminal) {
+              _terminalMounted = true;
+            }
+          });
+        },
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: active
+                ? primary.withValues(alpha: isDark ? 0.18 : 0.12)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: active ? primary.withValues(alpha: 0.45) : Colors.transparent,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 14,
+                color: active
+                    ? primary
+                    : (isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary),
+              ),
+              const SizedBox(width: 5),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                  color: active
+                      ? (isDark ? AppColors.darkTextPrimary : AppColors.lightTextPrimary)
+                      : (isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary),
+                ),
+              ),
+              if (showLiveDot) ...[
+                const SizedBox(width: 5),
+                Container(
+                  width: 6,
+                  height: 6,
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.greenAccent,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: bgColor,
+        border: Border(left: BorderSide(color: borderColor, width: 0.5)),
+      ),
+      child: Column(
+        children: [
+          Container(
+            height: 44,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              color: headerBg,
+              border: Border(bottom: BorderSide(color: borderColor, width: 0.5)),
+            ),
+            child: Row(
+              children: [
+                buildTabChip(
+                  tabIndex: 0,
+                  icon: Icons.description_outlined,
+                  label: previewFileName.isEmpty
+                      ? '文件预览'
+                      : '预览 · ${previewFileName.length > 14 ? '${previewFileName.substring(0, 13)}…' : previewFileName}',
+                ),
+                if (canUseTerminal) ...[
+                  const SizedBox(width: 6),
+                  buildTabChip(
+                    tabIndex: 1,
+                    icon: Icons.terminal_rounded,
+                    label: '远程终端',
+                    showLiveDot: _terminalMounted,
+                  ),
+                ],
+                const Spacer(),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: '关闭右侧工作区',
+                  icon: const Icon(Icons.close_rounded, size: 18),
+                  onPressed: () {
+                    setState(() {
+                      _rightPanelOpen = false;
+                      _terminalMounted = false;
+                    });
+                  },
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: IndexedStack(
+              index: effectiveTab,
+              children: [
+                _buildSideFilePreviewPane(hubNotifier, isDark),
+                if (canUseTerminal)
+                  _buildSideTerminalPane(hubState, hubNotifier),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSideFilePreviewPane(HubController hubNotifier, bool isDark) {
+    if (_loadingSidePreview) {
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2.2),
+            ),
+            SizedBox(height: 10),
+            Text('正在读取文件内容...', style: TextStyle(fontSize: 12.5, color: Colors.grey)),
+          ],
+        ),
+      );
+    }
+    if (_sidePreviewError != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline_rounded, size: 32, color: Colors.orangeAccent),
+              const SizedBox(height: 8),
+              Text(
+                _sidePreviewError!,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: isDark ? Colors.white70 : Colors.black87,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    final preview = _sidePreviewFile;
+    if (preview == null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.article_outlined,
+                size: 36,
+                color: isDark ? Colors.white24 : Colors.black26,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '点击对话中的文件链接或工作区文件\n即可在此侧边预览、编辑或高亮跳转行号',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  height: 1.5,
+                  color: isDark ? Colors.white54 : Colors.black54,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final data = preview.data;
+    return FileViewerSheet(
+      key: ValueKey('side-file-${data.rootId}:${data.path}:${preview.startLine}:${preview.endLine}'),
+      rootId: data.rootId,
+      name: data.name,
+      path: data.path,
+      content: data.content,
+      totalLines: data.totalLines,
+      truncated: data.truncated,
+      size: data.size,
+      mtime: data.mtime,
+      canWrite: preview.canWrite,
+      isEmbedded: true,
+      highlightStartLine: preview.startLine,
+      highlightEndLine: preview.endLine,
+      onDownload: () => _downloadFile(data.path, rootId: data.rootId, filename: data.name),
+      onSave: (newContent, expectedMtime) async {
+        final result = await hubNotifier.saveFileContent(
+          data.rootId,
+          data.path,
+          newContent,
+          expectedMtime: expectedMtime,
+        );
+        if (mounted) {
+          setState(() {
+            _sidePreviewFile = (
+              data: FileContentData(
+                rootId: data.rootId,
+                path: data.path,
+                name: data.name,
+                content: newContent,
+                totalLines: result.totalLines,
+                truncated: false,
+                size: result.size,
+                mtime: result.mtime,
+              ),
+              canWrite: preview.canWrite,
+              startLine: preview.startLine,
+              endLine: preview.endLine,
+            );
+          });
+        }
+        return result;
+      },
+      onInsertReference: _insertText,
+    );
+  }
+
+  Widget _buildSideTerminalPane(HubState hubState, HubController hubNotifier) {
+    if (!_terminalMounted) {
+      return const SizedBox.shrink();
+    }
+    final api = ref.read(apiClientProvider);
+    return TerminalPanel(
+      key: ValueKey('side-term-${hubState.selectedNodeId}'),
+      serverConfig: api.serverConfig,
+      tokenStore: api.tokenStore,
+      onRefreshAuth: api.tryRefreshSession,
+      nodeId: hubState.selectedNodeId,
+      nodeName: hubState.currentNode?.name ?? hubState.selectedNodeId,
+      initialCwd: hubNotifier.activeWorkspacePath,
+      activeSessionId: hubState.activeSessionId,
+      isEmbedded: true,
     );
   }
 }

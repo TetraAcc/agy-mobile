@@ -388,6 +388,32 @@ void main() {
         LatexMathConverter.normalizeMarkdownMath(withFracAndSub),
         r'公式 (a+b)/2 与 xₘₐₓ + yₘᵢₙ 以及 x\_best + y\_cur',
       );
+
+      // 真实嵌套花括号公式：\mathbf 内嵌套上标、分数、\text、旧式 \bf、\overline、\vec、\stackrel
+      const signedRange = r'范围公式：$n$ 位有符号数（补码）$= \mathbf{-2^{n-1} \sim 2^{n-1}-1}$';
+      expect(
+        LatexMathConverter.normalizeMarkdownMath(signedRange),
+        '范围公式：n 位有符号数（补码）= -2ⁿ⁻¹ ∼ 2ⁿ⁻¹-1',
+      );
+
+      const nestedBoldFrac = r'$\mathbf{x = \frac{120 - t}{5}}$ 且 $2^{24}\text{ Byte} = \mathbf{16\text{ MB}}$';
+      expect(
+        LatexMathConverter.normalizeMarkdownMath(nestedBoldFrac),
+        'x = (120 - t)/5 且 2²⁴ Byte = 16 MB',
+      );
+
+      const legacyAndAccents =
+          r'${\bf x} + \boldsymbol{\alpha} + \vec{v} + \overline{\text{IOR}} \stackrel{?}{=} 2^N$';
+      final converted = LatexMathConverter.normalizeMarkdownMath(legacyAndAccents);
+      expect(converted, isNot(contains(r'\bf')));
+      expect(converted, isNot(contains(r'\math')));
+      expect(converted, isNot(contains(r'\boldsymbol')));
+      expect(converted, isNot(contains(r'\overline')));
+      expect(converted, isNot(contains(r'\stackrel')));
+      expect(converted, contains('α'));
+      expect(converted, contains('v\u20D7'));
+      expect(converted, contains('≟'));
+      expect(converted, contains('2ᴺ'));
     });
 
     test('DurationUtils 格式化任务耗时、实时正计时与按轮次时长聚合', () {
@@ -593,6 +619,36 @@ void main() {
 
       await container2.read(themeProvider.notifier).resetFontScale();
       expect(container2.read(themeProvider).fontScale, closeTo(1.0, 0.001));
+    });
+
+    test('FileUtils.parseFileLinkTarget 解析行号区间锚点、查询串与 Markdown/图片类型判定', () {
+      final range = FileUtils.parseFileLinkTarget('file:///C:/repo/lib/main.dart#L12-L28');
+      expect(range.cleanPath, 'file:///C:/repo/lib/main.dart');
+      expect(range.startLine, 12);
+      expect(range.endLine, 28);
+
+      final reversed = FileUtils.parseFileLinkTarget('/home/deck/notes.md?raw=1#L40-20');
+      expect(reversed.cleanPath, '/home/deck/notes.md');
+      expect(reversed.startLine, 20);
+      expect(reversed.endLine, 40);
+
+      final single = FileUtils.parseFileLinkTarget('src/app.py#L7');
+      expect(single.cleanPath, 'src/app.py');
+      expect(single.startLine, 7);
+      expect(single.endLine, 7);
+
+      final plain = FileUtils.parseFileLinkTarget('docs/README.markdown');
+      expect(plain.cleanPath, 'docs/README.markdown');
+      expect(plain.startLine, isNull);
+      expect(plain.endLine, isNull);
+
+      expect(FileUtils.extractFilename('file:///C:/repo/lib/main.dart#L10'), 'main.dart');
+      expect(FileUtils.isMarkdownFile('docs/README.md#L1-L5'), true);
+      expect(FileUtils.isMarkdownFile('docs/guide.mdx'), true);
+      expect(FileUtils.isMarkdownFile('lib/main.dart'), false);
+      expect(FileUtils.isImageFile('media/screen.png#L1'), true);
+      expect(FileUtils.isImageFile('media/photo.webp?v=2'), true);
+      expect(FileUtils.isBinaryFile('dist/app.zip?download=1'), true);
     });
   });
 }

@@ -7,13 +7,16 @@ import '../../core/utils/search_highlight_utils.dart';
 import '../../models/models.dart';
 import '../workspace/session_changes_bar.dart';
 import 'markdown_message_body.dart';
+import 'rich_presence_cards.dart';
 
 class MessageCard extends StatelessWidget {
   final AgentMessage msg;
   final bool isDark;
+  final String nodeName;
   final String Function(String rawPath) resolveMediaUrl;
   final Map<String, String>? mediaHeaders;
   final void Function(String path, {String? filename}) onDownloadFile;
+  final void Function(String path, {String? filename})? onOpenFile;
   final void Function(String url) onOpenUrl;
   final void Function(String rawPath)? onOpenMediaExternal;
   final void Function(String filePath, int stepIndex)? onOpenEditDiff;
@@ -32,9 +35,11 @@ class MessageCard extends StatelessWidget {
     super.key,
     required this.msg,
     required this.isDark,
+    this.nodeName = '',
     required this.resolveMediaUrl,
     this.mediaHeaders,
     required this.onDownloadFile,
+    this.onOpenFile,
     required this.onOpenUrl,
     this.onOpenMediaExternal,
     this.onOpenEditDiff,
@@ -128,8 +133,18 @@ class MessageCard extends StatelessWidget {
     }
 
     final askQuestions = _askQuestions;
+    final pluginCards = RichPresenceParser.extractPluginCards(msg.content);
+    final displayMarkdown =
+        pluginCards.isNotEmpty ? RichPresenceParser.stripPluginCardTags(msg.content) : msg.content;
+    final actionNotice = RichPresenceParser.detectActionNeededNotice(
+      msg.content,
+      hasPluginCards: pluginCards.isNotEmpty,
+      nodeName: nodeName,
+    );
     final hasTurnChanges = turnChanges != null && turnChanges!.totalFiles > 0 && turnChanges!.files.isNotEmpty;
-    if (msg.content.trim().isEmpty &&
+    if (displayMarkdown.trim().isEmpty &&
+        pluginCards.isEmpty &&
+        actionNotice == null &&
         askQuestions.isEmpty &&
         !hasTurnChanges &&
         msg.status != 'WAITING_APPROVAL' &&
@@ -145,19 +160,32 @@ class MessageCard extends StatelessWidget {
           _buildThinkingFold(context, msg.thinking),
           const SizedBox(height: 10),
         ],
-        if (msg.content.isNotEmpty)
+        if (displayMarkdown.isNotEmpty)
           MarkdownMessageBody(
-            text: msg.content,
+            text: displayMarkdown,
             isDark: isDark,
             resolveMediaUrl: resolveMediaUrl,
             mediaHeaders: mediaHeaders,
             onOpenUrl: onOpenUrl,
-            onDownloadPath: (p) => onDownloadFile(p),
+            onDownloadPath: (p) => (onOpenFile ?? onDownloadFile)(p),
             onOpenMediaExternal: onOpenMediaExternal,
             highlightQuery: searchQuery,
             isFocusedMatch: isFocusedSearchMatch,
           ),
-          for (final fPath in FileUtils.extractDownloadableFiles(msg.content))
+          for (final pc in pluginCards)
+            PluginPresenceCard(
+              info: pc,
+              isDark: isDark,
+              nodeName: nodeName,
+              onQuickReply: onSubmitQuickReply,
+            ),
+          if (actionNotice != null)
+            ActionNeededCard(
+              notice: actionNotice,
+              isDark: isDark,
+              onQuickReply: onSubmitQuickReply,
+            ),
+          for (final fPath in FileUtils.extractDownloadableFiles(displayMarkdown))
             _buildDownloadCard(context, fPath),
           if (askQuestions.isNotEmpty)
             _AskQuestionCard(
@@ -410,36 +438,16 @@ class MessageCard extends StatelessWidget {
         children: toolCalls.map((tool) {
           final name = tool.name;
           final args = tool.args;
-          var label = name;
-          var icon = Icons.settings_suggest_rounded;
-          String? editTargetPath;
-
-          if (name == 'edit_file' || name == 'replace_file_content' || name == 'multi_replace_file_content') {
-            final p = FileUtils.cleanPath(args['Path'] ?? args['path'] ?? args['TargetFile'] ?? args['target_file']);
-            final f = p.isEmpty ? '文件' : p.split(RegExp(r'[\\/]')).last;
-            label = 'edit: $f';
-            icon = Icons.edit_note_rounded;
-            if (p.isNotEmpty) editTargetPath = p;
-          } else if (name == 'write_file') {
-            final p = FileUtils.cleanPath(args['Path'] ?? args['path']);
-            final f = p.isEmpty ? '文件' : p.split(RegExp(r'[\\/]')).last;
-            label = 'write: $f';
-            icon = Icons.post_add_rounded;
-            if (p.isNotEmpty) editTargetPath = p;
-          } else if (name == 'read_file') {
-            final p = FileUtils.cleanPath(args['Path'] ?? args['path']);
-            final f = p.isEmpty ? '文件' : p.split(RegExp(r'[\\/]')).last;
-            label = 'read: $f';
-            icon = Icons.menu_book_rounded;
-          } else if (name == 'run_command') {
-            final s = (args['toolSummary'] ?? '').toString();
-            label = s.isNotEmpty ? s : 'run_command';
-            icon = Icons.terminal_rounded;
-          }
+          final presentation = RichPresenceParser.describeToolCall(tool);
+          final label = presentation.label;
+          final icon = presentation.icon;
+          final editTargetPath = presentation.editTargetPath;
+          final isPluginOrMcp = presentation.isPluginOrMcp;
 
           final canOpenDiff = editTargetPath != null && onOpenEditDiff != null;
           final canOpenDetail = !canOpenDiff && onOpenToolDetail != null;
           final isInteractive = canOpenDiff || canOpenDetail;
+          final highlightAccent = canOpenDiff || isPluginOrMcp;
           final trimmedQuery = searchQuery.trim().toLowerCase();
           final toolMatchesSearch = trimmedQuery.isNotEmpty &&
               (name.toLowerCase().contains(trimmedQuery) ||
@@ -457,14 +465,14 @@ class MessageCard extends StatelessWidget {
             decoration: BoxDecoration(
               color: toolMatchesSearch
                   ? SearchHighlightColors.cardTint(isDark: isDark)
-                  : (canOpenDiff
+                  : (highlightAccent
                       ? primary.withValues(alpha: isDark ? 0.10 : 0.08)
                       : (isDark ? const Color(0xFF18181B) : const Color(0xFFF4F4F5))),
               borderRadius: BorderRadius.circular(6),
               border: Border.all(
                 color: toolMatchesSearch
                     ? SearchHighlightColors.cardBorder(isDark: isDark)
-                    : (canOpenDiff
+                    : (highlightAccent
                         ? primary.withValues(alpha: 0.35)
                         : (isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7))),
               ),
@@ -475,7 +483,7 @@ class MessageCard extends StatelessWidget {
                 Icon(
                   icon,
                   size: 11,
-                  color: canOpenDiff
+                  color: highlightAccent
                       ? primary
                       : (canOpenDetail ? (isDark ? Colors.white60 : Colors.black54) : (isDark ? Colors.white38 : Colors.black38)),
                 ),
@@ -514,7 +522,7 @@ class MessageCard extends StatelessWidget {
           return InkWell(
             onTap: () {
               if (canOpenDiff) {
-                onOpenEditDiff!(editTargetPath!, stepIndex);
+                onOpenEditDiff!(editTargetPath, stepIndex);
               } else if (canOpenDetail) {
                 onOpenToolDetail!(stepIndex, tool);
               }
@@ -715,60 +723,100 @@ class MessageCard extends StatelessWidget {
   }
 
   Widget _buildDownloadCard(BuildContext context, String filePath) {
-    final cleanPath = filePath.replaceAll('file:///', '').replaceAll('file://', '').trim();
+    final parsed = FileUtils.parseFileLinkTarget(filePath);
+    final cleanPath = parsed.cleanPath.replaceAll('file:///', '').replaceAll('file://', '').trim();
     final fileName = cleanPath.split(RegExp(r'[\\/]')).last;
+    final canPreview = onOpenFile != null &&
+        (!FileUtils.isBinaryFile(cleanPath) ||
+            FileUtils.isImageFile(cleanPath) ||
+            FileUtils.isPdfFile(cleanPath));
 
-    return Container(
-      margin: const EdgeInsets.only(top: 10),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF18181B) : const Color(0xFFF8F8F9),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.inventory_2_outlined, size: 20, color: Theme.of(context).colorScheme.primary),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  fileName,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.bold,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  cleanPath,
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: isDark ? Colors.white38 : Colors.black38,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
+    return InkWell(
+      onTap: canPreview
+          ? () => onOpenFile!(filePath, filename: fileName)
+          : () => onDownloadFile(cleanPath, filename: fileName),
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        margin: const EdgeInsets.only(top: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF18181B) : const Color(0xFFF8F8F9),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              FileUtils.getFileIconData(fileName, false),
+              size: 20,
+              color: FileUtils.getFileIconColor(fileName, false, context),
             ),
-          ),
-          const SizedBox(width: 8),
-          ElevatedButton.icon(
-            onPressed: () => onDownloadFile(cleanPath, filename: fileName),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Theme.of(context).colorScheme.primary,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              minimumSize: const Size(0, 32),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-              elevation: 0,
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    fileName,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.bold,
+                      color: isDark ? Colors.white : Colors.black87,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  Text(
+                    cleanPath,
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: isDark ? Colors.white38 : Colors.black38,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
             ),
-            icon: const Icon(Icons.download_rounded, size: 14),
-            label: const Text('下载', style: TextStyle(fontSize: 12)),
-          ),
-        ],
+            const SizedBox(width: 8),
+            if (canPreview) ...[
+              FilledButton.tonalIcon(
+                onPressed: () => onOpenFile!(filePath, filename: fileName),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  minimumSize: const Size(0, 32),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                ),
+                icon: const Icon(Icons.visibility_outlined, size: 14),
+                label: const Text('预览', style: TextStyle(fontSize: 12)),
+              ),
+              const SizedBox(width: 6),
+              IconButton(
+                tooltip: '下载文件',
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                padding: EdgeInsets.zero,
+                onPressed: () => onDownloadFile(cleanPath, filename: fileName),
+                icon: Icon(
+                  Icons.download_rounded,
+                  size: 18,
+                  color: isDark ? Colors.white60 : Colors.black54,
+                ),
+              ),
+            ] else
+              ElevatedButton.icon(
+                onPressed: () => onDownloadFile(cleanPath, filename: fileName),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Theme.of(context).colorScheme.primary,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  minimumSize: const Size(0, 32),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                  elevation: 0,
+                ),
+                icon: const Icon(Icons.download_rounded, size: 14),
+                label: const Text('下载', style: TextStyle(fontSize: 12)),
+              ),
+          ],
+        ),
       ),
     );
   }

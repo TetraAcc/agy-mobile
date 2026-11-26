@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 
-import '../../core/config/responsive_layout.dart';
 import '../../core/network/api_client.dart';
 import '../../core/utils/file_utils.dart';
 import '../../models/models.dart';
@@ -16,6 +16,11 @@ class FileViewerSheet extends StatefulWidget {
   final int size;
   final double mtime;
   final bool canWrite;
+  final bool isEmbedded;
+  final int? highlightStartLine;
+  final int? highlightEndLine;
+  final VoidCallback? onClose;
+  final VoidCallback? onDownload;
   final Future<FileSaveResult> Function(String content, double? expectedMtime)? onSave;
   final ValueChanged<String>? onInsertReference;
 
@@ -30,6 +35,11 @@ class FileViewerSheet extends StatefulWidget {
     required this.size,
     this.mtime = 0.0,
     this.canWrite = false,
+    this.isEmbedded = false,
+    this.highlightStartLine,
+    this.highlightEndLine,
+    this.onClose,
+    this.onDownload,
     this.onSave,
     this.onInsertReference,
   });
@@ -45,6 +55,8 @@ class FileViewerSheet extends StatefulWidget {
     required int size,
     double mtime = 0.0,
     bool canWrite = false,
+    int? highlightStartLine,
+    int? highlightEndLine,
     Future<FileSaveResult> Function(String content, double? expectedMtime)? onSave,
     ValueChanged<String>? onInsertReference,
     required void Function(String path) onDownloadFallback,
@@ -71,7 +83,7 @@ class FileViewerSheet extends StatefulWidget {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      constraints: ResponsiveLayout.workspaceSheetConstraints(context),
+      constraints: const BoxConstraints(maxWidth: 1080.0),
       backgroundColor: isDark ? const Color(0xFF111113) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -86,6 +98,9 @@ class FileViewerSheet extends StatefulWidget {
         size: size,
         mtime: mtime,
         canWrite: canWrite,
+        highlightStartLine: highlightStartLine,
+        highlightEndLine: highlightEndLine,
+        onDownload: () => onDownloadFallback(path),
         onSave: onSave,
         onInsertReference: onInsertReference,
       ),
@@ -103,21 +118,57 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
   late double _mtime;
   bool _isEditing = false;
   bool _isSaving = false;
+  bool _markdownPreview = false;
   String? _saveError;
   late final TextEditingController _editController;
+  final ScrollController _verticalScroll = ScrollController();
+
+  bool get _isMarkdownFile => FileUtils.isMarkdownFile(widget.name);
 
   @override
   void initState() {
     super.initState();
+    _syncFromWidget();
+    _editController = TextEditingController(text: _content);
+    _scheduleScrollToHighlight();
+  }
+
+  void _syncFromWidget() {
     _content = widget.content;
     _totalLines = widget.totalLines;
     _size = widget.size;
     _mtime = widget.mtime;
-    _editController = TextEditingController(text: _content);
+    _markdownPreview = _isMarkdownFile && widget.highlightStartLine == null;
+  }
+
+  @override
+  void didUpdateWidget(covariant FileViewerSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.path != widget.path ||
+        oldWidget.content != widget.content ||
+        oldWidget.highlightStartLine != widget.highlightStartLine) {
+      _isEditing = false;
+      _saveError = null;
+      _syncFromWidget();
+      _editController.text = _content;
+      _scheduleScrollToHighlight();
+    }
+  }
+
+  void _scheduleScrollToHighlight() {
+    final target = widget.highlightStartLine;
+    if (target == null || target <= 1 || _markdownPreview) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_verticalScroll.hasClients) return;
+      final approxOffset = ((target - 3).clamp(0, 100000) * 18.0).toDouble();
+      final maxExtent = _verticalScroll.position.maxScrollExtent;
+      _verticalScroll.jumpTo(approxOffset.clamp(0.0, maxExtent));
+    });
   }
 
   @override
   void dispose() {
+    _verticalScroll.dispose();
     _editController.dispose();
     super.dispose();
   }
@@ -182,13 +233,23 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final primary = Theme.of(context).colorScheme.primary;
     final lines = _content.split('\n');
-    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    final bottomInset = widget.isEmbedded ? 0.0 : MediaQuery.of(context).viewInsets.bottom;
+    final hlStart = widget.highlightStartLine;
+    final hlEnd = widget.highlightEndLine ?? hlStart;
+
+    void handleClose() {
+      if (widget.onClose != null) {
+        widget.onClose!();
+      } else if (!widget.isEmbedded) {
+        Navigator.pop(context);
+      }
+    }
 
     return Padding(
       padding: EdgeInsets.only(bottom: bottomInset),
       child: Container(
-        height: MediaQuery.of(context).size.height * 0.88,
-        padding: const EdgeInsets.all(14),
+        height: widget.isEmbedded ? double.infinity : MediaQuery.of(context).size.height * 0.88,
+        padding: EdgeInsets.all(widget.isEmbedded ? 10 : 14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -202,16 +263,16 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
                       Row(
                         children: [
                           Icon(
-                            _isEditing ? Icons.edit_note_rounded : Icons.description_outlined,
+                            _isEditing ? Icons.edit_note_rounded : FileUtils.getFileIconData(widget.name, false),
                             color: primary,
-                            size: 20,
+                            size: 18,
                           ),
-                          const SizedBox(width: 8),
+                          const SizedBox(width: 7),
                           Expanded(
                             child: Text(
                               _isEditing ? '${widget.name}（编辑中）' : widget.name,
                               style: TextStyle(
-                                fontSize: 16,
+                                fontSize: widget.isEmbedded ? 14 : 16,
                                 fontWeight: FontWeight.bold,
                                 color: isDark ? Colors.white : Colors.black87,
                               ),
@@ -222,7 +283,9 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        widget.path,
+                        hlStart != null
+                            ? '${widget.path}  ·  L$hlStart${(hlEnd != null && hlEnd != hlStart) ? "-L$hlEnd" : ""}'
+                            : widget.path,
                         style: TextStyle(
                           fontSize: 10,
                           color: isDark ? Colors.white38 : Colors.black38,
@@ -237,17 +300,28 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    if (!_isEditing && _isMarkdownFile)
+                      IconButton(
+                        tooltip: _markdownPreview ? '切换源码视图' : '切换 Markdown 预览',
+                        visualDensity: VisualDensity.compact,
+                        icon: Icon(
+                          _markdownPreview ? Icons.code_rounded : Icons.article_outlined,
+                          size: 18,
+                          color: _markdownPreview ? primary : null,
+                        ),
+                        onPressed: () => setState(() => _markdownPreview = !_markdownPreview),
+                      ),
                     if (!_isEditing && widget.onInsertReference != null)
                       TextButton.icon(
                         onPressed: () {
                           widget.onInsertReference!('`${widget.path}` ');
-                          Navigator.pop(context);
+                          if (!widget.isEmbedded) Navigator.pop(context);
                         },
                         icon: const Icon(Icons.alternate_email_rounded, size: 15),
                         label: const Text('引用', style: TextStyle(fontSize: 12)),
                         style: TextButton.styleFrom(
                           visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                         ),
                       ),
                     if (!_isEditing && _canEditNow)
@@ -257,7 +331,7 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
                         label: const Text('编辑', style: TextStyle(fontSize: 12)),
                         style: TextButton.styleFrom(
                           visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                         ),
                       ),
                     if (_isEditing) ...[
@@ -285,9 +359,17 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
                         ),
                       ),
                     ] else ...[
+                      if (widget.onDownload != null)
+                        IconButton(
+                          icon: const Icon(Icons.download_rounded, size: 18),
+                          tooltip: '下载文件',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: widget.onDownload,
+                        ),
                       IconButton(
-                        icon: const Icon(Icons.copy_rounded, size: 18),
+                        icon: const Icon(Icons.copy_rounded, size: 17),
                         tooltip: '复制全文',
+                        visualDensity: VisualDensity.compact,
                         onPressed: () {
                           Clipboard.setData(ClipboardData(text: _content));
                           ScaffoldMessenger.of(context).showSnackBar(
@@ -295,10 +377,13 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
                           );
                         },
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.close_rounded, size: 20),
-                        onPressed: () => Navigator.pop(context),
-                      ),
+                      if (!widget.isEmbedded || widget.onClose != null)
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded, size: 19),
+                          tooltip: '关闭预览',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: handleClose,
+                        ),
                     ],
                   ],
                 ),
@@ -371,43 +456,118 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
                           contentPadding: EdgeInsets.all(12),
                         ),
                       )
-                    : SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: SingleChildScrollView(
-                          child: Padding(
-                            padding: const EdgeInsets.all(10),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: [
-                                    for (int i = 1; i <= lines.length; i++)
-                                      Text(
-                                        '$i  ',
-                                        style: TextStyle(
-                                          fontFamily: 'monospace',
-                                          fontSize: 12,
-                                          color: isDark ? Colors.white24 : Colors.black26,
-                                          height: 1.45,
-                                        ),
-                                      ),
-                                  ],
+                    : (_markdownPreview
+                        ? SingleChildScrollView(
+                            padding: const EdgeInsets.all(14),
+                            child: MarkdownBody(
+                              data: _content,
+                              selectable: true,
+                              styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+                                p: TextStyle(
+                                  fontSize: 13.5,
+                                  height: 1.65,
+                                  color: isDark ? const Color(0xFFE4E4E7) : const Color(0xFF18181B),
                                 ),
-                                SelectableText(
-                                  _content,
-                                  style: TextStyle(
-                                    fontFamily: 'monospace',
-                                    fontSize: 12,
-                                    color: isDark ? const Color(0xFFE4E4E7) : const Color(0xFF222226),
-                                    height: 1.45,
-                                  ),
+                                code: TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 12,
+                                  backgroundColor: isDark ? const Color(0xFF222226) : const Color(0xFFE4E4E7),
                                 ),
-                              ],
+                              ),
                             ),
-                          ),
-                        ),
-                      ),
+                          )
+                        : SingleChildScrollView(
+                            controller: _verticalScroll,
+                            child: SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: Padding(
+                                padding: const EdgeInsets.all(10),
+                                child: (hlStart != null)
+                                    ? Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          for (int i = 0; i < lines.length; i++)
+                                            Builder(
+                                              builder: (_) {
+                                                final lineNo = i + 1;
+                                                final isHl = lineNo >= hlStart && lineNo <= (hlEnd ?? hlStart);
+                                                return Container(
+                                                  color: isHl
+                                                      ? primary.withValues(alpha: isDark ? 0.22 : 0.14)
+                                                      : Colors.transparent,
+                                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0.5),
+                                                  child: Row(
+                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    children: [
+                                                      SizedBox(
+                                                        width: 40,
+                                                        child: Text(
+                                                          '$lineNo',
+                                                          textAlign: TextAlign.right,
+                                                          style: TextStyle(
+                                                            fontFamily: 'monospace',
+                                                            fontSize: 12,
+                                                            fontWeight: isHl ? FontWeight.bold : FontWeight.normal,
+                                                            color: isHl
+                                                                ? primary
+                                                                : (isDark ? Colors.white24 : Colors.black26),
+                                                            height: 1.45,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                      const SizedBox(width: 10),
+                                                      SelectableText(
+                                                        lines[i].isEmpty ? ' ' : lines[i],
+                                                        style: TextStyle(
+                                                          fontFamily: 'monospace',
+                                                          fontSize: 12,
+                                                          color: isDark
+                                                              ? const Color(0xFFE4E4E7)
+                                                              : const Color(0xFF222226),
+                                                          height: 1.45,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                );
+                                              },
+                                            ),
+                                        ],
+                                      )
+                                    : Row(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Column(
+                                            crossAxisAlignment: CrossAxisAlignment.end,
+                                            children: [
+                                              for (int i = 1; i <= lines.length; i++)
+                                                Text(
+                                                  '$i  ',
+                                                  style: TextStyle(
+                                                    fontFamily: 'monospace',
+                                                    fontSize: 12,
+                                                    color: isDark ? Colors.white24 : Colors.black26,
+                                                    height: 1.45,
+                                                  ),
+                                                ),
+                                            ],
+                                          ),
+                                          SelectableText(
+                                            _content,
+                                            style: TextStyle(
+                                              fontFamily: 'monospace',
+                                              fontSize: 12,
+                                              color: isDark
+                                                  ? const Color(0xFFE4E4E7)
+                                                  : const Color(0xFF222226),
+                                              height: 1.45,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                              ),
+                            ),
+                          )),
               ),
             ),
           ],

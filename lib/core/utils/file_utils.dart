@@ -2,9 +2,52 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 class FileUtils {
+  static ({String cleanPath, int? startLine, int? endLine}) parseFileLinkTarget(String rawPath) {
+    final trimmed = rawPath.trim();
+    if (trimmed.isEmpty) {
+      return (cleanPath: '', startLine: null, endLine: null);
+    }
+    var pathPart = trimmed;
+    int? startLine;
+    int? endLine;
+    final hashIdx = trimmed.indexOf('#');
+    if (hashIdx >= 0) {
+      pathPart = trimmed.substring(0, hashIdx);
+      final frag = trimmed.substring(hashIdx + 1).trim();
+      final m = RegExp(r'^L(\d+)(?:-L?(\d+))?$', caseSensitive: false).firstMatch(frag);
+      if (m != null) {
+        startLine = int.tryParse(m.group(1) ?? '');
+        endLine = int.tryParse(m.group(2) ?? '') ?? startLine;
+        if (startLine != null && endLine != null && startLine > endLine) {
+          final tmp = startLine;
+          startLine = endLine;
+          endLine = tmp;
+        }
+      }
+    }
+    final qIdx = pathPart.indexOf('?');
+    if (qIdx >= 0) {
+      pathPart = pathPart.substring(0, qIdx);
+    }
+    return (cleanPath: pathPart.trim(), startLine: startLine, endLine: endLine);
+  }
+
+  static String extractFilename(String rawPath) {
+    final clean = parseFileLinkTarget(rawPath).cleanPath;
+    if (clean.isEmpty) return 'file';
+    final parts = clean.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).toList();
+    return parts.isEmpty ? clean : parts.last;
+  }
+
   static String _extensionOf(String path) {
-    final lower = path.toLowerCase();
-    return lower.contains('.') ? lower.split('.').last : '';
+    final clean = parseFileLinkTarget(path).cleanPath.toLowerCase();
+    final base = clean.split(RegExp(r'[\\/]')).last;
+    return base.contains('.') ? base.split('.').last : '';
+  }
+
+  static bool isMarkdownFile(String path) {
+    final ext = _extensionOf(path);
+    return ext == 'md' || ext == 'markdown' || ext == 'mdx';
   }
 
   static bool isImageFile(String path) {

@@ -458,6 +458,35 @@ def create_gateway_app(
             on_session_subscription_change=notifier.on_ws_subscription_change,
         )
 
+    @app.websocket("/ws/v2/nodes/{node_id}/terminal")
+    async def proxy_node_terminal_ws(node_id: str, websocket: WebSocket) -> None:
+        user = auth_service.authenticate_ws(websocket)
+        if not user:
+            await websocket.close(code=4401, reason="Unauthorized")
+            return
+        if user.role != "admin":
+            await websocket.close(code=4403, reason="Admin privilege required for terminal")
+            return
+        try:
+            perms = auth_service.check_node_access(user, node_id, require_write=True)
+        except HTTPException as exc:
+            code = 4404 if exc.status_code == 404 else 4403
+            await websocket.close(code=code, reason=str(exc.detail))
+            return
+
+        node_cfg = config.nodes[node_id]
+        await proxy_ws_to_node(
+            client_ws=websocket,
+            node_cfg=node_cfg,
+            upstream_path="/agent/ws/terminal",
+            user=user,
+            perms=perms,
+            internal_secret=config.internal_secret,
+            ws_connector=ws_connector,
+            node_id=node_id,
+            upstream_query=websocket.url.query,
+        )
+
     # Self-hosted optional UI fonts (persisted outside build/web so web deploys keep them)
     font_search_dirs: list[Path] = [(server_dir.parent / "fonts").resolve()]
     if web_dir:

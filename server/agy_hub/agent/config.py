@@ -30,6 +30,8 @@ class AgentConfig(BaseModel):
     archive_file: str | None = None
     max_upload_bytes: int = Field(default=50 * 1024 * 1024, ge=1024)
     poll_interval_seconds: float = Field(default=0.25, ge=0.05, le=5.0)
+    enable_terminal: bool = True
+    max_terminal_sessions: int = Field(default=4, ge=1, le=16)
 
     @field_validator("internal_secret")
     @classmethod

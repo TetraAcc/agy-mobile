@@ -185,8 +185,46 @@ class LatexMathConverter {
     'Bigr': '',
     'displaystyle': '',
     'textstyle': '',
+    'scriptstyle': '',
+    'scriptscriptstyle': '',
     'limits': '',
     'nolimits': '',
+    'bf': '',
+    'rm': '',
+    'it': '',
+    'sf': '',
+    'tt': '',
+    'cal': '',
+    'sl': '',
+    'sc': '',
+    'bfseries': '',
+    'rmfamily': '',
+    'itshape': '',
+    'mathbf': '',
+    'mathrm': '',
+    'mathit': '',
+    'mathcal': '',
+    'mathsf': '',
+    'mathtt': '',
+    'mathfrak': '',
+    'mathscr': '',
+    'mathnormal': '',
+    'boldsymbol': '',
+    'bm': '',
+    'pmb': '',
+    'text': '',
+    'textbf': '',
+    'textit': '',
+    'textrm': '',
+    'textsf': '',
+    'texttt': '',
+    'operatorname': '',
+    'boxed': '',
+    'mbox': '',
+    'hbox': '',
+    'emph': '',
+    'underline': '',
+    'phantom': '',
 
     // Greek letters (lowercase)
     'alpha': 'α',
@@ -319,7 +357,25 @@ class LatexMathConverter {
     'x': 'ˣ',
     'y': 'ʸ',
     'z': 'ᶻ',
+    'A': 'ᴬ',
+    'B': 'ᴮ',
+    'D': 'ᴰ',
+    'E': 'ᴱ',
+    'G': 'ᴳ',
+    'H': 'ᴴ',
+    'I': 'ᴵ',
+    'J': 'ᴶ',
+    'K': 'ᴷ',
+    'L': 'ᴸ',
+    'M': 'ᴹ',
+    'N': 'ᴺ',
+    'O': 'ᴼ',
+    'P': 'ᴾ',
+    'R': 'ᴿ',
     'T': 'ᵀ',
+    'U': 'ᵁ',
+    'V': 'ⱽ',
+    'W': 'ᵂ',
   };
 
   // Matches fenced code blocks (```...``` or ~~~...~~~) or inline code spans (`...`).
@@ -393,6 +449,287 @@ class LatexMathConverter {
     return out;
   }
 
+  static const Set<String> _unwrapSingleArgMacros = {
+    'text',
+    'textbf',
+    'textit',
+    'textrm',
+    'textsf',
+    'texttt',
+    'mathrm',
+    'mathbf',
+    'mathit',
+    'mathcal',
+    'mathsf',
+    'mathtt',
+    'mathfrak',
+    'mathscr',
+    'mathnormal',
+    'boldsymbol',
+    'bm',
+    'pmb',
+    'operatorname',
+    'boxed',
+    'mbox',
+    'hbox',
+    'emph',
+    'underline',
+    'phantom',
+  };
+
+  static const Set<String> _accentMacros = {
+    'vec',
+    'overline',
+    'bar',
+    'hat',
+    'widehat',
+    'tilde',
+    'widetilde',
+    'dot',
+    'ddot',
+  };
+
+  /// Read one `{...}` group starting at [start] (allowing leading whitespace),
+  /// handling nested balanced braces and escaped `\{` / `\}`.
+  static ({String content, int nextIndex})? _readBraceGroup(String s, int start) {
+    var i = start;
+    while (i < s.length && (s[i] == ' ' || s[i] == '\t')) {
+      i++;
+    }
+    if (i >= s.length || s[i] != '{') return null;
+    final contentStart = i + 1;
+    var depth = 0;
+    while (i < s.length) {
+      final ch = s[i];
+      if (ch == r'\' && i + 1 < s.length) {
+        i += 2;
+        continue;
+      }
+      if (ch == '{') {
+        depth++;
+      } else if (ch == '}') {
+        depth--;
+        if (depth == 0) {
+          return (content: s.substring(contentStart, i), nextIndex: i + 1);
+        }
+      }
+      i++;
+    }
+    return null;
+  }
+
+  /// Read an optional `[...]` bracket group starting at [start].
+  static ({String content, int nextIndex})? _readBracketGroup(String s, int start) {
+    var i = start;
+    while (i < s.length && (s[i] == ' ' || s[i] == '\t')) {
+      i++;
+    }
+    if (i >= s.length || s[i] != '[') return null;
+    final contentStart = i + 1;
+    var depth = 0;
+    while (i < s.length) {
+      final ch = s[i];
+      if (ch == r'\' && i + 1 < s.length) {
+        i += 2;
+        continue;
+      }
+      if (ch == '[') {
+        depth++;
+      } else if (ch == ']') {
+        depth--;
+        if (depth == 0) {
+          return (content: s.substring(contentStart, i), nextIndex: i + 1);
+        }
+      }
+      i++;
+    }
+    return null;
+  }
+
+  static String _applyAccent(String macro, String inner) {
+    final clean = inner.trim();
+    if (clean.isEmpty) return '';
+    switch (macro) {
+      case 'vec':
+        return clean.length <= 2 ? '$clean\u20D7' : 'vec($clean)';
+      case 'bar':
+        return clean.length == 1 ? '$clean\u0304' : _applyOverline(clean);
+      case 'overline':
+        return _applyOverline(clean);
+      case 'hat':
+      case 'widehat':
+        return clean.length == 1 ? '$clean\u0302' : 'hat($clean)';
+      case 'tilde':
+      case 'widetilde':
+        return clean.length == 1 ? '$clean\u0303' : '~$clean';
+      case 'dot':
+        return clean.length == 1 ? '$clean\u0307' : 'dot($clean)';
+      case 'ddot':
+        return clean.length == 1 ? '$clean\u0308' : 'ddot($clean)';
+      default:
+        return clean;
+    }
+  }
+
+  static String _applyOverline(String text) {
+    if (text.length == 1) return '$text\u0304';
+    final buf = StringBuffer();
+    for (final rune in text.runes) {
+      final ch = String.fromCharCode(rune);
+      buf.write(ch);
+      if (ch.trim().isNotEmpty) {
+        buf.write('\u0305');
+      }
+    }
+    return buf.toString();
+  }
+
+  /// Recursively expand balanced-brace macros (`\mathbf{...}`, `\frac{a}{b}`,
+  /// `\sqrt[n]{x}`, `\overline{...}`, `\vec{...}`, `\stackrel{a}{b}`, `\textcolor{c}{x}`, etc.).
+  static String _expandBalancedMacros(String input, {int depth = 0}) {
+    if (depth > 8 || !input.contains(r'\')) return input;
+    final out = StringBuffer();
+    var i = 0;
+
+    while (i < input.length) {
+      if (input[i] != r'\') {
+        out.write(input[i]);
+        i++;
+        continue;
+      }
+
+      var cmdEnd = i + 1;
+      while (cmdEnd < input.length &&
+          ((input.codeUnitAt(cmdEnd) >= 65 && input.codeUnitAt(cmdEnd) <= 90) ||
+              (input.codeUnitAt(cmdEnd) >= 97 && input.codeUnitAt(cmdEnd) <= 122))) {
+        cmdEnd++;
+      }
+      if (cmdEnd == i + 1) {
+        // Escaped non-letter symbol like \{ or \,
+        if (i + 1 < input.length) {
+          out.write(input.substring(i, i + 2));
+          i += 2;
+        } else {
+          out.write(input[i]);
+          i++;
+        }
+        continue;
+      }
+
+      final cmd = input.substring(i + 1, cmdEnd);
+
+      // 1. \mathbb{R} -> ℝ
+      if (cmd == 'mathbb') {
+        final grp = _readBraceGroup(input, cmdEnd);
+        if (grp != null) {
+          final inner = _expandBalancedMacros(grp.content, depth: depth + 1).trim();
+          out.write(_blackboardBold[inner] ?? inner);
+          i = grp.nextIndex;
+          continue;
+        }
+      }
+
+      // 2. \color{red} (1 arg, strip) and \textcolor{red}{body} (2 args, keep body)
+      if (cmd == 'color') {
+        final grp = _readBraceGroup(input, cmdEnd);
+        if (grp != null) {
+          i = grp.nextIndex;
+          continue;
+        }
+      }
+      if (cmd == 'textcolor') {
+        final colorGrp = _readBraceGroup(input, cmdEnd);
+        final bodyGrp = colorGrp != null ? _readBraceGroup(input, colorGrp.nextIndex) : null;
+        if (bodyGrp != null) {
+          out.write(_expandBalancedMacros(bodyGrp.content, depth: depth + 1));
+          i = bodyGrp.nextIndex;
+          continue;
+        }
+      }
+
+      // 3. Unwrap single-arg text/font/box macros even with arbitrary nested braces
+      if (_unwrapSingleArgMacros.contains(cmd)) {
+        final grp = _readBraceGroup(input, cmdEnd);
+        if (grp != null) {
+          out.write(_expandBalancedMacros(grp.content, depth: depth + 1));
+          i = grp.nextIndex;
+          continue;
+        }
+      }
+
+      // 4. Accents: \vec{...}, \overline{...}, \bar{...}, \hat{...}, \tilde{...}, \dot{...}
+      if (_accentMacros.contains(cmd)) {
+        final grp = _readBraceGroup(input, cmdEnd);
+        if (grp != null) {
+          final inner = _expandBalancedMacros(grp.content, depth: depth + 1);
+          out.write(_applyAccent(cmd, inner));
+          i = grp.nextIndex;
+          continue;
+        }
+      }
+
+      // 5. \stackrel{top}{base}, \overset{top}{base}, \underset{bot}{base}
+      if (cmd == 'stackrel' || cmd == 'overset' || cmd == 'underset') {
+        final arg1 = _readBraceGroup(input, cmdEnd);
+        final arg2 = arg1 != null ? _readBraceGroup(input, arg1.nextIndex) : null;
+        if (arg1 != null && arg2 != null) {
+          final label = _expandBalancedMacros(arg1.content, depth: depth + 1).trim();
+          final base = _expandBalancedMacros(arg2.content, depth: depth + 1).trim();
+          if (cmd != 'underset' && label == '?' && base == '=') {
+            out.write('≟');
+          } else if (cmd != 'underset' && (label == 'def' || label == r'\Delta' || label == 'Δ') && base == '=') {
+            out.write('≜');
+          } else if (label.isEmpty) {
+            out.write(base);
+          } else {
+            out.write('$base($label)');
+          }
+          i = arg2.nextIndex;
+          continue;
+        }
+      }
+
+      // 6. \sqrt[n]{x} and \sqrt{x}
+      if (cmd == 'sqrt') {
+        final optBracket = _readBracketGroup(input, cmdEnd);
+        final bodyGrp = _readBraceGroup(input, optBracket?.nextIndex ?? cmdEnd);
+        if (bodyGrp != null) {
+          final inner = _expandBalancedMacros(bodyGrp.content, depth: depth + 1).trim();
+          final bodyText = inner.length <= 2 ? '√$inner' : '√($inner)';
+          if (optBracket != null) {
+            final rootRaw = _expandBalancedMacros(optBracket.content, depth: depth + 1).trim();
+            final rootSup = _tryMapAllChars(rootRaw, _superscripts) ?? '($rootRaw)';
+            out.write('$rootSup$bodyText');
+          } else {
+            out.write(bodyText);
+          }
+          i = bodyGrp.nextIndex;
+          continue;
+        }
+      }
+
+      // 7. \frac{a}{b}, \dfrac{a}{b}, \tfrac{a}{b}
+      if (cmd == 'frac' || cmd == 'dfrac' || cmd == 'tfrac') {
+        final numGrp = _readBraceGroup(input, cmdEnd);
+        final denGrp = numGrp != null ? _readBraceGroup(input, numGrp.nextIndex) : null;
+        if (numGrp != null && denGrp != null) {
+          final numStr = _expandBalancedMacros(numGrp.content, depth: depth + 1).trim();
+          final denStr = _expandBalancedMacros(denGrp.content, depth: depth + 1).trim();
+          final numWrap = _needsParensInFraction(numStr) ? '($numStr)' : numStr;
+          final denWrap = _needsParensInFraction(denStr) ? '($denStr)' : denStr;
+          out.write('$numWrap/$denWrap');
+          i = denGrp.nextIndex;
+          continue;
+        }
+      }
+
+      out.write(input.substring(i, cmdEnd));
+      i = cmdEnd;
+    }
+
+    return out.toString();
+  }
+
   static String convertMathExpression(
     String expr, {
     bool escapeForMarkdown = false,
@@ -400,54 +737,10 @@ class LatexMathConverter {
     var s = expr.trim();
     if (s.isEmpty) return s;
 
-    // Replace blackboard bold \mathbb{R} -> ℝ
-    s = s.replaceAllMapped(RegExp(r'\\mathbb\{([A-Za-z])\}'), (m) {
-      final ch = m.group(1)!;
-      return _blackboardBold[ch] ?? ch;
-    });
+    // 1. Expand all balanced-brace macros (\mathbf{...}, \frac{a}{b}, \sqrt{x}, \overline{...}, \stackrel{?}{=}, etc.)
+    s = _expandBalancedMacros(s);
 
-    // Unwrap text/font macros: \text{...}, \mathrm{...}, \mathbf{...}, \operatorname{...}
-    for (var pass = 0; pass < 3; pass++) {
-      final next = s.replaceAllMapped(
-        RegExp(r'\\(?:text|textbf|textit|textrm|mathrm|mathbf|mathit|mathcal|mathsf|mathtt|operatorname)\{([^{}]*)\}'),
-        (m) => m.group(1) ?? '',
-      );
-      if (next == s) break;
-      s = next;
-    }
-
-    // Handle \sqrt[n]{x} and \sqrt{x}
-    s = s.replaceAllMapped(RegExp(r'\\sqrt\[([^{}\]]+)\]\{([^{}]*)\}'), (m) {
-      final root = _tryMapAllChars(m.group(1)!.trim(), _superscripts) ?? '(${m.group(1)!.trim()})';
-      final inner = m.group(2)!.trim();
-      return inner.length <= 2 ? '$root√$inner' : '$root√($inner)';
-    });
-    for (var pass = 0; pass < 2; pass++) {
-      final next = s.replaceAllMapped(RegExp(r'\\sqrt\{([^{}]*)\}'), (m) {
-        final inner = m.group(1)!.trim();
-        return inner.length <= 2 ? '√$inner' : '√($inner)';
-      });
-      if (next == s) break;
-      s = next;
-    }
-
-    // Handle \frac{a}{b}, \dfrac{a}{b}, \tfrac{a}{b}
-    for (var pass = 0; pass < 3; pass++) {
-      final next = s.replaceAllMapped(
-        RegExp(r'\\(?:d|t)?frac\{([^{}]*)\}\{([^{}]*)\}'),
-        (m) {
-          final numStr = m.group(1)!.trim();
-          final denStr = m.group(2)!.trim();
-          final numWrap = _needsParensInFraction(numStr) ? '($numStr)' : numStr;
-          final denWrap = _needsParensInFraction(denStr) ? '($denStr)' : denStr;
-          return '$numWrap/$denWrap';
-        },
-      );
-      if (next == s) break;
-      s = next;
-    }
-
-    // Replace escaped punctuation & spacing commands
+    // 2. Replace escaped punctuation & spacing commands
     s = s
         .replaceAll(r'\{', '{')
         .replaceAll(r'\}', '}')
@@ -461,17 +754,21 @@ class LatexMathConverter {
         .replaceAll(r'\:', ' ')
         .replaceAll(r'\!', '');
 
-    // Replace named LaTeX commands \cmd
-    s = s.replaceAllMapped(RegExp(r'\\([A-Za-z]+)'), (m) {
+    // 3. Replace named LaTeX commands \cmd (strip trailing single space when mapped to empty string)
+    s = s.replaceAllMapped(RegExp(r'\\([A-Za-z]+)( ?)'), (m) {
       final cmd = m.group(1)!;
+      final trailingSpace = m.group(2) ?? '';
       final mapped = _commands[cmd];
       if (mapped == null) {
         return m.group(0)!;
       }
-      return mapped;
+      if (mapped.isEmpty) {
+        return '';
+      }
+      return '$mapped$trailingSpace';
     });
 
-    // Convert superscripts ^{...} and ^x
+    // 4. Convert superscripts ^{...} and ^x
     s = s.replaceAllMapped(RegExp(r'\^\{([^{}]+)\}'), (m) {
       final inner = m.group(1)!.trim();
       final mapped = _tryMapAllChars(inner, _superscripts);
@@ -482,7 +779,7 @@ class LatexMathConverter {
       return _superscripts[ch] ?? '^$ch';
     });
 
-    // Convert subscripts _{...} and _x
+    // 5. Convert subscripts _{...} and _x
     s = s.replaceAllMapped(RegExp(r'_\{([^{}]+)\}'), (m) {
       final inner = m.group(1)!.trim();
       final mapped = _tryMapAllChars(inner, _subscripts);
@@ -493,12 +790,15 @@ class LatexMathConverter {
       return _subscripts[ch] ?? '_$ch';
     });
 
-    // Clean up remaining unescaped grouping braces {x} -> x
-    for (var pass = 0; pass < 2; pass++) {
+    // 6. Clean up remaining unescaped grouping braces {x} -> x
+    for (var pass = 0; pass < 3; pass++) {
       final next = s.replaceAllMapped(RegExp(r'\{([^{}]*)\}'), (m) => m.group(1) ?? '');
       if (next == s) break;
       s = next;
     }
+
+    // Collapse redundant spaces introduced by stripped layout commands
+    s = s.replaceAll(RegExp(r' {2,}'), ' ');
 
     if (escapeForMarkdown) {
       // Escape any remaining underscores or asterisks inside the math output so
