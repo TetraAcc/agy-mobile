@@ -7,6 +7,7 @@ import 'package:agy_remote/core/theme/theme_provider.dart';
 import 'package:agy_remote/core/utils/duration_utils.dart';
 import 'package:agy_remote/core/utils/file_utils.dart';
 import 'package:agy_remote/core/utils/latex_math_converter.dart';
+import 'package:agy_remote/features/workspace/terminal_panel.dart';
 import 'package:agy_remote/models/models.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -649,6 +650,90 @@ void main() {
       expect(FileUtils.isImageFile('media/screen.png#L1'), true);
       expect(FileUtils.isImageFile('media/photo.webp?v=2'), true);
       expect(FileUtils.isBinaryFile('dist/app.zip?download=1'), true);
+    });
+
+    test('TerminalPanel.applyKeyModifiers 正确处理 Ctrl/Alt/Shift 组合与 Shift+Tab', () {
+      expect(TerminalPanel.applyKeyModifiers('c', ctrl: true), '\x03');
+      expect(TerminalPanel.applyKeyModifiers('l', ctrl: true), '\x0c');
+      expect(TerminalPanel.applyKeyModifiers('x', ctrl: true), '\x18');
+      expect(TerminalPanel.applyKeyModifiers('b', alt: true), '\x1bb');
+      expect(TerminalPanel.applyKeyModifiers('1', shift: true), '!');
+      expect(TerminalPanel.applyKeyModifiers('a', shift: true), 'A');
+      expect(TerminalPanel.applyKeyModifiers('\t', shift: true), '\x1b[Z');
+      expect(TerminalPanel.applyKeyModifiers('d', ctrl: true, alt: true), '\x1b\x04');
+      expect(TerminalPanel.applyKeyModifiers('-', ctrl: true), '\x1f');
+      expect(TerminalPanel.applyKeyModifiers('/', ctrl: true), '\x1f');
+      // CSI / SS3 多字节控制序列与 Backspace/Enter 组合修饰键
+      expect(TerminalPanel.applyKeyModifiers('\x1b[D', ctrl: true), '\x1b[1;5D');
+      expect(TerminalPanel.applyKeyModifiers('\x1b[C', alt: true), '\x1b[1;3C');
+      expect(TerminalPanel.applyKeyModifiers('\x1b[A', shift: true), '\x1b[1;2A');
+      expect(TerminalPanel.applyKeyModifiers('\x1b[5~', shift: true), '\x1b[5;2~');
+      expect(TerminalPanel.applyKeyModifiers('\x1b[3~', ctrl: true, alt: true), '\x1b[3;7~');
+      expect(TerminalPanel.applyKeyModifiers('\x1b[15~', ctrl: true), '\x1b[15;5~');
+      expect(TerminalPanel.applyKeyModifiers('\x1bOP', ctrl: true), '\x1b[1;5P');
+      expect(TerminalPanel.applyKeyModifiers('\x7f', alt: true), '\x1b\x7f');
+      expect(TerminalPanel.applyKeyModifiers('\x7f', ctrl: true), '\x08');
+      expect(TerminalPanel.applyKeyModifiers('\r', alt: true), '\x1b\r');
+    });
+
+    test('ToolApprovalItem 与 SessionMessagesPage 正确反序列化工具审批数据', () {
+      final page = SessionMessagesPage.fromJson({
+        'session_id': 's-approval',
+        'messages': [],
+        'is_running': true,
+        'supports_tool_approval': true,
+        'pending_approvals': [
+          {
+            'approval_id': 'traj-1:8:permission',
+            'session_id': 's-approval',
+            'trajectory_id': 'traj-1',
+            'step_index': 8,
+            'step_type': 'CORTEX_STEP_TYPE_RUN_COMMAND',
+            'interaction_kind': 'permission',
+            'raw_interaction_field': 'permission',
+            'category': 'command',
+            'title': '终端命令权限审批',
+            'action_label': 'Run shell command',
+            'target': 'git push origin main',
+            'cwd': r'C:\repo',
+            'reason': '命中权限询问规则',
+            'shell_name': 'pwsh',
+            'can_remember': true,
+            'allowed_scopes': ['once', 'conversation', 'workspace'],
+            'suggested_persist_pattern': 'git push *',
+            'editable_command': true,
+            'detail': {'once_covers_task': true},
+          },
+        ],
+      });
+      expect(page.supportsToolApproval, true);
+      expect(page.pendingApprovals.length, 1);
+      final item = page.pendingApprovals.first;
+      expect(item.approvalId, 'traj-1:8:permission');
+      expect(item.category, 'command');
+      expect(item.allowedScopes, ['once', 'conversation', 'workspace']);
+      expect(item.editableCommand, true);
+      expect(item.toJson()['raw_interaction_field'], 'permission');
+
+      final pendingResp = PendingApprovalsData.fromJson({
+        'session_id': 'deck-s1',
+        'supported': false,
+        'approvals': [],
+      });
+      expect(pendingResp.supported, false);
+      expect(pendingResp.approvals, isEmpty);
+
+      final decisionRes = ApprovalDecisionResult.fromJson({
+        'ok': true,
+        'session_id': 's-approval',
+        'step_index': 8,
+        'decision': 'allow',
+        'message': '已允许步骤 #8 的工具调用',
+        'remaining_approvals': [],
+      });
+      expect(decisionRes.ok, true);
+      expect(decisionRes.stepIndex, 8);
+      expect(decisionRes.remainingApprovals, isEmpty);
     });
   });
 }

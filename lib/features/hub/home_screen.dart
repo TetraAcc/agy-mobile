@@ -27,6 +27,7 @@ import '../chat/offline_outbox_bar.dart';
 import '../chat/quick_commands_sheet.dart';
 import '../chat/session_queue_bar.dart';
 import '../chat/session_steps_bar.dart';
+import '../chat/tool_approval_card.dart';
 import '../sessions/new_session_dialog.dart';
 import '../sessions/quota_drawer.dart';
 import '../workspace/change_review_sheet.dart';
@@ -73,6 +74,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   int _rightPanelTab = 0; // 0: 文件预览, 1: 远程终端
   double _rightPanelWidth = 480.0;
   bool _terminalMounted = false;
+  bool _terminalLive = false;
   ({
     FileContentData data,
     bool canWrite,
@@ -662,8 +664,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (ResponsiveLayout.useSideWorkspacePanel(context)) {
       setState(() {
         if (_rightPanelOpen && _rightPanelTab == 1) {
+          // 收起但保持后台 PTY 会话运行，不销毁终端
           _rightPanelOpen = false;
-          _terminalMounted = false;
         } else {
           _rightPanelOpen = true;
           _rightPanelTab = 1;
@@ -678,7 +680,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       context,
       serverConfig: api.serverConfig,
       tokenStore: api.tokenStore,
-      onRefreshAuth: api.tryRefreshSession,
+      onRefreshAuth: api.refreshSessionLocked,
       nodeId: hubState.selectedNodeId,
       nodeName: hubState.currentNode?.name ?? hubState.selectedNodeId,
       initialCwd: hub.activeWorkspacePath,
@@ -1631,6 +1633,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             _loadingSidePreview = false;
             _sidePreviewError = null;
             _terminalMounted = false;
+            _terminalLive = false;
             if (next.selectedNodeId.isEmpty) {
               _rightPanelOpen = false;
             }
@@ -1653,6 +1656,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final canUseTerminal = widget.user.role == 'admin' &&
         hubState.canWrite &&
         hubState.selectedNodeId.isNotEmpty;
+    if ((!useSideWorkspacePanel || !canUseTerminal) &&
+        (_terminalMounted || _terminalLive || (!useSideWorkspacePanel && _rightPanelOpen))) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final curSide = ResponsiveLayout.useSideWorkspacePanel(context);
+        final curHub = ref.read(hubControllerProvider);
+        final curCanTerm = widget.user.role == 'admin' &&
+            curHub.canWrite &&
+            curHub.selectedNodeId.isNotEmpty;
+        if ((!curSide || !curCanTerm) &&
+            (_terminalMounted || _terminalLive || (!curSide && _rightPanelOpen))) {
+          setState(() {
+            if (!curSide || !curCanTerm) {
+              _terminalMounted = false;
+              _terminalLive = false;
+            }
+            if (!curSide) {
+              _rightPanelOpen = false;
+            }
+          });
+        }
+      });
+    }
     final contentMaxWidth = ResponsiveLayout.contentMaxWidth(context);
 
     final allMessages = hubState.messages;
@@ -1814,16 +1840,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           if (canUseTerminal)
             IconButton(
               visualDensity: VisualDensity.compact,
-              icon: Icon(
-                Icons.terminal_rounded,
-                size: 20,
-                color: (useSideWorkspacePanel && _rightPanelOpen && _rightPanelTab == 1)
-                    ? Theme.of(context).colorScheme.primary
-                    : null,
+              icon: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Icon(
+                    Icons.terminal_rounded,
+                    size: 20,
+                    color: (useSideWorkspacePanel && _rightPanelOpen && _rightPanelTab == 1)
+                        ? Theme.of(context).colorScheme.primary
+                        : null,
+                  ),
+                  if (useSideWorkspacePanel && _terminalMounted && !_rightPanelOpen)
+                    Positioned(
+                      right: -2,
+                      top: -2,
+                      child: Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _terminalLive ? Colors.greenAccent : AppColors.statusAmber(isDark),
+                          border: Border.all(
+                            color: isDark ? AppColors.darkBg : AppColors.lightBg,
+                            width: 1.2,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
               ),
               tooltip: (useSideWorkspacePanel && _rightPanelOpen && _rightPanelTab == 1)
-                  ? '关闭右侧终端'
-                  : '远程终端 (PTY)',
+                  ? '收起右侧终端（后台保活）'
+                  : (useSideWorkspacePanel && _terminalMounted
+                      ? (_terminalLive ? '展开后台终端（运行中）' : '展开后台终端（已断开）')
+                      : '远程终端 (PTY)'),
               onPressed: () => _openTerminalPanel(hubState),
             ),
           if (useSideWorkspacePanel && _sidePreviewFile != null && !_rightPanelOpen)
@@ -2219,6 +2269,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             maxContentWidth: contentMaxWidth,
             queueMode: composerPrefs.queueMode,
             sendKey: composerPrefs.sendKey,
+            approvalBar: hubState.pendingApprovals.isNotEmpty
+                ? ToolApprovalDock(
+                    approvals: hubState.pendingApprovals,
+                    resolvingIds: hubState.resolvingApprovalIds,
+                    canWrite: hubState.canWrite,
+                    isDark: isDark,
+                    onResolve: (
+                      item, {
+                      required bool allow,
+                      String scope = 'once',
+                      String denyReason = '',
+                      String? editedTarget,
+                    }) =>
+                        hubNotifier.resolveToolApproval(
+                      item,
+                      allow: allow,
+                      scope: scope,
+                      denyReason: denyReason,
+                      editedTarget: editedTarget,
+                    ),
+                  )
+                : null,
             changesBar: hubState.sessionChanges.totalFiles > 0
                 ? SessionChangesBar(
                     changes: hubState.sessionChanges,
@@ -2315,7 +2387,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               ],
             ),
           ),
-          if (useSideWorkspacePanel && _rightPanelOpen) ...[
+          if (useSideWorkspacePanel && _rightPanelOpen)
             MouseRegion(
               cursor: SystemMouseCursors.resizeColumn,
               child: GestureDetector(
@@ -2339,19 +2411,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 ),
               ),
             ),
-            SizedBox(
-              width: _rightPanelWidth.clamp(
-                320.0,
-                (MediaQuery.sizeOf(context).width * 0.54).clamp(360.0, 760.0),
-              ),
-              child: _buildRightWorkspacePanel(
-                hubState: hubState,
-                hubNotifier: hubNotifier,
-                isDark: isDark,
-                canUseTerminal: canUseTerminal,
+          if (useSideWorkspacePanel && (_rightPanelOpen || _terminalMounted))
+            Offstage(
+              offstage: !_rightPanelOpen,
+              child: TickerMode(
+                enabled: _rightPanelOpen,
+                child: SizedBox(
+                  width: _rightPanelWidth.clamp(
+                    320.0,
+                    (MediaQuery.sizeOf(context).width * 0.54).clamp(360.0, 760.0),
+                  ),
+                  child: _buildRightWorkspacePanel(
+                    hubState: hubState,
+                    hubNotifier: hubNotifier,
+                    isDark: isDark,
+                    canUseTerminal: canUseTerminal,
+                  ),
+                ),
               ),
             ),
-          ],
         ],
       ),
       ),
@@ -2375,7 +2453,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       required int tabIndex,
       required IconData icon,
       required String label,
-      bool showLiveDot = false,
+      bool showStatusDot = false,
+      bool statusLive = false,
     }) {
       final active = effectiveTab == tabIndex;
       return InkWell(
@@ -2420,14 +2499,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       : (isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary),
                 ),
               ),
-              if (showLiveDot) ...[
+              if (showStatusDot) ...[
                 const SizedBox(width: 5),
                 Container(
                   width: 6,
                   height: 6,
-                  decoration: const BoxDecoration(
+                  decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: Colors.greenAccent,
+                    color: statusLive ? Colors.greenAccent : AppColors.statusAmber(isDark),
                   ),
                 ),
               ],
@@ -2466,18 +2545,39 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                     tabIndex: 1,
                     icon: Icons.terminal_rounded,
                     label: '远程终端',
-                    showLiveDot: _terminalMounted,
+                    showStatusDot: _terminalMounted,
+                    statusLive: _terminalLive,
                   ),
                 ],
                 const Spacer(),
+                if (_terminalMounted && canUseTerminal)
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: '结束终端会话并释放',
+                    icon: Icon(
+                      Icons.power_settings_new_rounded,
+                      size: 17,
+                      color: AppColors.statusRed(isDark),
+                    ),
+                    onPressed: () {
+                      setState(() {
+                        _terminalMounted = false;
+                        _terminalLive = false;
+                        if (_rightPanelTab == 1 || _sidePreviewFile == null) {
+                          _rightPanelOpen = false;
+                        }
+                      });
+                    },
+                  ),
                 IconButton(
                   visualDensity: VisualDensity.compact,
-                  tooltip: '关闭右侧工作区',
-                  icon: const Icon(Icons.close_rounded, size: 18),
+                  tooltip: _terminalMounted
+                      ? (_terminalLive ? '收起右侧栏（终端后台保持运行）' : '收起右侧栏')
+                      : '收起右侧栏',
+                  icon: const Icon(Icons.keyboard_double_arrow_right_rounded, size: 19),
                   onPressed: () {
                     setState(() {
                       _rightPanelOpen = false;
-                      _terminalMounted = false;
                     });
                   },
                 ),
@@ -2624,12 +2724,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       key: ValueKey('side-term-${hubState.selectedNodeId}'),
       serverConfig: api.serverConfig,
       tokenStore: api.tokenStore,
-      onRefreshAuth: api.tryRefreshSession,
+      onRefreshAuth: api.refreshSessionLocked,
       nodeId: hubState.selectedNodeId,
       nodeName: hubState.currentNode?.name ?? hubState.selectedNodeId,
       initialCwd: hubNotifier.activeWorkspacePath,
       activeSessionId: hubState.activeSessionId,
       isEmbedded: true,
+      isActive: _rightPanelOpen && _rightPanelTab == 1,
+      onConnectionChanged: (alive) {
+        if (!mounted || _terminalLive == alive) return;
+        setState(() => _terminalLive = alive);
+      },
     );
   }
 }

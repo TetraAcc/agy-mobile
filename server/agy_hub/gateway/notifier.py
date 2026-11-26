@@ -51,6 +51,9 @@ class _TrackedSessionState:
     ask_step_index: int | None = None
     ask_first_seen_at: float | None = None
     notified_ask_step: int | None = None
+    approval_id: str | None = None
+    approval_first_seen_at: float | None = None
+    notified_approval_id: str | None = None
 
 
 class DiscordNotificationMonitor:
@@ -189,6 +192,26 @@ class DiscordNotificationMonitor:
         return None
 
     @staticmethod
+    def _extract_pending_approval_preview(approvals: Any) -> tuple[str, str] | None:
+        if not isinstance(approvals, list) or not approvals:
+            return None
+        first = approvals[0]
+        if not isinstance(first, dict):
+            return None
+        approval_id = str(first.get("approval_id") or "").strip()
+        if not approval_id:
+            return None
+        title = str(first.get("title") or "工具操作审批").strip()
+        action = str(first.get("action_label") or "").strip()
+        target = str(first.get("target") or "").strip()
+        lines = [f"**{title}**" + (f" · {action}" if action else "")]
+        if target:
+            lines.append(f"`{_truncate_text(target, 220)}`")
+        if len(approvals) > 1:
+            lines.append(f"另有 {len(approvals) - 1} 项等待审批。")
+        return approval_id, "\n".join(lines)
+
+    @staticmethod
     def _extract_latest_reply(messages: list[dict[str, Any]]) -> tuple[str, str]:
         for msg in reversed(messages):
             if not isinstance(msg, dict):
@@ -288,6 +311,8 @@ class DiscordNotificationMonitor:
                     tracked.started_at = now
                     tracked.ask_step_index = None
                     tracked.ask_first_seen_at = None
+                    tracked.approval_id = None
+                    tracked.approval_first_seen_at = None
 
                 msg_data = await self._node_get_json(
                     node_cfg,
@@ -320,6 +345,34 @@ class DiscordNotificationMonitor:
                         tracked.ask_step_index = None
                         tracked.ask_first_seen_at = None
 
+                approval_info = (
+                    self._extract_pending_approval_preview(msg_data.get("pending_approvals"))
+                    if isinstance(msg_data, dict)
+                    else None
+                )
+                if approval_info is not None:
+                    approval_id, preview = approval_info
+                    if approval_id != tracked.notified_approval_id:
+                        if tracked.approval_id != approval_id or tracked.approval_first_seen_at is None:
+                            tracked.approval_id = approval_id
+                            tracked.approval_first_seen_at = now
+                        elif (now - tracked.approval_first_seen_at) >= self.config.notify_ask_question_delay_seconds:
+                            tracked.notified_approval_id = approval_id
+                            payload = self._build_embed_payload(
+                                title=f"[{node_cfg.name}] 等待工具审批",
+                                description=preview,
+                                color=_COLOR_WARN,
+                                node_cfg=node_cfg,
+                                session_title=tracked.title,
+                                project_name=tracked.project_name,
+                            )
+                            ok, err_msg = await self._post_webhook(payload)
+                            if not ok:
+                                logger.warning("Discord tool approval notification failed: %s", err_msg)
+                else:
+                    tracked.approval_id = None
+                    tracked.approval_first_seen_at = None
+
             # Handle sessions that just transitioned from running -> idle
             for (t_node_id, sid), tracked in list(self._tracked.items()):
                 if t_node_id != node_id or not tracked.running or sid in running_ids:
@@ -327,6 +380,8 @@ class DiscordNotificationMonitor:
                 tracked.running = False
                 tracked.ask_step_index = None
                 tracked.ask_first_seen_at = None
+                tracked.approval_id = None
+                tracked.approval_first_seen_at = None
                 if not is_primed:
                     continue
 

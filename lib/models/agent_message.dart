@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'tool_approval.dart';
+
 class ToolCallItem {
   final String name;
   final Map<String, dynamic> args;
@@ -147,6 +149,8 @@ class SessionMessagesPage {
   final int? nextBeforeStep;
   final bool isRunning;
   final String activeModel;
+  final List<ToolApprovalItem> pendingApprovals;
+  final bool supportsToolApproval;
 
   const SessionMessagesPage({
     required this.sessionId,
@@ -155,10 +159,13 @@ class SessionMessagesPage {
     this.nextBeforeStep,
     this.isRunning = false,
     this.activeModel = '',
+    this.pendingApprovals = const [],
+    this.supportsToolApproval = true,
   });
 
   factory SessionMessagesPage.fromJson(Map<String, dynamic> json) {
     final rawMsgs = json['messages'] as List<dynamic>? ?? const [];
+    final rawApprovals = json['pending_approvals'] as List<dynamic>? ?? const [];
     return SessionMessagesPage(
       sessionId: json['session_id']?.toString() ?? '',
       messages: rawMsgs
@@ -169,6 +176,11 @@ class SessionMessagesPage {
       nextBeforeStep: (json['next_before_step'] as num?)?.toInt(),
       isRunning: json['is_running'] == true,
       activeModel: json['active_model']?.toString() ?? '',
+      pendingApprovals: rawApprovals
+          .whereType<Map>()
+          .map((e) => ToolApprovalItem.fromJson(Map<String, dynamic>.from(e)))
+          .toList(),
+      supportsToolApproval: json['supports_tool_approval'] != false,
     );
   }
 }

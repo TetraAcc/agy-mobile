@@ -149,11 +149,12 @@ VoidCallback implRegisterWebZoomShortcuts({
       evt.preventDefault();
       evt.stopPropagation();
       onStepZoom(0.05);
-    } else if (key == '-' || key == '_' || code == 'Minus' || code == 'NumpadSubtract') {
+    } else if (!keyEvt.shiftKey &&
+        (key == '-' || code == 'Minus' || code == 'NumpadSubtract')) {
       evt.preventDefault();
       evt.stopPropagation();
       onStepZoom(-0.05);
-    } else if (key == '0' || code == 'Digit0' || code == 'Numpad0') {
+    } else if (!keyEvt.shiftKey && (key == '0' || code == 'Digit0' || code == 'Numpad0')) {
       evt.preventDefault();
       evt.stopPropagation();
       onResetZoom();

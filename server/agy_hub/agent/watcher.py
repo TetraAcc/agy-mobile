@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,7 +14,9 @@ from fastapi import WebSocket
 
 from agy_hub.agent.providers.base import BaseEngineProvider, InvalidSessionIdError
 from agy_hub.common.schemas import (
+    ToolApprovalItem,
     TranscriptStep,
+    WsEventApprovalsChanged,
     WsEventError,
     WsEventPong,
     WsEventSessionStatus,
@@ -36,7 +39,19 @@ class _SessionWatchState:
     last_conv_db_size: int = -1
     emitted_error_steps: set[int] = field(default_factory=set)
     emitted_error_sigs: set[str] = field(default_factory=set)
+    last_approvals_sig: str = ""
+    last_approval_check_at: float = 0.0
     task: asyncio.Task[None] | None = None
+
+
+def _approvals_signature(approvals: list[ToolApprovalItem]) -> str:
+    if not approvals:
+        return ""
+    return json.dumps(
+        [a.model_dump(mode="json") for a in approvals],
+        sort_keys=True,
+        ensure_ascii=False,
+    )
 
 
 def _stat_file_sig(path: Path) -> tuple[int, int]:
@@ -218,6 +233,43 @@ class SessionEventHub:
             ws,
             WsEventSessionStatus(session_id=sid, is_running=current_running).model_dump_json(),
         )
+        if self.provider.supports_tool_approval:
+            try:
+                approvals = await self.provider.get_pending_approvals(sid)
+            except Exception as exc:
+                logger.debug("Initial approval fetch failed for %s: %s", sid, exc)
+                approvals = []
+            state.last_approvals_sig = _approvals_signature(approvals)
+            state.last_approval_check_at = time.monotonic()
+            if approvals:
+                await self._send_safe(
+                    ws,
+                    WsEventApprovalsChanged(
+                        session_id=sid,
+                        approvals=approvals,
+                        is_running=current_running,
+                    ).model_dump_json(),
+                )
+
+    async def notify_approvals_changed(
+        self,
+        session_id: str,
+        approvals: list[ToolApprovalItem],
+        *,
+        is_running: bool = True,
+    ) -> None:
+        """Immediately broadcast updated pending tool approvals to session subscribers."""
+        state = self._sessions.get(session_id)
+        if state is None:
+            return
+        state.last_approvals_sig = _approvals_signature(approvals)
+        state.last_approval_check_at = time.monotonic()
+        evt = WsEventApprovalsChanged(
+            session_id=session_id,
+            approvals=approvals,
+            is_running=is_running,
+        )
+        await self._broadcast_to_session(state, evt.model_dump_json())
 
     async def unsubscribe(self, ws: WebSocket, session_id: str) -> None:
         sid = session_id.strip()
@@ -357,6 +409,36 @@ class SessionEventHub:
                     state.last_running = is_running
                     status_evt = WsEventSessionStatus(session_id=session_id, is_running=is_running)
                     await self._broadcast_to_session(state, status_evt.model_dump_json())
+
+                if self.provider.supports_tool_approval:
+                    now = time.monotonic()
+                    should_check_approvals = (
+                        is_running
+                        or bool(state.last_approvals_sig)
+                        or bool(steps)
+                        or conv_changed
+                        or just_finished
+                        or (now - state.last_approval_check_at) >= 1.5
+                    )
+                    if should_check_approvals:
+                        try:
+                            approvals = await self.provider.get_pending_approvals(session_id)
+                        except Exception as exc:
+                            logger.debug("Approval watcher poll failed for %s: %s", session_id, exc)
+                            approvals = None
+                        state.last_approval_check_at = now
+                        if approvals is not None:
+                            sig = _approvals_signature(approvals)
+                            if sig != state.last_approvals_sig:
+                                state.last_approvals_sig = sig
+                                await self._broadcast_to_session(
+                                    state,
+                                    WsEventApprovalsChanged(
+                                        session_id=session_id,
+                                        approvals=approvals,
+                                        is_running=is_running,
+                                    ).model_dump_json(),
+                                )
 
                 await asyncio.sleep(self.poll_interval)
         except asyncio.CancelledError:

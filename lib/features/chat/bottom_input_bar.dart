@@ -16,6 +16,7 @@ class BottomInputBar extends StatefulWidget {
   final bool canWrite;
   final bool isDark;
   final double maxContentWidth;
+  final Widget? approvalBar;
   final Widget? changesBar;
   final Widget? queueBar;
   final Widget? outboxBar;
@@ -39,6 +40,7 @@ class BottomInputBar extends StatefulWidget {
     this.canWrite = true,
     required this.isDark,
     this.maxContentWidth = 780.0,
+    this.approvalBar,
     this.changesBar,
     this.queueBar,
     this.outboxBar,
@@ -152,6 +154,7 @@ class _BottomInputBarState extends State<BottomInputBar> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (widget.approvalBar != null) widget.approvalBar!,
                 if (widget.changesBar != null) widget.changesBar!,
                 if (widget.queueBar != null) widget.queueBar!,
                 if (widget.outboxBar != null) widget.outboxBar!,

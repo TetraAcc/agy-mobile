@@ -33,6 +33,8 @@ from agy_hub.agent.watcher import SessionEventHub
 from agy_hub.common.sandbox import BinaryFileError, RootRegistry, SandboxError, is_sensitive_path
 from agy_hub.common.schemas import (
     ActionAckResponse,
+    ApprovalDecisionRequest,
+    ApprovalDecisionResponse,
     CreateSessionRequest,
     CreateSessionResponse,
     DeleteSessionResponse,
@@ -46,6 +48,7 @@ from agy_hub.common.schemas import (
     NodeUpdateApplyRequest,
     NodeUpdateApplyResponse,
     NodeUpdateStatusResponse,
+    PendingApprovalsResponse,
     PinSessionRequest,
     PinSessionResponse,
     QueuePauseRequest,
@@ -297,6 +300,46 @@ def create_agent_app(
         ack = await engine_provider.stop_session(clean_sid)
         await queue_manager.pause_if_non_empty(clean_sid)
         return ack
+
+    @app.get("/agent/sessions/{sid}/approvals", response_model=PendingApprovalsResponse)
+    async def get_session_approvals(
+        sid: str,
+        _caller: GatewayCaller = Depends(require_gateway_signature),
+    ) -> PendingApprovalsResponse:
+        try:
+            clean_sid = engine_provider.validate_session_id(sid)
+        except InvalidSessionIdError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        approvals = (
+            await engine_provider.get_pending_approvals(clean_sid)
+            if engine_provider.supports_tool_approval
+            else []
+        )
+        return PendingApprovalsResponse(
+            session_id=clean_sid,
+            supported=engine_provider.supports_tool_approval,
+            approvals=approvals,
+        )
+
+    @app.post("/agent/sessions/{sid}/approvals/resolve", response_model=ApprovalDecisionResponse)
+    async def resolve_session_approval(
+        sid: str,
+        payload: ApprovalDecisionRequest,
+        _caller: GatewayCaller = Depends(require_write_caller),
+    ) -> ApprovalDecisionResponse:
+        try:
+            clean_sid = engine_provider.validate_session_id(sid)
+        except InvalidSessionIdError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        result = await engine_provider.resolve_approval(clean_sid, payload)
+        if result.ok and engine_provider.supports_tool_approval:
+            is_running = await engine_provider.is_session_running(clean_sid)
+            await event_hub.notify_approvals_changed(
+                clean_sid,
+                result.remaining_approvals,
+                is_running=is_running,
+            )
+        return result
 
     @app.get("/agent/sessions/{sid}/queue", response_model=SessionQueueResponse)
     async def get_session_queue(

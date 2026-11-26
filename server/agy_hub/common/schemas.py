@@ -166,6 +166,29 @@ class TranscriptStep(BaseModel):
     model: str = ""
 
 
+class ToolApprovalItem(BaseModel):
+    approval_id: str
+    session_id: str
+    trajectory_id: str
+    step_index: int
+    step_type: str = ""
+    interaction_kind: str
+    raw_interaction_field: str
+    category: Literal["command", "file", "mcp", "network", "browser", "approval", "other"] = "other"
+    title: str
+    action_label: str = ""
+    target: str = ""
+    cwd: str = ""
+    reason: str = ""
+    shell_name: str = ""
+    can_remember: bool = False
+    allowed_scopes: list[str] = Field(default_factory=lambda: ["once"])
+    suggested_persist_pattern: str = ""
+    editable_command: bool = False
+    detail: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = ""
+
+
 class SessionMessagesResponse(BaseModel):
     session_id: str
     messages: list[TranscriptStep] = Field(default_factory=list)
@@ -173,6 +196,8 @@ class SessionMessagesResponse(BaseModel):
     next_before_step: int | None = None
     is_running: bool = False
     active_model: str = ""
+    pending_approvals: list[ToolApprovalItem] = Field(default_factory=list)
+    supports_tool_approval: bool = True
 
 
 class CreateSessionRequest(BaseModel):
@@ -487,7 +512,40 @@ class WsEventPong(BaseModel):
     type: Literal["pong"] = "pong"
 
 
+class WsEventApprovalsChanged(BaseModel):
+    type: Literal["approvals_changed"] = "approvals_changed"
+    session_id: str
+    approvals: list[ToolApprovalItem] = Field(default_factory=list)
+    is_running: bool = True
+
+
 class WsEventError(BaseModel):
     type: Literal["error"] = "error"
     code: str
     message: str
+
+
+class PendingApprovalsResponse(BaseModel):
+    session_id: str
+    supported: bool = True
+    approvals: list[ToolApprovalItem] = Field(default_factory=list)
+
+
+class ApprovalDecisionRequest(BaseModel):
+    trajectory_id: str = ""
+    step_index: int = Field(..., ge=0)
+    interaction_field: str = ""
+    decision: Literal["allow", "deny"]
+    scope: Literal["once", "conversation", "workspace", "project", "global"] = "once"
+    deny_reason: str = ""
+    edited_target: str | None = None
+    sandbox_override: bool = False
+
+
+class ApprovalDecisionResponse(BaseModel):
+    ok: bool = True
+    session_id: str
+    step_index: int
+    decision: str
+    message: str = ""
+    remaining_approvals: list[ToolApprovalItem] = Field(default_factory=list)

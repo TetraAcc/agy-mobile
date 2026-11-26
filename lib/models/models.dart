@@ -6,5 +6,6 @@ export 'official_model.dart';
 export 'quota_models.dart';
 export 'session_changes.dart';
 export 'session_item.dart';
+export 'tool_approval.dart';
 export 'uploaded_attachment.dart';
 export 'user_profile.dart';

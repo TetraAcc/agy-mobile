@@ -536,6 +536,53 @@ class ApiClient {
     );
   }
 
+  Future<PendingApprovalsData> getPendingApprovals(
+    String nodeId,
+    String sessionId,
+  ) async {
+    try {
+      return await _exec(
+        () => _dio.get<dynamic>('/api/v2/nodes/$nodeId/sessions/$sessionId/approvals'),
+        (data) => PendingApprovalsData.fromJson(Map<String, dynamic>.from(data as Map)),
+      );
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) {
+        return PendingApprovalsData(sessionId: sessionId, supported: false);
+      }
+      rethrow;
+    }
+  }
+
+  Future<ApprovalDecisionResult> resolveToolApproval(
+    String nodeId,
+    String sessionId, {
+    required String trajectoryId,
+    required int stepIndex,
+    required String interactionField,
+    required String decision,
+    String scope = 'once',
+    String denyReason = '',
+    String? editedTarget,
+    bool sandboxOverride = false,
+  }) async {
+    return _exec(
+      () => _dio.post<dynamic>(
+        '/api/v2/nodes/$nodeId/sessions/$sessionId/approvals/resolve',
+        data: {
+          'trajectory_id': trajectoryId,
+          'step_index': stepIndex,
+          'interaction_field': interactionField,
+          'decision': decision,
+          'scope': scope,
+          if (denyReason.trim().isNotEmpty) 'deny_reason': denyReason.trim(),
+          if (editedTarget != null && editedTarget.trim().isNotEmpty) 'edited_target': editedTarget.trim(),
+          if (sandboxOverride) 'sandbox_override': true,
+        },
+      ),
+      (data) => ApprovalDecisionResult.fromJson(Map<String, dynamic>.from(data as Map)),
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Uploads, Files, Media, Git, Quota
   // ---------------------------------------------------------------------------

@@ -117,6 +117,12 @@ class FakeApiClient extends ApiClient {
   final List<(String sessionId, bool pinned)> pinCalls = [];
   Completer<(bool, String, String)>? pendingCreateSessionCompleter;
   bool returnEmptyMessagesForNewSession = false;
+  List<ToolApprovalItem> fakePendingApprovals = const [];
+  bool fakeSupportsToolApproval = true;
+  Completer<ApprovalDecisionResult>? pendingApprovalCompleter;
+  final List<({String nodeId, String sessionId, String decision, String scope, String denyReason, String? editedTarget})>
+      approvalResolveCalls = [];
+  bool throwOnResolveApproval = false;
 
   FakeApiClient()
       : super(
@@ -238,6 +244,57 @@ class FakeApiClient extends ApiClient {
       nextBeforeStep: sessionId == 's1' ? 10 : null,
       isRunning: messagesIsRunning,
       activeModel: pageActiveModel,
+      pendingApprovals: fakePendingApprovals,
+      supportsToolApproval: fakeSupportsToolApproval,
+    );
+  }
+
+  @override
+  Future<PendingApprovalsData> getPendingApprovals(String nodeId, String sessionId) async {
+    return PendingApprovalsData(
+      sessionId: sessionId,
+      supported: fakeSupportsToolApproval,
+      approvals: fakePendingApprovals,
+    );
+  }
+
+  @override
+  Future<ApprovalDecisionResult> resolveToolApproval(
+    String nodeId,
+    String sessionId, {
+    required String trajectoryId,
+    required int stepIndex,
+    required String interactionField,
+    required String decision,
+    String scope = 'once',
+    String denyReason = '',
+    String? editedTarget,
+    bool sandboxOverride = false,
+  }) async {
+    approvalResolveCalls.add((
+      nodeId: nodeId,
+      sessionId: sessionId,
+      decision: decision,
+      scope: scope,
+      denyReason: denyReason,
+      editedTarget: editedTarget,
+    ));
+    if (throwOnResolveApproval) {
+      throw const ApiException(502, 'LanguageServer 拒绝连接');
+    }
+    if (pendingApprovalCompleter != null) {
+      return pendingApprovalCompleter!.future;
+    }
+    fakePendingApprovals = fakePendingApprovals
+        .where((e) => !(e.trajectoryId == trajectoryId && e.stepIndex == stepIndex))
+        .toList();
+    return ApprovalDecisionResult(
+      ok: true,
+      sessionId: sessionId,
+      stepIndex: stepIndex,
+      decision: decision,
+      message: decision == 'allow' ? '已允许' : '已拒绝',
+      remainingApprovals: fakePendingApprovals,
     );
   }
 
@@ -1399,5 +1456,217 @@ void main() {
     expect(cur.selectedNodeId, 'win');
     expect(cur.availableModels.map((m) => m.id).toList(), ['gemini-4-neon-high', 'claude-sonnet-5-5-medium']);
     expect(cur.selectedModel, 'gemini-4-neon-high');
+  });
+
+  test('HubController 收到 stepIndex == 0 的增量推送时原地更新而不重复追加', () async {
+    late FakeEventSocket socket;
+    final fakeApi = FakeApiClient();
+    final container = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(fakeApi),
+        tokenStoreProvider.overrideWithValue(MemoryTokenStore(initialAccess: 'tok')),
+        eventSocketFactoryProvider.overrideWithValue(({
+          required ServerConfig serverConfig,
+          required String nodeId,
+          required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
+        }) {
+          socket = FakeEventSocket(nodeId);
+          return socket;
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const user = UserProfile(
+      id: 1,
+      username: 'tetra',
+      displayName: 'Tetra',
+      role: 'admin',
+      defaultNode: 'win',
+      allowedNodes: ['win'],
+      nodePermissions: {
+        'win': UserPermissionGrant(nodeId: 'win', canWrite: true, canDelete: true),
+      },
+    );
+
+    final hub = container.read(hubControllerProvider.notifier);
+    await hub.initializeForUser(user);
+    await Future<void>.delayed(Duration.zero);
+
+    final sid = container.read(hubControllerProvider).activeSessionId;
+    expect(sid, isNotEmpty);
+
+    socket.emitEvent(
+      WsStepUpsertEvent(
+        sessionId: sid,
+        isRunning: true,
+        step: const AgentMessage(
+          stepIndex: 0,
+          source: 'MODEL',
+          msgType: 'PLANNER_RESPONSE',
+          status: 'RUNNING',
+          content: '第零步初稿',
+          thinking: '',
+          toolCalls: [],
+          timestamp: '',
+        ),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    final countAfterFirst = container.read(hubControllerProvider).messages.where((m) => m.stepIndex == 0).length;
+    expect(countAfterFirst, 1);
+
+    socket.emitEvent(
+      WsStepUpsertEvent(
+        sessionId: sid,
+        isRunning: false,
+        step: const AgentMessage(
+          stepIndex: 0,
+          source: 'MODEL',
+          msgType: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          content: '第零步更新版',
+          thinking: '',
+          toolCalls: [],
+          timestamp: '',
+        ),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    final stepZeroMsgs = container.read(hubControllerProvider).messages.where((m) => m.stepIndex == 0).toList();
+    expect(stepZeroMsgs.length, 1);
+    expect(stepZeroMsgs.first.content, '第零步更新版');
+  });
+
+  test('HubController 支持工具审批加载、WS 实时同步、并发防重入提交与切节点清理', () async {
+    final api = FakeApiClient();
+    const initialApproval = ToolApprovalItem(
+      approvalId: 'traj-1:5:permission',
+      sessionId: 's1',
+      trajectoryId: 'traj-1',
+      stepIndex: 5,
+      interactionKind: 'permission',
+      rawInteractionField: 'permission',
+      category: 'command',
+      title: '终端命令权限审批',
+      actionLabel: 'Run command',
+      target: 'git status',
+      canRemember: true,
+      allowedScopes: ['once', 'conversation', 'workspace'],
+      editableCommand: true,
+    );
+    api.fakePendingApprovals = [initialApproval];
+
+    late FakeEventSocket socket;
+    final container = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(api),
+        eventSocketFactoryProvider.overrideWithValue(({
+          required ServerConfig serverConfig,
+          required String nodeId,
+          required TokenStore tokenStore,
+          Future<bool> Function()? onRefreshAuth,
+        }) {
+          socket = FakeEventSocket(nodeId);
+          return socket;
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const user = UserProfile(
+      id: 1,
+      username: 'tetra',
+      displayName: 'Tetra',
+      role: 'admin',
+      defaultNode: 'win',
+      allowedNodes: ['win', 'deck'],
+      nodePermissions: {
+        'win': UserPermissionGrant(nodeId: 'win', canWrite: true, canDelete: true),
+        'deck': UserPermissionGrant(nodeId: 'deck', canWrite: true, canDelete: true),
+      },
+    );
+
+    final hub = container.read(hubControllerProvider.notifier);
+    await hub.initializeForUser(user);
+    await Future<void>.delayed(Duration.zero);
+
+    var state = container.read(hubControllerProvider);
+    expect(state.pendingApprovals.length, 1);
+    expect(state.pendingApprovals.first.target, 'git status');
+
+    // 非当前会话的 approvals_changed 事件应被忽略
+    socket.emitEvent(
+      const WsApprovalsChangedEvent(
+        sessionId: 'other-session',
+        approvals: [],
+        isRunning: false,
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(container.read(hubControllerProvider).pendingApprovals.length, 1);
+
+    // 并发提交同一条审批时仅发送一次请求并正确锁定 resolvingApprovalIds
+    final inflight = Completer<ApprovalDecisionResult>();
+    api.pendingApprovalCompleter = inflight;
+    final f1 = hub.resolveToolApproval(
+      initialApproval,
+      allow: true,
+      scope: 'conversation',
+      editedTarget: 'git status -sb',
+    );
+    final f2 = hub.resolveToolApproval(initialApproval, allow: true);
+    await Future<void>.delayed(Duration.zero);
+    expect(api.approvalResolveCalls.length, 1);
+    expect(api.approvalResolveCalls.first.scope, 'conversation');
+    expect(api.approvalResolveCalls.first.editedTarget, 'git status -sb');
+    expect(container.read(hubControllerProvider).resolvingApprovalIds.contains(initialApproval.approvalId), true);
+
+    inflight.complete(
+      const ApprovalDecisionResult(
+        ok: true,
+        sessionId: 's1',
+        stepIndex: 5,
+        decision: 'allow',
+        message: '已允许',
+        remainingApprovals: [],
+      ),
+    );
+    expect(await f1, isNull);
+    expect(await f2, isNull);
+    expect(container.read(hubControllerProvider).pendingApprovals, isEmpty);
+    expect(container.read(hubControllerProvider).resolvingApprovalIds, isEmpty);
+
+    // WS 推送新审批后切到不支持审批的 deck 节点，旧审批必须立即清除
+    const secondApproval = ToolApprovalItem(
+      approvalId: 'traj-1:9:filePermission',
+      sessionId: 's1',
+      trajectoryId: 'traj-1',
+      stepIndex: 9,
+      interactionKind: 'file_permission',
+      rawInteractionField: 'filePermission',
+      category: 'file',
+      title: '文件访问审批',
+      target: r'D:\outside\note.txt',
+    );
+    socket.emitEvent(
+      const WsApprovalsChangedEvent(
+        sessionId: 's1',
+        approvals: [secondApproval],
+        isRunning: true,
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(container.read(hubControllerProvider).pendingApprovals.length, 1);
+
+    api.fakePendingApprovals = const [];
+    api.fakeSupportsToolApproval = false;
+    await hub.switchNode('deck');
+    await Future<void>.delayed(Duration.zero);
+    state = container.read(hubControllerProvider);
+    expect(state.selectedNodeId, 'deck');
+    expect(state.pendingApprovals, isEmpty);
+    expect(state.supportsToolApproval, false);
   });
 }

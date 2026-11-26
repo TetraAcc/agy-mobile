@@ -21,6 +21,7 @@ import 'package:agy_remote/features/chat/quick_commands_sheet.dart';
 import 'package:agy_remote/features/chat/rich_presence_cards.dart';
 import 'package:agy_remote/features/chat/session_queue_bar.dart';
 import 'package:agy_remote/features/chat/session_steps_bar.dart';
+import 'package:agy_remote/features/chat/tool_approval_card.dart';
 import 'package:agy_remote/features/hub/download_progress_dialog.dart';
 import 'package:agy_remote/features/sessions/new_session_dialog.dart';
 import 'package:agy_remote/features/sessions/quota_drawer.dart';
@@ -36,6 +37,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:xterm/xterm.dart';
 
 class _TestAuthController extends AuthController {
   @override
@@ -2131,6 +2133,373 @@ void main() {
       sentFrames.any((f) => f['type'] == 'input' && f['data'] == '/rewind\r'),
       true,
     );
+
+    // 验证 TerminalView 配置了 AgyMono 等宽回退链
+    final termView = tester.widget<TerminalView>(find.byType(TerminalView));
+    expect(termView.textStyle.fontFamilyFallback, contains('AgyMono'));
+    expect(termView.autofocus, true);
+
+    // 切换到全键盘模式，验证 F1-F12 功能区、Home/End 及粘滞修饰键（Ctrl+L -> \x0c）
+    await tester.tap(find.text('全键盘'));
+    await tester.pumpAndSettle();
+    expect(find.text('快捷栏'), findsOneWidget);
+    expect(find.text('F1'), findsOneWidget);
+    expect(find.text('F5'), findsOneWidget);
+    expect(find.text('F12'), findsOneWidget);
+    expect(find.text('Shift'), findsOneWidget);
+
+    await tester.tap(find.text('F5'));
+    await tester.pump();
+    expect(
+      sentFrames.any((f) => f['type'] == 'input' && f['data'] == '\x1b[15~'),
+      true,
+    );
+
+    // 点亮 Ctrl 粘滞键后点击字母 L，应发送 \x0c 并自动复位 Ctrl
+    await tester.tap(find.text('Ctrl'));
+    await tester.pump();
+    await tester.tap(find.text('L'));
+    await tester.pump();
+    expect(
+      sentFrames.any((f) => f['type'] == 'input' && f['data'] == '\x0c'),
+      true,
+    );
+
+    // 再切回快捷栏模式
+    await tester.tap(find.text('快捷栏'));
+    await tester.pumpAndSettle();
+    expect(find.text('全键盘'), findsOneWidget);
+    expect(find.text('F5'), findsNothing);
+    expect(connectedUri?.queryParameters.containsKey('token'), false);
+  });
+
+  testWidgets('TerminalPanel 全键盘修饰键对方向键/退格/系统输入生效且切回快捷栏复位 Shift', (tester) async {
+    final incoming = StreamController<dynamic>.broadcast();
+    final sentFrames = <Map<String, dynamic>>[];
+    final fakeChannel = _FakeTerminalWsChannel(
+      incoming: incoming,
+      onSend: (raw) {
+        if (raw is String) {
+          sentFrames.add(Map<String, dynamic>.from(jsonDecode(raw) as Map));
+        }
+      },
+    );
+    addTearDown(() async {
+      await incoming.close();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 420,
+            height: 520,
+            child: TerminalPanel(
+              serverConfig: const ServerConfig('https://hub.example.com'),
+              tokenStore: MemoryTokenStore(initialAccess: 'tok-test'),
+              nodeId: 'win-node',
+              nodeName: 'Windows',
+              isEmbedded: true,
+              wsConnectOverride: (uri, {headers}) => fakeChannel,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    incoming.add(jsonEncode({
+      'type': 'ready',
+      'shell': 'pwsh',
+      'platform': 'windows',
+      'cwd': r'C:\work',
+    }));
+    await tester.pumpAndSettle();
+
+    // 展开全键盘：Ctrl + ← 应发送 \x1b[1;5D
+    await tester.tap(find.text('全键盘'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Ctrl'));
+    await tester.pump();
+    await tester.tap(find.text('←'));
+    await tester.pump();
+    expect(
+      sentFrames.any((f) => f['type'] == 'input' && f['data'] == '\x1b[1;5D'),
+      true,
+    );
+
+    // Alt + ⌫ 应发送 \x1b\x7f
+    await tester.tap(find.text('Alt'));
+    await tester.pump();
+    await tester.tap(find.text('⌫'));
+    await tester.pump();
+    expect(
+      sentFrames.any((f) => f['type'] == 'input' && f['data'] == '\x1b\x7f'),
+      true,
+    );
+
+    // 点亮 Shift 后模拟终端输出小写字母 a，应应用 Shift 发送大写 A 并复位 Shift
+    await tester.tap(find.text('Shift'));
+    await tester.pump();
+    final termView = tester.widget<TerminalView>(find.byType(TerminalView));
+    termView.terminal.textInput('a');
+    await tester.pump();
+    expect(
+      sentFrames.any((f) => f['type'] == 'input' && f['data'] == 'A'),
+      true,
+    );
+
+    // 再次点亮 Shift 后直接切回快捷栏，点击 Tab 应发送普通 \t 而非残留的 \x1b[Z
+    await tester.tap(find.text('Shift'));
+    await tester.pump();
+    await tester.tap(find.text('快捷栏'));
+    await tester.pumpAndSettle();
+    sentFrames.clear();
+    await tester.tap(find.text('Tab'));
+    await tester.pump();
+    expect(
+      sentFrames.any((f) => f['type'] == 'input' && f['data'] == '\t'),
+      true,
+    );
+    expect(
+      sentFrames.any((f) => f['type'] == 'input' && f['data'] == '\x1b[Z'),
+      false,
+    );
+  });
+
+  testWidgets('TerminalPanel 4401 刷新期间手动重连不覆盖新连接，且极矮屏展开全键盘不溢出', (tester) async {
+    final channels = <_FakeTerminalWsChannel>[];
+    final controllers = <StreamController<dynamic>>[];
+    final sentByConn = <int, List<Map<String, dynamic>>>{};
+    final refreshCompleter = Completer<bool>();
+    final liveStates = <bool>[];
+    var connIdx = 0;
+
+    addTearDown(() async {
+      for (final c in controllers) {
+        if (!c.isClosed) await c.close();
+      }
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 390,
+            height: 210, // 模拟横屏手机弹出键盘后的极矮可用高度
+            child: TerminalPanel(
+              serverConfig: const ServerConfig('https://hub.example.com'),
+              tokenStore: MemoryTokenStore(initialAccess: 'tok-test'),
+              onRefreshAuth: () => refreshCompleter.future,
+              nodeId: 'win-node',
+              nodeName: 'Windows',
+              isEmbedded: true,
+              onConnectionChanged: liveStates.add,
+              wsConnectOverride: (uri, {headers}) {
+                final idx = connIdx++;
+                final ctrl = StreamController<dynamic>.broadcast();
+                controllers.add(ctrl);
+                sentByConn[idx] = [];
+                final ch = _FakeTerminalWsChannel(
+                  incoming: ctrl,
+                  onSend: (raw) {
+                    if (raw is String) {
+                      sentByConn[idx]!.add(Map<String, dynamic>.from(jsonDecode(raw) as Map));
+                    }
+                  },
+                );
+                channels.add(ch);
+                return ch;
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(channels.length, 1);
+
+    // 极矮屏幕下展开全键盘不应触发 RenderFlex overflow
+    await tester.tap(find.text('全键盘'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    // 模拟连接 0 因 4401 关闭并卡在异步 refreshCompleter
+    channels[0].closeCodeOverride = 4401;
+    await controllers[0].close();
+    await tester.pump();
+
+    // 在刷新尚未返回前用户手动点击「重新连接终端」，立即开启连接 1
+    await tester.tap(find.byTooltip('重新连接终端'));
+    await tester.pump();
+    expect(channels.length, 2);
+
+    controllers[1].add(jsonEncode({
+      'type': 'ready',
+      'shell': 'pwsh',
+      'platform': 'windows',
+      'cwd': r'C:\work',
+    }));
+    await tester.pump();
+    expect(liveStates.last, true);
+
+    // 此时旧连接的刷新终于完成，不得覆盖连接 1
+    refreshCompleter.complete(true);
+    await tester.pump();
+    expect(channels.length, 2);
+  });
+
+  testWidgets('ToolApprovalDock 支持编辑命令、选择授权范围、拒绝附言与只读权限拦截且矮屏不溢出', (tester) async {
+    final recorded = <({bool allow, String scope, String denyReason, String? editedTarget})>[];
+    const items = [
+      ToolApprovalItem(
+        approvalId: 'traj-1:3:permission',
+        sessionId: 's1',
+        trajectoryId: 'traj-1',
+        stepIndex: 3,
+        interactionKind: 'permission',
+        rawInteractionField: 'permission',
+        category: 'command',
+        title: '终端命令权限审批',
+        actionLabel: 'Run command',
+        target: 'npm run build',
+        cwd: r'C:\repo\web',
+        reason: '命令包含构建脚本触发确认',
+        shellName: 'pwsh',
+        canRemember: true,
+        allowedScopes: ['once', 'conversation', 'workspace'],
+        suggestedPersistPattern: 'npm run *',
+        editableCommand: true,
+      ),
+      ToolApprovalItem(
+        approvalId: 'traj-1:4:mcp',
+        sessionId: 's1',
+        trajectoryId: 'traj-1',
+        stepIndex: 4,
+        interactionKind: 'mcp',
+        rawInteractionField: 'mcp',
+        category: 'mcp',
+        title: 'MCP 工具审批',
+        target: 'github/list_issues',
+      ),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: BottomInputBar(
+            inputController: TextEditingController(),
+            isConnected: true,
+            isThinking: true,
+            canWrite: true,
+            isDark: true,
+            pendingAttachments: const [],
+            onRemoveAttachment: (_) {},
+            onShowAddContext: () {},
+            onSendMessage: () {},
+            onStopTask: () {},
+            approvalBar: ToolApprovalDock(
+              approvals: items,
+              resolvingIds: const {},
+              canWrite: true,
+              isDark: true,
+              onResolve: (
+                item, {
+                required bool allow,
+                String scope = 'once',
+                String denyReason = '',
+                String? editedTarget,
+              }) async {
+                recorded.add((
+                  allow: allow,
+                  scope: scope,
+                  denyReason: denyReason,
+                  editedTarget: editedTarget,
+                ));
+                return null;
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('终端命令权限审批'), findsOneWidget);
+    expect(find.text('队列 1/2'), findsOneWidget);
+    expect(find.text('npm run build'), findsOneWidget);
+    expect(find.text('本会话允许'), findsOneWidget);
+
+    // 切换授权范围并编辑命令后允许
+    await tester.tap(find.text('本会话允许'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('编辑命令后再允许'));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField).first, 'npm run build -- --profile');
+    await tester.pump();
+    await tester.tap(find.text('本会话允许').last);
+    await tester.pump();
+
+    expect(recorded.length, 1);
+    expect(recorded.first.allow, true);
+    expect(recorded.first.scope, 'conversation');
+    expect(recorded.first.editedTarget, 'npm run build -- --profile');
+
+    // 打开拒绝附言并提交拒绝
+    await tester.tap(find.byTooltip('添加拒绝附言'));
+    await tester.pump();
+    await tester.enterText(find.widgetWithText(TextField, '可选：告诉 Agent 拒绝原因或替代方案...'), '先只跑单测');
+    await tester.pump();
+    await tester.tap(find.text('拒绝'));
+    await tester.pump();
+
+    expect(recorded.length, 2);
+    expect(recorded[1].allow, false);
+    expect(recorded[1].denyReason, '先只跑单测');
+
+    // 只读模式 + 极矮横屏无溢出且隐藏操作按钮
+    tester.view.physicalSize = const Size(568, 320);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.bottomCenter,
+            child: BottomInputBar(
+              inputController: TextEditingController(),
+              isConnected: true,
+              isThinking: true,
+              canWrite: false,
+              isDark: false,
+              pendingAttachments: const [],
+              onRemoveAttachment: (_) {},
+              onShowAddContext: () {},
+              onSendMessage: () {},
+              onStopTask: () {},
+              approvalBar: ToolApprovalDock(
+                approvals: items,
+                resolvingIds: const {},
+                canWrite: false,
+                isDark: false,
+                onResolve: (
+                  _, {
+                  required bool allow,
+                  String scope = 'once',
+                  String denyReason = '',
+                  String? editedTarget,
+                }) async =>
+                    null,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('当前账号为只读权限，无权远程审批此操作。'), findsOneWidget);
+    expect(find.text('拒绝'), findsNothing);
   });
 }
 
@@ -2157,6 +2526,8 @@ class _FakeTerminalWsSink extends Fake implements WebSocketSink {
 class _FakeTerminalWsChannel extends Fake implements WebSocketChannel {
   final StreamController<dynamic> incoming;
   late final _FakeTerminalWsSink _sink;
+  int? closeCodeOverride;
+  String? closeReasonOverride;
 
   _FakeTerminalWsChannel({
     required this.incoming,
@@ -2172,10 +2543,10 @@ class _FakeTerminalWsChannel extends Fake implements WebSocketChannel {
   WebSocketSink get sink => _sink;
 
   @override
-  int? get closeCode => null;
+  int? get closeCode => closeCodeOverride;
 
   @override
-  String? get closeReason => null;
+  String? get closeReason => closeReasonOverride;
 
   @override
   Future<void> get ready => Future<void>.value();

@@ -17,6 +17,8 @@ from agy_hub.agent.config import AgentConfig
 from agy_hub.common.sandbox import RootRegistry, SandboxError
 from agy_hub.common.schemas import (
     ActionAckResponse,
+    ApprovalDecisionRequest,
+    ApprovalDecisionResponse,
     CreateSessionResponse,
     DeleteSessionResponse,
     ModelOption,
@@ -26,6 +28,7 @@ from agy_hub.common.schemas import (
     SessionMessagesResponse,
     SessionSummary,
     SessionTreeResponse,
+    ToolApprovalItem,
     TranscriptStep,
 )
 from agy_hub.common.transcript import (
@@ -60,6 +63,7 @@ class BaseEngineProvider(ABC):
     """Abstract base for Windows and Steam Deck Antigravity engines."""
 
     platform_name: str = "base"
+    supports_tool_approval: bool = False
 
     def __init__(self, config: AgentConfig, registry: RootRegistry) -> None:
         self.config = config
@@ -706,7 +710,32 @@ class BaseEngineProvider(ABC):
         before_step: int | None = None,
         limit: int = 60,
     ) -> SessionMessagesResponse:
-        return await asyncio.to_thread(self._get_session_messages_sync, session_id, before_step, limit)
+        resp = await asyncio.to_thread(self._get_session_messages_sync, session_id, before_step, limit)
+        resp.supports_tool_approval = self.supports_tool_approval
+        if before_step is None and self.supports_tool_approval:
+            try:
+                resp.pending_approvals = await self.get_pending_approvals(session_id)
+            except Exception:
+                resp.pending_approvals = []
+        return resp
+
+    async def get_pending_approvals(self, session_id: str) -> list[ToolApprovalItem]:
+        """List currently pending interactive tool approvals for a session."""
+        return []
+
+    async def resolve_approval(
+        self,
+        session_id: str,
+        decision: ApprovalDecisionRequest,
+    ) -> ApprovalDecisionResponse:
+        """Submit an allow/deny decision for a pending tool approval step."""
+        return ApprovalDecisionResponse(
+            ok=False,
+            session_id=session_id,
+            step_index=decision.step_index,
+            decision=decision.decision,
+            message="当前节点运行模式不支持交互式工具审批",
+        )
 
     async def archive_session(self, session_id: str, purge_disk: bool = False) -> DeleteSessionResponse:
         return await asyncio.to_thread(self._archive_session_sync, session_id, purge_disk)

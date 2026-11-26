@@ -65,6 +65,9 @@ class HubState {
   final List<FileRootItem> cachedRoots;
   final SessionChangesData sessionChanges;
   final SessionQueueData sessionQueue;
+  final List<ToolApprovalItem> pendingApprovals;
+  final Set<String> resolvingApprovalIds;
+  final bool supportsToolApproval;
   final List<OfflineOutboxItem> offlineOutbox;
   final bool isFlushingOutbox;
   final bool isInitializing;
@@ -97,6 +100,9 @@ class HubState {
     this.cachedRoots = const [],
     this.sessionChanges = const SessionChangesData(),
     this.sessionQueue = const SessionQueueData(),
+    this.pendingApprovals = const [],
+    this.resolvingApprovalIds = const {},
+    this.supportsToolApproval = true,
     this.offlineOutbox = const [],
     this.isFlushingOutbox = false,
     this.isInitializing = false,
@@ -135,6 +141,7 @@ class HubState {
       activeSessionId.startsWith(HubController.creatingSessionPrefix);
   bool get isActiveSessionRunning =>
       activeSessionId.isNotEmpty && runningSessionIds.contains(activeSessionId);
+  bool get hasPendingApprovals => pendingApprovals.isNotEmpty;
   List<PlanStepItem> get activePlanSteps => PlanStepItem.extractLatestSteps(messages);
   String get activeFocusText => PlanStepItem.extractLatestFocus(messages);
 
@@ -169,6 +176,10 @@ class HubState {
     bool clearSessionChanges = false,
     SessionQueueData? sessionQueue,
     bool clearSessionQueue = false,
+    List<ToolApprovalItem>? pendingApprovals,
+    bool clearPendingApprovals = false,
+    Set<String>? resolvingApprovalIds,
+    bool? supportsToolApproval,
     List<OfflineOutboxItem>? offlineOutbox,
     bool? isFlushingOutbox,
     bool? isInitializing,
@@ -202,6 +213,12 @@ class HubState {
       cachedRoots: cachedRoots ?? this.cachedRoots,
       sessionChanges: clearSessionChanges ? const SessionChangesData() : (sessionChanges ?? this.sessionChanges),
       sessionQueue: clearSessionQueue ? const SessionQueueData() : (sessionQueue ?? this.sessionQueue),
+      pendingApprovals:
+          clearPendingApprovals ? const [] : (pendingApprovals ?? this.pendingApprovals),
+      resolvingApprovalIds: clearPendingApprovals
+          ? const {}
+          : (resolvingApprovalIds ?? this.resolvingApprovalIds),
+      supportsToolApproval: supportsToolApproval ?? this.supportsToolApproval,
       offlineOutbox: offlineOutbox ?? this.offlineOutbox,
       isFlushingOutbox: isFlushingOutbox ?? this.isFlushingOutbox,
       isInitializing: isInitializing ?? this.isInitializing,
@@ -418,6 +435,8 @@ class HubController extends Notifier<HubState> {
       clearPendingSwitchModel: true,
       clearSessionChanges: true,
       clearSessionQueue: true,
+      clearPendingApprovals: true,
+      supportsToolApproval: true,
       isShowingCachedData: cachedSession != null && cachedSession.messages.isNotEmpty,
       activeCacheUpdatedAt: cachedSession?.updatedAt,
       clearActiveCacheUpdatedAt: cachedSession == null,
@@ -632,6 +651,8 @@ class HubController extends Notifier<HubState> {
         clearPendingSwitchModel: true,
         clearSessionChanges: true,
         clearSessionQueue: true,
+        clearPendingApprovals: true,
+        supportsToolApproval: true,
         cachedRoots: const [],
         pendingAttachments: const [],
         isShowingCachedData: false,
@@ -826,6 +847,9 @@ class HubController extends Notifier<HubState> {
         activeSessionModel: detectedModel,
         clearPendingSwitchModel:
             detectedModel.isNotEmpty && state.pendingSwitchModel == detectedModel,
+        pendingApprovals: page.pendingApprovals,
+        resolvingApprovalIds: _pruneResolvingIds(page.pendingApprovals),
+        supportsToolApproval: page.supportsToolApproval,
         isShowingCachedData: false,
         clearActiveCacheUpdatedAt: true,
       );
@@ -1028,6 +1052,8 @@ class HubController extends Notifier<HubState> {
       clearPendingSwitchModel: true,
       clearSessionChanges: true,
       clearSessionQueue: true,
+      clearPendingApprovals: true,
+      supportsToolApproval: true,
       isLoadingMessages: !hasCached,
       isShowingCachedData: hasCached,
       activeCacheUpdatedAt: hasCached ? cached.updatedAt : null,
@@ -1058,6 +1084,9 @@ class HubController extends Notifier<HubState> {
         isLoadingMessages: false,
         runningSessionIds: nextRunning,
         activeSessionModel: detectedModel,
+        pendingApprovals: page.pendingApprovals,
+        resolvingApprovalIds: _pruneResolvingIds(page.pendingApprovals),
+        supportsToolApproval: page.supportsToolApproval,
         isShowingCachedData: false,
         clearActiveCacheUpdatedAt: true,
       );
@@ -1129,7 +1158,7 @@ class HubController extends Notifier<HubState> {
           );
         }
         final existingIdx = updated.indexWhere(
-          (m) => m.stepIndex > 0 && m.stepIndex == event.step.stepIndex && m.msgType == event.step.msgType,
+          (m) => m.stepIndex >= 0 && m.stepIndex == event.step.stepIndex && m.msgType == event.step.msgType,
         );
         if (existingIdx >= 0) {
           updated[existingIdx] = event.step;
@@ -1206,6 +1235,32 @@ class HubController extends Notifier<HubState> {
           if (event.sessionId == state.activeSessionId) {
             unawaited(refreshSessionChanges());
             unawaited(refreshSessionQueue());
+            if (state.pendingApprovals.isNotEmpty) {
+              unawaited(refreshPendingApprovals());
+            }
+          }
+        }
+        break;
+
+      case WsApprovalsChangedEvent():
+        if (event.sessionId == state.activeSessionId) {
+          final hadNone = state.pendingApprovals.isEmpty;
+          state = state.copyWith(
+            pendingApprovals: event.approvals,
+            resolvingApprovalIds: _pruneResolvingIds(event.approvals),
+            supportsToolApproval: true,
+          );
+          if (hadNone &&
+              event.approvals.isNotEmpty &&
+              AndroidNativeBridge.isAndroidNative &&
+              _isAppInBackground) {
+            unawaited(
+              AndroidNativeBridge.showAlertNotification(
+                title: '等待工具审批',
+                body: event.approvals.first.title,
+                id: 2002,
+              ),
+            );
           }
         }
         break;
@@ -1563,6 +1618,88 @@ class HubController extends Notifier<HubState> {
       return e.message;
     } catch (e) {
       return '立即发送失败: $e';
+    }
+  }
+
+  Set<String> _pruneResolvingIds(List<ToolApprovalItem> approvals) {
+    if (state.resolvingApprovalIds.isEmpty) return const {};
+    final activeIds = approvals.map((e) => e.approvalId).toSet();
+    return state.resolvingApprovalIds.where(activeIds.contains).toSet();
+  }
+
+  Future<void> refreshPendingApprovals() async {
+    final nodeId = state.selectedNodeId;
+    final sid = state.activeSessionId;
+    if (nodeId.isEmpty || sid.isEmpty) return;
+    try {
+      final data = await _api.getPendingApprovals(nodeId, sid);
+      if (_disposed || state.selectedNodeId != nodeId || state.activeSessionId != sid) return;
+      state = state.copyWith(
+        pendingApprovals: data.approvals,
+        resolvingApprovalIds: _pruneResolvingIds(data.approvals),
+        supportsToolApproval: data.supported,
+      );
+    } catch (_) {}
+  }
+
+  Future<String?> resolveToolApproval(
+    ToolApprovalItem item, {
+    required bool allow,
+    String scope = 'once',
+    String denyReason = '',
+    String? editedTarget,
+  }) async {
+    final nodeId = state.selectedNodeId;
+    final sid = state.activeSessionId;
+    if (nodeId.isEmpty || sid.isEmpty) return '未选中会话';
+    if (!state.canWrite) return '当前账号为只读权限，无权审批';
+    if (state.resolvingApprovalIds.contains(item.approvalId)) return null;
+
+    final nextBusy = Set<String>.from(state.resolvingApprovalIds)..add(item.approvalId);
+    state = state.copyWith(resolvingApprovalIds: nextBusy);
+
+    try {
+      final res = await _api.resolveToolApproval(
+        nodeId,
+        sid,
+        trajectoryId: item.trajectoryId,
+        stepIndex: item.stepIndex,
+        interactionField: item.rawInteractionField,
+        decision: allow ? 'allow' : 'deny',
+        scope: allow ? scope : 'once',
+        denyReason: denyReason,
+        editedTarget: editedTarget,
+      );
+      if (_disposed || state.selectedNodeId != nodeId || state.activeSessionId != sid) {
+        return null;
+      }
+      if (!res.ok) {
+        final clearedBusy = Set<String>.from(state.resolvingApprovalIds)..remove(item.approvalId);
+        state = state.copyWith(
+          resolvingApprovalIds: clearedBusy,
+          pendingApprovals: res.remainingApprovals.isNotEmpty
+              ? res.remainingApprovals
+              : state.pendingApprovals,
+        );
+        return res.message.isNotEmpty ? res.message : '提交审批失败';
+      }
+      state = state.copyWith(
+        pendingApprovals: res.remainingApprovals,
+        resolvingApprovalIds: _pruneResolvingIds(res.remainingApprovals),
+      );
+      return null;
+    } on ApiException catch (e) {
+      if (!_disposed) {
+        final clearedBusy = Set<String>.from(state.resolvingApprovalIds)..remove(item.approvalId);
+        state = state.copyWith(resolvingApprovalIds: clearedBusy);
+      }
+      return e.message;
+    } catch (e) {
+      if (!_disposed) {
+        final clearedBusy = Set<String>.from(state.resolvingApprovalIds)..remove(item.approvalId);
+        state = state.copyWith(resolvingApprovalIds: clearedBusy);
+      }
+      return '审批请求失败: $e';
     }
   }
 
@@ -1930,6 +2067,9 @@ class HubController extends Notifier<HubState> {
         nextBeforeStep: page.nextBeforeStep,
         clearNextBeforeStep: page.nextBeforeStep == null,
         activeSessionModel: detectedModel.isNotEmpty ? detectedModel : state.activeSessionModel,
+        pendingApprovals: page.pendingApprovals,
+        resolvingApprovalIds: _pruneResolvingIds(page.pendingApprovals),
+        supportsToolApproval: page.supportsToolApproval,
       );
       _schedulePersistActiveSessionCache(immediate: true);
     } catch (_) {}

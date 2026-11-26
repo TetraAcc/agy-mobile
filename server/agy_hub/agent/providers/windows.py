@@ -15,12 +15,15 @@ from typing import Any
 
 import httpx
 
+from agy_hub.agent.approvals import build_user_interaction_payload, extract_pending_approvals
 from agy_hub.agent.config import AgentConfig
 from agy_hub.agent.providers.base import BaseEngineProvider
 from agy_hub.common.sandbox import RootRegistry
 from agy_hub.common.transcript import parse_all_workspace_paths
 from agy_hub.common.schemas import (
     ActionAckResponse,
+    ApprovalDecisionRequest,
+    ApprovalDecisionResponse,
     CreateSessionResponse,
     ModelOption,
     ModelsResponse,
@@ -28,6 +31,7 @@ from agy_hub.common.schemas import (
     QuotaBucket,
     QuotaGroup,
     QuotaResponse,
+    ToolApprovalItem,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +46,7 @@ _MODEL_ALIAS_MAP = {
 
 class WindowsEngineProvider(BaseEngineProvider):
     platform_name = "windows"
+    supports_tool_approval = True
 
     def __init__(
         self,
@@ -687,3 +692,253 @@ class WindowsEngineProvider(BaseEngineProvider):
                 )
             )
         return QuotaResponse(groups=groups, description="Windows Antigravity native quota")
+
+    @staticmethod
+    def _extract_rpc_error_detail(exc: httpx.HTTPStatusError) -> str:
+        if exc.response is not None:
+            try:
+                data = exc.response.json()
+                if isinstance(data, dict):
+                    msg = str(data.get("message") or data.get("detail") or data.get("error") or "").strip()
+                    if msg:
+                        return msg
+            except Exception:
+                pass
+            text = exc.response.text.strip()
+            if text:
+                return text
+        return str(exc)
+
+    async def _fetch_trajectory_steps(
+        self,
+        sid: str,
+        *,
+        tail_count: int = 40,
+        force_full: bool = False,
+    ) -> tuple[str, int, list[dict[str, Any]]]:
+        """Fetch trajectoryId and recent (or full) steps from active Windows LanguageServer."""
+        if not force_full:
+            summary_resp = await self._rpc_post("GetAllCascadeTrajectories", {}, timeout=5.0)
+            summaries = (summary_resp or {}).get("trajectorySummaries")
+            if isinstance(summaries, dict) and sid in summaries and isinstance(summaries[sid], dict):
+                meta = summaries[sid]
+                traj_id = str(meta.get("trajectoryId") or "").strip()
+                step_count = int(meta.get("stepCount") or 0)
+                if step_count <= 0:
+                    return traj_id, 0, []
+                offset = max(0, step_count - max(1, tail_count))
+                steps_resp = await self._rpc_post(
+                    "GetCascadeTrajectorySteps",
+                    {"cascadeId": sid, "stepOffset": offset},
+                    timeout=5.0,
+                )
+                steps = (steps_resp or {}).get("steps")
+                if isinstance(steps, list) and steps:
+                    return traj_id, offset, steps
+
+        full_resp = await self._rpc_post("GetCascadeTrajectory", {"cascadeId": sid}, timeout=6.0)
+        traj = (full_resp or {}).get("trajectory")
+        if not isinstance(traj, dict):
+            return "", 0, []
+        traj_id = str(traj.get("trajectoryId") or "").strip()
+        steps = traj.get("steps")
+        return traj_id, 0, steps if isinstance(steps, list) else []
+
+    @classmethod
+    def _find_target_step(
+        cls,
+        steps: list[dict[str, Any]],
+        *,
+        trajectory_id: str,
+        base_offset: int,
+        target_trajectory_id: str,
+        target_step_index: int,
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Locate the exact waiting step by (trajectoryId, stepIndex), checking subtrajectories."""
+        for idx, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            abs_idx = base_offset + idx
+            if abs_idx == target_step_index and (
+                not target_trajectory_id or target_trajectory_id == trajectory_id
+            ):
+                return trajectory_id, step
+
+            sub = step.get("subtrajectory")
+            if isinstance(sub, dict):
+                sub_steps = sub.get("steps")
+                sub_tid = str(sub.get("trajectoryId") or trajectory_id).strip()
+                if isinstance(sub_steps, list) and sub_steps:
+                    found = cls._find_target_step(
+                        sub_steps,
+                        trajectory_id=sub_tid,
+                        base_offset=0,
+                        target_trajectory_id=target_trajectory_id,
+                        target_step_index=target_step_index,
+                    )
+                    if found is not None:
+                        return found
+        return None
+
+    async def get_pending_approvals(self, session_id: str) -> list[ToolApprovalItem]:
+        sid = self.validate_session_id(session_id)
+        try:
+            traj_id, offset, steps = await self._fetch_trajectory_steps(sid, tail_count=40)
+        except Exception as exc:
+            logger.debug("Failed querying pending approvals for %s: %s", sid, exc)
+            return []
+        if not steps:
+            return []
+        return extract_pending_approvals(
+            steps,
+            session_id=sid,
+            trajectory_id=traj_id,
+            base_step_offset=offset,
+        )
+
+    async def resolve_approval(
+        self,
+        session_id: str,
+        decision: ApprovalDecisionRequest,
+    ) -> ApprovalDecisionResponse:
+        sid = self.validate_session_id(session_id)
+        hub = await asyncio.to_thread(self._discover_hub_sync)
+        if not hub:
+            return ApprovalDecisionResponse(
+                ok=False,
+                session_id=sid,
+                step_index=decision.step_index,
+                decision=decision.decision,
+                message="未检测到运行中的 Antigravity LanguageServer",
+            )
+
+        try:
+            traj_id, offset, steps = await self._fetch_trajectory_steps(sid, tail_count=80)
+            located = self._find_target_step(
+                steps,
+                trajectory_id=traj_id,
+                base_offset=offset,
+                target_trajectory_id=decision.trajectory_id.strip(),
+                target_step_index=decision.step_index,
+            )
+            if located is None:
+                traj_id, offset, steps = await self._fetch_trajectory_steps(sid, force_full=True)
+                located = self._find_target_step(
+                    steps,
+                    trajectory_id=traj_id,
+                    base_offset=offset,
+                    target_trajectory_id=decision.trajectory_id.strip(),
+                    target_step_index=decision.step_index,
+                )
+        except Exception as exc:
+            return ApprovalDecisionResponse(
+                ok=False,
+                session_id=sid,
+                step_index=decision.step_index,
+                decision=decision.decision,
+                message=f"查询审批步骤失败: {exc}",
+            )
+
+        if located is None:
+            remaining = await self.get_pending_approvals(sid)
+            return ApprovalDecisionResponse(
+                ok=False,
+                session_id=sid,
+                step_index=decision.step_index,
+                decision=decision.decision,
+                message=f"未找到步骤 #{decision.step_index}，可能已在桌面端处理或会话已切换",
+                remaining_approvals=remaining,
+            )
+
+        resolved_tid, step = located
+        try:
+            interaction_payload = build_user_interaction_payload(
+                step,
+                trajectory_id=resolved_tid,
+                step_index=decision.step_index,
+                decision=decision,
+            )
+        except ValueError as exc:
+            remaining = await self.get_pending_approvals(sid)
+            return ApprovalDecisionResponse(
+                ok=False,
+                session_id=sid,
+                step_index=decision.step_index,
+                decision=decision.decision,
+                message=str(exc),
+                remaining_approvals=remaining,
+            )
+
+        rpc_body = {"cascadeId": sid, "interaction": interaction_payload}
+        try:
+            resp = await self._rpc_post("HandleCascadeUserInteraction", rpc_body, timeout=8.0)
+        except httpx.HTTPStatusError as exc:
+            detail = self._extract_rpc_error_detail(exc)
+            # Some LS builds require PERMISSION_SCOPE_UNSPECIFIED instead of ONCE when declining
+            if (
+                decision.decision == "deny"
+                and "permission" in interaction_payload
+                and "declining a permission answer with scope" in detail
+            ):
+                retry_payload = json.loads(json.dumps(interaction_payload))
+                retry_payload["permission"]["scope"] = "PERMISSION_SCOPE_UNSPECIFIED"
+                try:
+                    resp = await self._rpc_post(
+                        "HandleCascadeUserInteraction",
+                        {"cascadeId": sid, "interaction": retry_payload},
+                        timeout=8.0,
+                    )
+                except httpx.HTTPStatusError as retry_exc:
+                    retry_detail = self._extract_rpc_error_detail(retry_exc)
+                    return ApprovalDecisionResponse(
+                        ok=False,
+                        session_id=sid,
+                        step_index=decision.step_index,
+                        decision=decision.decision,
+                        message=f"提交审批失败: {retry_detail}",
+                        remaining_approvals=await self.get_pending_approvals(sid),
+                    )
+            else:
+                return ApprovalDecisionResponse(
+                    ok=False,
+                    session_id=sid,
+                    step_index=decision.step_index,
+                    decision=decision.decision,
+                    message=f"提交审批失败: {detail}",
+                    remaining_approvals=await self.get_pending_approvals(sid),
+                )
+        except Exception as exc:
+            return ApprovalDecisionResponse(
+                ok=False,
+                session_id=sid,
+                step_index=decision.step_index,
+                decision=decision.decision,
+                message=f"提交审批请求异常: {exc}",
+                remaining_approvals=await self.get_pending_approvals(sid),
+            )
+
+        if resp is None:
+            return ApprovalDecisionResponse(
+                ok=False,
+                session_id=sid,
+                step_index=decision.step_index,
+                decision=decision.decision,
+                message="LanguageServer 未响应审批请求",
+                remaining_approvals=await self.get_pending_approvals(sid),
+            )
+
+        await asyncio.sleep(0.05)
+        remaining = [
+            item
+            for item in await self.get_pending_approvals(sid)
+            if not (item.trajectory_id == resolved_tid and item.step_index == decision.step_index)
+        ]
+        action_word = "已允许" if decision.decision == "allow" else "已拒绝"
+        return ApprovalDecisionResponse(
+            ok=True,
+            session_id=sid,
+            step_index=decision.step_index,
+            decision=decision.decision,
+            message=f"{action_word}步骤 #{decision.step_index} 的工具调用",
+            remaining_approvals=remaining,
+        )

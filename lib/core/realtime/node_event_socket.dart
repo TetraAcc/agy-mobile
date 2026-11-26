@@ -52,6 +52,18 @@ class WsPongEvent extends WsServerEvent {
   const WsPongEvent();
 }
 
+class WsApprovalsChangedEvent extends WsServerEvent {
+  final String sessionId;
+  final List<ToolApprovalItem> approvals;
+  final bool isRunning;
+
+  const WsApprovalsChangedEvent({
+    required this.sessionId,
+    required this.approvals,
+    required this.isRunning,
+  });
+}
+
 class WsErrorEvent extends WsServerEvent {
   final String code;
   final String message;
@@ -256,6 +268,20 @@ class NodeEventSocket implements EventSocketClient {
           break;
         case 'pong':
           _eventController.add(const WsPongEvent());
+          break;
+        case 'approvals_changed':
+          final rawApprovals = data['approvals'] as List<dynamic>? ?? const [];
+          final approvals = rawApprovals
+              .whereType<Map>()
+              .map((e) => ToolApprovalItem.fromJson(Map<String, dynamic>.from(e)))
+              .toList();
+          _eventController.add(
+            WsApprovalsChangedEvent(
+              sessionId: data['session_id']?.toString() ?? '',
+              approvals: approvals,
+              isRunning: data['is_running'] == true,
+            ),
+          );
           break;
         case 'error':
           final errCode = data['code']?.toString() ?? 'unknown';
