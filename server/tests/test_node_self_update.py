@@ -238,3 +238,77 @@ def test_gateway_admin_nodes_and_update_rbac(tmp_path: Path) -> None:
         assert body["updated"] is True
         assert body["to_version"] == "2.3.1"
         assert exited is False
+
+
+@pytest.mark.asyncio
+async def test_node_self_updater_fetch_retries_http11_and_merges_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed, clone_dir = _setup_git_pair(tmp_path)
+    (seed / "server" / "agy_hub" / "__init__.py").write_text('__version__ = "2.3.7"\n', encoding="utf-8")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "bump to 2.3.7")
+    _git(seed, "push", "origin", "main")
+
+    updater = NodeSelfUpdater(repo_dir=clone_dir, exit_callback=lambda: None)
+    updater._fetch_retry_delays = (0.0, 0.0)
+
+    calls: list[list[str]] = []
+    orig_run_git = updater._run_git
+    fail_all_fetches = False
+
+    def spy_run_git(args: list[str], timeout: float = 25.0) -> subprocess.CompletedProcess[str]:
+        calls.append(list(args))
+        if "fetch" in args:
+            if fail_all_fetches or "-c" not in args:
+                return subprocess.CompletedProcess(
+                    args=["git", *args],
+                    returncode=128,
+                    stdout="",
+                    stderr="fatal: unable to access 'https://example.com/repo.git/': Recv failure: Connection was reset",
+                )
+        return orig_run_git(args, timeout=timeout)
+
+    monkeypatch.setattr(updater, "_run_git", spy_run_git)
+
+    # First fetch fails with Connection reset, retry with HTTP/1.1 succeeds.
+    st = await updater.check_update(fetch=True, running_sessions=0)
+    assert st.update_available is True
+    assert st.behind_count == 1
+    assert st.can_update is True
+    assert any("http.version=HTTP/1.1" in arg for cmd in calls for arg in cmd)
+
+    # Even if apply_update's fetch hits connection reset again, offline merge succeeds using cached tracking ref.
+    calls.clear()
+    fail_all_fetches = True
+    res = await updater.apply_update(running_sessions=0, force=False)
+    assert res.ok is True
+    assert res.updated is True
+    assert res.restarting is True
+    assert res.to_version == "2.3.7"
+    assert not any("pull" in cmd for cmd in calls)
+    assert any(cmd[:2] == ["merge", "--ff-only"] for cmd in calls)
+
+
+@pytest.mark.asyncio
+async def test_node_self_updater_fetch_failure_without_cached_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed, clone_dir = _setup_git_pair(tmp_path)
+    updater = NodeSelfUpdater(repo_dir=clone_dir, exit_callback=lambda: None)
+    updater._fetch_retry_delays = (0.0, 0.0)
+
+    monkeypatch.setattr(
+        updater,
+        "_fetch_origin",
+        lambda: "fatal: unable to access 'https://example.com/repo.git/': Recv failure: Connection was reset",
+    )
+
+    st = await updater.check_update(fetch=True, running_sessions=0)
+    assert st.update_available is False
+    assert st.can_update is False
+    assert "拉取远端状态失败" in st.message
+
+    res = await updater.apply_update(running_sessions=0, force=False)
+    assert res.ok is False
+    assert "连接远端仓库失败" in res.message

@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -15,6 +16,26 @@ from agy_hub import __version__
 from agy_hub.common.schemas import NodeUpdateApplyResponse, NodeUpdateStatusResponse
 
 _VERSION_RE = re.compile(r'__version__\s*=\s*["\']([^"\']+)["\']')
+_TRANSIENT_GIT_NET_KEYWORDS = (
+    "connection was reset",
+    "connection reset",
+    "recv failure",
+    "unexpected eof",
+    "early eof",
+    "ssl",
+    "tls",
+    "http/2",
+    "http2",
+    "curl 56",
+    "curl 35",
+    "curl 28",
+    "curl 52",
+    "timed out",
+    "timeout",
+    "unable to access",
+    "could not resolve",
+    "empty reply",
+)
 
 
 def _default_repo_dir() -> Path:
@@ -45,6 +66,8 @@ def _read_disk_version(repo_dir: Path) -> str:
 class NodeSelfUpdater:
     """Safely checks and fast-forwards the local git checkout for Node Agent."""
 
+    _fetch_retry_delays: tuple[float, ...] = (0.6, 1.2)
+
     def __init__(
         self,
         repo_dir: Path | None = None,
@@ -60,6 +83,7 @@ class NodeSelfUpdater:
         return subprocess.run(
             ["git", *args],
             cwd=str(self.repo_dir),
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -74,6 +98,51 @@ class NodeSelfUpdater:
         res = self._run_git(["rev-parse", "--is-inside-work-tree"], timeout=8.0)
         return res.returncode == 0 and res.stdout.strip().lower() == "true"
 
+    @staticmethod
+    def _is_transient_network_error(err: str) -> bool:
+        low = err.lower()
+        return any(kw in low for kw in _TRANSIENT_GIT_NET_KEYWORDS)
+
+    def _fetch_origin(self) -> str:
+        attempts: list[tuple[list[str], float]] = [
+            (["fetch", "--quiet", "origin"], 20.0),
+            (["-c", "http.version=HTTP/1.1", "fetch", "--quiet", "origin"], 20.0),
+            (
+                [
+                    "-c",
+                    "http.version=HTTP/1.1",
+                    "-c",
+                    "http.lowSpeedLimit=0",
+                    "-c",
+                    "http.lowSpeedTime=999999",
+                    "fetch",
+                    "--quiet",
+                    "origin",
+                ],
+                25.0,
+            ),
+        ]
+        last_err = ""
+        for idx, (args, timeout) in enumerate(attempts):
+            timed_out = False
+            try:
+                res = self._run_git(args, timeout=timeout)
+                if res.returncode == 0:
+                    return ""
+                last_err = (res.stderr or res.stdout).strip()
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                last_err = "git fetch 超时"
+
+            has_more = idx + 1 < len(attempts)
+            if has_more and (timed_out or self._is_transient_network_error(last_err)):
+                delay = self._fetch_retry_delays[min(idx, len(self._fetch_retry_delays) - 1)]
+                if delay > 0:
+                    time.sleep(delay)
+                continue
+            break
+        return last_err
+
     def _get_branch_and_commits(self, fetch: bool) -> dict[str, object]:
         branch_res = self._run_git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=8.0)
         branch = branch_res.stdout.strip() if branch_res.returncode == 0 else ""
@@ -84,14 +153,7 @@ class NodeSelfUpdater:
         status_res = self._run_git(["status", "--porcelain", "--untracked-files=no"], timeout=8.0)
         dirty = bool(status_res.stdout.strip()) if status_res.returncode == 0 else True
 
-        fetch_error = ""
-        if fetch:
-            try:
-                fetch_res = self._run_git(["fetch", "--quiet", "origin"], timeout=25.0)
-                if fetch_res.returncode != 0:
-                    fetch_error = (fetch_res.stderr or fetch_res.stdout).strip()
-            except subprocess.TimeoutExpired:
-                fetch_error = "git fetch 超时"
+        fetch_error = self._fetch_origin() if fetch else ""
 
         upstream_ref = "@{u}"
         up_res = self._run_git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], timeout=8.0)
@@ -144,12 +206,16 @@ class NodeSelfUpdater:
         fetch_error = str(info["fetch_error"])
 
         update_available = behind_count > 0
-        if fetch_error:
-            msg = f"拉取远端状态失败: {fetch_error}"
-            can_update = False
-        elif dirty:
+        if dirty:
             msg = "检测到工作区存在未提交改动，已锁定自动更新以防覆盖本地代码"
             can_update = False
+        elif fetch_error:
+            if update_available:
+                msg = f"拉取远端状态失败（{fetch_error}），但本地已有 {behind_count} 个待更新提交，可尝试直接更新"
+                can_update = True
+            else:
+                msg = f"拉取远端状态失败: {fetch_error}"
+                can_update = False
         elif not update_available:
             msg = "当前已是最新版本"
             can_update = False
@@ -192,7 +258,8 @@ class NodeSelfUpdater:
             )
 
         info = self._get_branch_and_commits(fetch=True)
-        if info["fetch_error"]:
+        behind_count = int(info["behind_count"])
+        if info["fetch_error"] and behind_count <= 0:
             return NodeUpdateApplyResponse(
                 ok=False,
                 from_version=__version__,
@@ -214,7 +281,6 @@ class NodeSelfUpdater:
                 message=f"当前有 {running_sessions} 个会话正在运行，请等待结束或开启强制更新",
             )
 
-        behind_count = int(info["behind_count"])
         before_commit = str(info["local_commit"])
         if behind_count <= 0:
             return NodeUpdateApplyResponse(
@@ -230,23 +296,24 @@ class NodeSelfUpdater:
         pyproject = self.repo_dir / "server" / "pyproject.toml"
         deps_before = _sha256_file(pyproject)
 
+        upstream_ref = str(info["upstream_ref"])
         try:
-            pull_res = self._run_git(["pull", "--ff-only"], timeout=45.0)
+            merge_res = self._run_git(["merge", "--ff-only", upstream_ref], timeout=20.0)
         except subprocess.TimeoutExpired:
             return NodeUpdateApplyResponse(
                 ok=False,
                 from_version=__version__,
                 to_version=__version__,
-                message="git pull 超时，请稍后重试",
+                message="git merge 超时，请稍后重试",
             )
 
-        if pull_res.returncode != 0:
-            err = (pull_res.stderr or pull_res.stdout).strip()
+        if merge_res.returncode != 0:
+            err = (merge_res.stderr or merge_res.stdout).strip()
             return NodeUpdateApplyResponse(
                 ok=False,
                 from_version=__version__,
                 to_version=__version__,
-                message=f"无法快进拉取更新: {err}",
+                message=f"无法快进更新: {err}",
             )
 
         deps_after = _sha256_file(pyproject)
