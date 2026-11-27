@@ -39,6 +39,7 @@ import '../workspace/tool_detail_sheet.dart';
 import '../workspace/workspace_file_picker_dialog.dart';
 import 'download_progress_dialog.dart';
 import 'hub_controller.dart';
+import 'node_power_banner.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   final UserProfile user;
@@ -75,6 +76,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   double _rightPanelWidth = 480.0;
   bool _terminalMounted = false;
   bool _terminalLive = false;
+  bool _mobileTerminalOpen = false;
+  final GlobalKey _terminalPanelKey = GlobalKey(debugLabel: 'persistent_terminal_key');
   ({
     FileContentData data,
     bool canWrite,
@@ -670,22 +673,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           _rightPanelOpen = true;
           _rightPanelTab = 1;
           _terminalMounted = true;
+          _mobileTerminalOpen = false;
         }
       });
       return;
     }
-    final api = ref.read(apiClientProvider);
-    final hub = ref.read(hubControllerProvider.notifier);
-    TerminalPanel.showSheet(
-      context,
-      serverConfig: api.serverConfig,
-      tokenStore: api.tokenStore,
-      onRefreshAuth: api.refreshSessionLocked,
-      nodeId: hubState.selectedNodeId,
-      nodeName: hubState.currentNode?.name ?? hubState.selectedNodeId,
-      initialCwd: hub.activeWorkspacePath,
-      activeSessionId: hubState.activeSessionId,
-    );
+    setState(() {
+      if (_mobileTerminalOpen) {
+        // 手机端收起但保持后台 PTY 会话运行
+        _mobileTerminalOpen = false;
+      } else {
+        _mobileTerminalOpen = true;
+        _terminalMounted = true;
+        _rightPanelOpen = false;
+      }
+    });
   }
 
   void _openImagePreviewDialog(String cleanPath, {String? rootId, String? filename}) {
@@ -1634,6 +1636,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             _sidePreviewError = null;
             _terminalMounted = false;
             _terminalLive = false;
+            _mobileTerminalOpen = false;
             if (next.selectedNodeId.isEmpty) {
               _rightPanelOpen = false;
             }
@@ -1656,8 +1659,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final canUseTerminal = widget.user.role == 'admin' &&
         hubState.canWrite &&
         hubState.selectedNodeId.isNotEmpty;
-    if ((!useSideWorkspacePanel || !canUseTerminal) &&
-        (_terminalMounted || _terminalLive || (!useSideWorkspacePanel && _rightPanelOpen))) {
+    final needsTerminalReset = !canUseTerminal &&
+        (_terminalMounted || _terminalLive || _mobileTerminalOpen);
+    final needsSideToMobileMigration = !useSideWorkspacePanel && _rightPanelOpen;
+    final needsMobileToSideMigration = useSideWorkspacePanel && _mobileTerminalOpen;
+    if (needsTerminalReset || needsSideToMobileMigration || needsMobileToSideMigration) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         final curSide = ResponsiveLayout.useSideWorkspacePanel(context);
@@ -1665,18 +1671,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         final curCanTerm = widget.user.role == 'admin' &&
             curHub.canWrite &&
             curHub.selectedNodeId.isNotEmpty;
-        if ((!curSide || !curCanTerm) &&
-            (_terminalMounted || _terminalLive || (!curSide && _rightPanelOpen))) {
-          setState(() {
-            if (!curSide || !curCanTerm) {
-              _terminalMounted = false;
-              _terminalLive = false;
+        setState(() {
+          if (!curCanTerm) {
+            _terminalMounted = false;
+            _terminalLive = false;
+            _mobileTerminalOpen = false;
+            _rightPanelOpen = false;
+          } else if (!curSide && _rightPanelOpen) {
+            if (_rightPanelTab == 1 && _terminalMounted) {
+              _mobileTerminalOpen = true;
             }
-            if (!curSide) {
-              _rightPanelOpen = false;
+            _rightPanelOpen = false;
+          } else if (curSide && _mobileTerminalOpen) {
+            if (_terminalMounted) {
+              _rightPanelOpen = true;
+              _rightPanelTab = 1;
             }
-          });
-        }
+            _mobileTerminalOpen = false;
+          }
+        });
       });
     }
     final contentMaxWidth = ResponsiveLayout.contentMaxWidth(context);
@@ -1717,6 +1730,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         if (didPop) return;
         if (_scaffoldKey.currentState?.isDrawerOpen == true) {
           Navigator.of(context).pop();
+          return;
+        }
+        if (!useSideWorkspacePanel && _mobileTerminalOpen) {
+          setState(() => _mobileTerminalOpen = false);
           return;
         }
         if (_isChatSearching) {
@@ -1838,43 +1855,50 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             ),
           ],
           if (canUseTerminal)
-            IconButton(
-              visualDensity: VisualDensity.compact,
-              icon: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  Icon(
-                    Icons.terminal_rounded,
-                    size: 20,
-                    color: (useSideWorkspacePanel && _rightPanelOpen && _rightPanelTab == 1)
-                        ? Theme.of(context).colorScheme.primary
-                        : null,
-                  ),
-                  if (useSideWorkspacePanel && _terminalMounted && !_rightPanelOpen)
-                    Positioned(
-                      right: -2,
-                      top: -2,
-                      child: Container(
-                        width: 7,
-                        height: 7,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: _terminalLive ? Colors.greenAccent : AppColors.statusAmber(isDark),
-                          border: Border.all(
-                            color: isDark ? AppColors.darkBg : AppColors.lightBg,
-                            width: 1.2,
+            Builder(
+              builder: (context) {
+                final terminalExpanded = (useSideWorkspacePanel && _rightPanelOpen && _rightPanelTab == 1) ||
+                    (!useSideWorkspacePanel && _mobileTerminalOpen);
+                final terminalBgActive = _terminalMounted && !terminalExpanded;
+                return IconButton(
+                  visualDensity: VisualDensity.compact,
+                  icon: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Icon(
+                        Icons.terminal_rounded,
+                        size: 20,
+                        color: terminalExpanded
+                            ? Theme.of(context).colorScheme.primary
+                            : null,
+                      ),
+                      if (terminalBgActive)
+                        Positioned(
+                          right: -2,
+                          top: -2,
+                          child: Container(
+                            width: 7,
+                            height: 7,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: _terminalLive ? Colors.greenAccent : AppColors.statusAmber(isDark),
+                              border: Border.all(
+                                color: isDark ? AppColors.darkBg : AppColors.lightBg,
+                                width: 1.2,
+                              ),
+                            ),
                           ),
                         ),
-                      ),
-                    ),
-                ],
-              ),
-              tooltip: (useSideWorkspacePanel && _rightPanelOpen && _rightPanelTab == 1)
-                  ? '收起右侧终端（后台保活）'
-                  : (useSideWorkspacePanel && _terminalMounted
-                      ? (_terminalLive ? '展开后台终端（运行中）' : '展开后台终端（已断开）')
-                      : '远程终端 (PTY)'),
-              onPressed: () => _openTerminalPanel(hubState),
+                    ],
+                  ),
+                  tooltip: terminalExpanded
+                      ? '收起终端（后台保持运行）'
+                      : (terminalBgActive
+                          ? (_terminalLive ? '展开后台终端（运行中）' : '展开后台终端（已断开）')
+                          : '远程终端 (PTY)'),
+                  onPressed: () => _openTerminalPanel(hubState),
+                );
+              },
             ),
           if (useSideWorkspacePanel && _sidePreviewFile != null && !_rightPanelOpen)
             IconButton(
@@ -1929,13 +1953,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           ),
         ],
       ),
-      body: Row(
+      body: Stack(
         children: [
-          if (showPermanentSidebar)
-            _buildSidebar(hubState, hubNotifier, themeState, isDark, isPermanent: true),
+          Row(
+            children: [
+              if (showPermanentSidebar)
+                _buildSidebar(hubState, hubNotifier, themeState, isDark, isPermanent: true),
           Expanded(
             child: Column(
               children: [
+          if (hubState.nodePowerStatus != null && hubState.nodePowerStatus!.enabled)
+            NodePowerBanner(
+              nodeName: hubState.currentNode?.name ?? hubState.selectedNodeId,
+              status: hubState.nodePowerStatus!,
+              isDark: isDark,
+              isUpdating: hubState.isUpdatingNodePower,
+              maxContentWidth: contentMaxWidth,
+              onCancel: () async {
+                final err = await hubNotifier.cancelNodePower();
+                if (err != null && context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                }
+              },
+            ),
           if (_isChatSearching)
             Container(
               width: double.infinity,
@@ -2430,6 +2470,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 ),
               ),
             ),
+            ],
+          ),
+          if (!useSideWorkspacePanel && _terminalMounted && canUseTerminal)
+            _buildMobileTerminalOverlay(hubState, hubNotifier, isDark),
         ],
       ),
       ),
@@ -2719,9 +2763,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (!_terminalMounted) {
       return const SizedBox.shrink();
     }
+    return _buildPersistentTerminal(
+      hubState,
+      hubNotifier,
+      isActive: _rightPanelOpen && _rightPanelTab == 1,
+      withMobileControls: false,
+    );
+  }
+
+  Widget _buildPersistentTerminal(
+    HubState hubState,
+    HubController hubNotifier, {
+    required bool isActive,
+    required bool withMobileControls,
+  }) {
     final api = ref.read(apiClientProvider);
     return TerminalPanel(
-      key: ValueKey('side-term-${hubState.selectedNodeId}'),
+      key: _terminalPanelKey,
       serverConfig: api.serverConfig,
       tokenStore: api.tokenStore,
       onRefreshAuth: api.refreshSessionLocked,
@@ -2730,11 +2788,106 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       initialCwd: hubNotifier.activeWorkspacePath,
       activeSessionId: hubState.activeSessionId,
       isEmbedded: true,
-      isActive: _rightPanelOpen && _rightPanelTab == 1,
+      isActive: isActive,
+      onMinimize: withMobileControls
+          ? () {
+              setState(() => _mobileTerminalOpen = false);
+            }
+          : null,
+      onClose: withMobileControls
+          ? () {
+              setState(() {
+                _terminalMounted = false;
+                _terminalLive = false;
+                _mobileTerminalOpen = false;
+              });
+            }
+          : null,
       onConnectionChanged: (alive) {
         if (!mounted || _terminalLive == alive) return;
         setState(() => _terminalLive = alive);
       },
+    );
+  }
+
+  Widget _buildMobileTerminalOverlay(
+    HubState hubState,
+    HubController hubNotifier,
+    bool isDark,
+  ) {
+    final bgColor = isDark ? const Color(0xFF0E1016) : Colors.white;
+    final handleColor = isDark ? Colors.white24 : Colors.black26;
+    return Positioned.fill(
+      child: Offstage(
+        offstage: !_mobileTerminalOpen,
+        child: TickerMode(
+          enabled: _mobileTerminalOpen,
+          child: Stack(
+            children: [
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => setState(() => _mobileTerminalOpen = false),
+                child: Container(color: Colors.black54),
+              ),
+              Align(
+                alignment: Alignment.bottomCenter,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 1080.0),
+                  child: LayoutBuilder(
+                    builder: (ctx, box) {
+                      final maxH = box.maxHeight.isFinite ? box.maxHeight : 600.0;
+                      final targetH = (maxH * 0.90).clamp(160.0, maxH);
+                      return Material(
+                        color: bgColor,
+                        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                        clipBehavior: Clip.antiAlias,
+                        elevation: 16,
+                        child: SizedBox(
+                          height: targetH,
+                          child: Column(
+                            children: [
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onVerticalDragEnd: (details) {
+                                  if ((details.primaryVelocity ?? 0) > 260) {
+                                    setState(() => _mobileTerminalOpen = false);
+                                  }
+                                },
+                                child: SizedBox(
+                                  width: double.infinity,
+                                  height: 22,
+                                  child: Center(
+                                    child: Container(
+                                      width: 36,
+                                      height: 4,
+                                      decoration: BoxDecoration(
+                                        color: handleColor,
+                                        borderRadius: BorderRadius.circular(2),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: _buildPersistentTerminal(
+                                  hubState,
+                                  hubNotifier,
+                                  isActive: _mobileTerminalOpen,
+                                  withMobileControls: true,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -3075,6 +3228,7 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
   final Map<String, String> _nodeUpdateErrors = {};
   final Set<String> _checkingNodeIds = {};
   final Set<String> _updatingNodeIds = {};
+  String _selectedPowerAction = 'shutdown';
 
   @override
   void initState() {
@@ -3083,7 +3237,12 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
     _appVersion = widget.currentAppVersion;
     _latestRelease = widget.initialAppUpdate;
     _appUpdateChecked = widget.initialAppUpdate != null;
+    final initialPower = ref.read(hubControllerProvider).nodePowerStatus;
+    if (initialPower != null && initialPower.enabled) {
+      _selectedPowerAction = initialPower.action;
+    }
     _loadNotifyStatus();
+    unawaited(ref.read(hubControllerProvider.notifier).refreshNodePowerStatus());
     if (AndroidNativeBridge.isAndroidNative) {
       unawaited(_initAppUpdateSection());
     }
@@ -3545,6 +3704,181 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
     );
   }
 
+  Widget _buildNodePowerSection(bool isDark, Color primary) {
+    final hubState = ref.watch(hubControllerProvider);
+    final hubNotifier = ref.read(hubControllerProvider.notifier);
+    final node = hubState.currentNode;
+    final power = hubState.nodePowerStatus;
+    final armed = power != null && power.enabled;
+    final activeAction = armed ? power.action : _selectedPowerAction;
+    final nodeName = node?.name ?? hubState.selectedNodeId;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              '完成后自动电源',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
+            ),
+            const Spacer(),
+            if (nodeName.isNotEmpty)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: (armed ? AppColors.statusAmber(isDark) : primary).withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  armed ? '$nodeName · 已预约${power.actionLabel}' : nodeName,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w600,
+                    color: armed ? AppColors.statusAmber(isDark) : primary,
+                  ),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        if (node == null)
+          Text(
+            '请先选择一个可用节点。',
+            style: TextStyle(fontSize: 11.5, color: isDark ? Colors.white54 : Colors.black54),
+          )
+        else if (node.isLocal)
+          Text(
+            '当前为网关宿主机（${node.name}），系统策略禁止远程关机或睡眠。',
+            style: TextStyle(fontSize: 11.5, color: isDark ? Colors.white54 : Colors.black54),
+          )
+        else if (!node.canWrite)
+          Text(
+            '当前账号对 ${node.name} 为只读权限，无法预约关机或睡眠。',
+            style: TextStyle(fontSize: 11.5, color: isDark ? Colors.white54 : Colors.black54),
+          )
+        else if (power != null && !power.supported)
+          Text(
+            power.message.isNotEmpty ? power.message : '该节点未开启远程电源控制支持。',
+            style: TextStyle(fontSize: 11.5, color: isDark ? Colors.white54 : Colors.black54),
+          )
+        else ...[
+          Text(
+            armed && power.message.isNotEmpty
+                ? power.message
+                : '当该节点所有会话、排队队列和工具审批全部清空后，静默确认 20s 并进入 60s 可取消倒计时。',
+            style: TextStyle(
+              fontSize: 11,
+              color: armed
+                  ? AppColors.statusAmber(isDark)
+                  : (isDark ? Colors.white54 : Colors.black54),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Container(
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                padding: const EdgeInsets.all(3),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    (id: 'shutdown', label: '关机'),
+                    (id: 'sleep', label: '睡眠'),
+                  ].map((opt) {
+                    final selected = activeAction == opt.id;
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: hubState.isUpdatingNodePower
+                          ? null
+                          : () async {
+                              setState(() => _selectedPowerAction = opt.id);
+                              if (armed && opt.id != power.action) {
+                                final err = await hubNotifier.scheduleNodePower(action: opt.id);
+                                if (err != null && mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                                }
+                              }
+                            },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: selected
+                              ? primary.withValues(alpha: isDark ? 0.22 : 0.14)
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          opt.label,
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                            color: selected ? primary : (isDark ? Colors.white60 : Colors.black54),
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+              const Spacer(),
+              if (armed)
+                OutlinedButton.icon(
+                  onPressed: hubState.isUpdatingNodePower
+                      ? null
+                      : () async {
+                          final err = await hubNotifier.cancelNodePower();
+                          if (err != null && mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                          }
+                        },
+                  icon: Icon(Icons.close_rounded, size: 15, color: AppColors.statusRed(isDark)),
+                  label: Text(
+                    '取消预约',
+                    style: TextStyle(fontSize: 11.5, color: AppColors.statusRed(isDark)),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    side: BorderSide(color: AppColors.statusRed(isDark).withValues(alpha: 0.6)),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                )
+              else
+                FilledButton.icon(
+                  onPressed: hubState.isUpdatingNodePower
+                      ? null
+                      : () async {
+                          final err = await hubNotifier.scheduleNodePower(action: _selectedPowerAction);
+                          if (err != null && mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                          }
+                        },
+                  icon: Icon(
+                    _selectedPowerAction == 'sleep'
+                        ? Icons.bedtime_rounded
+                        : Icons.power_settings_new_rounded,
+                    size: 15,
+                  ),
+                  label: Text(
+                    hubState.isUpdatingNodePower
+                        ? '提交中...'
+                        : '开启完成后${_selectedPowerAction == 'sleep' ? '睡眠' : '关机'}',
+                    style: const TextStyle(fontSize: 11.5),
+                  ),
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
   Widget _buildSegmented({
     required String title,
     required String subtitle,
@@ -3635,6 +3969,7 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
 
     return AlertDialog(
       backgroundColor: isDark ? const Color(0xFF18181B) : Colors.white,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       title: Text(
         '通用设置',
@@ -3695,88 +4030,97 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
                 style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
               ),
               const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: AppFonts.options.map((opt) {
-                  final isSelected = themeState.font.id == opt.id;
-                  final isLoading = themeState.loadingFontId == opt.id;
-                  return InkWell(
-                    borderRadius: BorderRadius.circular(10),
-                    onTap: themeState.loadingFontId != null
-                        ? null
-                        : () async {
-                            final ok = await themeNotifier.setFont(
-                              opt,
-                              baseUrl: widget.currentUrl,
-                            );
-                            if (!ok && context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('字体文件暂不可用，已切换为系统相近字体 (${opt.name})'),
-                                  duration: const Duration(seconds: 2),
-                                ),
-                              );
-                            }
-                          },
-                    child: Container(
-                      width: 196,
-                      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
-                      decoration: BoxDecoration(
-                        color: isSelected
-                            ? primary.withValues(alpha: isDark ? 0.14 : 0.08)
-                            : (isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5)),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  const spacing = 8.0;
+                  final maxWidth = constraints.maxWidth.isFinite ? constraints.maxWidth : 440.0;
+                  final itemWidth = ((maxWidth - spacing) / 2).floorToDouble();
+                  return Wrap(
+                    spacing: spacing,
+                    runSpacing: spacing,
+                    children: AppFonts.options.map((opt) {
+                      final isSelected = themeState.font.id == opt.id;
+                      final isLoading = themeState.loadingFontId == opt.id;
+                      return InkWell(
                         borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: isSelected
-                              ? primary.withValues(alpha: 0.7)
-                              : (isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
-                          width: isSelected ? 1.2 : 1,
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  opt.name,
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
-                                    color: isSelected
-                                        ? primary
-                                        : (isDark ? Colors.white : Colors.black87),
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  opt.description,
-                                  style: TextStyle(
-                                    fontSize: 10.5,
-                                    color: isDark ? Colors.white54 : Colors.black54,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
+                        onTap: themeState.loadingFontId != null
+                            ? null
+                            : () async {
+                                final ok = await themeNotifier.setFont(
+                                  opt,
+                                  baseUrl: widget.currentUrl,
+                                );
+                                if (!ok && context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('字体文件暂不可用，已切换为系统相近字体 (${opt.name})'),
+                                      duration: const Duration(seconds: 2),
+                                    ),
+                                  );
+                                }
+                              },
+                        child: Container(
+                          width: itemWidth > 0 ? itemWidth : null,
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? primary.withValues(alpha: isDark ? 0.14 : 0.08)
+                                : (isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5)),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: isSelected
+                                  ? primary.withValues(alpha: 0.7)
+                                  : (isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
+                              width: isSelected ? 1.2 : 1,
                             ),
                           ),
-                          if (isLoading)
-                            SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(strokeWidth: 1.8, color: primary),
-                            )
-                          else if (isSelected)
-                            Icon(Icons.check_rounded, size: 16, color: primary),
-                        ],
-                      ),
-                    ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      opt.name,
+                                      style: TextStyle(
+                                        fontSize: 12.5,
+                                        fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                                        color: isSelected
+                                            ? primary
+                                            : (isDark ? Colors.white : Colors.black87),
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      opt.description,
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        color: isDark ? Colors.white54 : Colors.black54,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (isLoading)
+                                SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(strokeWidth: 1.8, color: primary),
+                                )
+                              else if (isSelected)
+                                Icon(Icons.check_rounded, size: 15, color: primary),
+                            ],
+                          ),
+                        ),
+                      );
+                    }).toList(),
                   );
-                }).toList(),
+                },
               ),
               const SizedBox(height: 16),
               Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
@@ -3890,6 +4234,10 @@ class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> 
                   style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black45),
                 ),
               ],
+              const SizedBox(height: 16),
+              Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
+              const SizedBox(height: 12),
+              _buildNodePowerSection(isDark, primary),
               const SizedBox(height: 16),
               Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
               const SizedBox(height: 12),

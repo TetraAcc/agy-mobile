@@ -23,6 +23,7 @@ import 'package:agy_remote/features/chat/session_queue_bar.dart';
 import 'package:agy_remote/features/chat/session_steps_bar.dart';
 import 'package:agy_remote/features/chat/tool_approval_card.dart';
 import 'package:agy_remote/features/hub/download_progress_dialog.dart';
+import 'package:agy_remote/features/hub/node_power_banner.dart';
 import 'package:agy_remote/features/sessions/new_session_dialog.dart';
 import 'package:agy_remote/features/sessions/quota_drawer.dart';
 import 'package:agy_remote/features/workspace/change_review_sheet.dart';
@@ -2500,6 +2501,187 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('当前账号为只读权限，无权远程审批此操作。'), findsOneWidget);
     expect(find.text('拒绝'), findsNothing);
+  });
+
+  testWidgets('TerminalPanel 在提供 onMinimize 与 onClose 时分离渲染收起与结束会话按钮且互不误触', (tester) async {
+    final incoming = StreamController<dynamic>.broadcast();
+    final fakeChannel = _FakeTerminalWsChannel(
+      incoming: incoming,
+      onSend: (_) {},
+    );
+    addTearDown(() async {
+      await incoming.close();
+    });
+
+    var minimizeCount = 0;
+    var closeCount = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 390,
+            height: 640,
+            child: TerminalPanel(
+              serverConfig: const ServerConfig('https://hub.example.com'),
+              tokenStore: MemoryTokenStore(initialAccess: 'tok-test'),
+              nodeId: 'deck-node',
+              nodeName: 'Deck',
+              isEmbedded: true,
+              onMinimize: () => minimizeCount += 1,
+              onClose: () => closeCount += 1,
+              wsConnectOverride: (uri, {headers}) => fakeChannel,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    incoming.add(jsonEncode({
+      'type': 'ready',
+      'shell': 'bash',
+      'platform': 'deck',
+      'cwd': '/home/deck',
+    }));
+    await tester.pumpAndSettle();
+
+    expect(find.byTooltip('收起终端（后台保持运行）'), findsOneWidget);
+    expect(find.byTooltip('结束终端会话'), findsOneWidget);
+    expect(find.byTooltip('关闭终端'), findsNothing);
+
+    await tester.tap(find.byTooltip('收起终端（后台保持运行）'));
+    await tester.pump();
+    expect(minimizeCount, 1);
+    expect(closeCount, 0);
+
+    await tester.tap(find.byTooltip('结束终端会话'));
+    await tester.pump();
+    expect(minimizeCount, 1);
+    expect(closeCount, 1);
+  });
+
+  testWidgets('NodePowerBanner 正确渲染待命、多任务监听与倒计时状态并响应取消', (tester) async {
+    final parsed = NodePowerStatus.fromJson({
+      'supported': true,
+      'enabled': true,
+      'action': 'sleep',
+      'state': 'countdown',
+      'running_sessions': 0,
+      'queued_messages': 0,
+      'pending_approvals': 0,
+      'remaining_seconds': 42,
+      'armed_by': 'simeng',
+    });
+    expect(parsed.actionLabel, '睡眠');
+    expect(parsed.isCountdown, isTrue);
+    expect(parsed.remainingSeconds, 42);
+
+    var cancelCount = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              NodePowerBanner(
+                nodeName: 'Windows PC',
+                status: const NodePowerStatus(
+                  enabled: true,
+                  action: 'shutdown',
+                  state: 'armed',
+                  runningSessions: 2,
+                  pendingApprovals: 1,
+                  queuedMessages: 3,
+                ),
+                isDark: true,
+                isUpdating: false,
+                maxContentWidth: 800,
+                onCancel: () => cancelCount += 1,
+              ),
+              NodePowerBanner(
+                nodeName: 'Windows PC',
+                status: parsed,
+                isDark: false,
+                isUpdating: false,
+                maxContentWidth: 800,
+                onCancel: () => cancelCount += 1,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.textContaining('2 个运行中、1 个待审批、3 条排队'), findsOneWidget);
+    expect(find.textContaining('将在 42s 后自动睡眠'), findsOneWidget);
+
+    await tester.tap(find.text('取消').first);
+    await tester.pump();
+    expect(cancelCount, 1);
+  });
+
+  testWidgets('QuotaDrawer 常驻侧边栏会为会话标题保留充足宽度不被时间戳挤压', (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    const longTitle = '排查电源睡眠与网卡节能设置诊断任务';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: ResponsiveLayout.permanentSidebarWidth,
+            height: 800,
+            child: QuotaDrawer(
+              nodes: const [
+                HostNode(id: 'win', name: 'Simeng PC', isOnline: true, engineAlive: true, canWrite: true, canDelete: true),
+              ],
+              selectedNode: 'win',
+              onSwitchNode: (_) {},
+              quotaData: null,
+              isLoadingQuota: false,
+              onRequestQuota: () {},
+              onNewSession: () {},
+              projects: const {
+                '工作区': [
+                  SessionItem(
+                    id: 'sess-long-title',
+                    title: longTitle,
+                    updatedAt: '2026-11-22',
+                  ),
+                ],
+              },
+              generalSessions: const [],
+              activeSessionId: 'sess-long-title',
+              runningSessionIds: const {},
+              canWrite: true,
+              canDelete: true,
+              onSwitchSession: (_) {},
+              onDeleteSession: (_) {},
+              onTogglePinSession: (_) {},
+              isDark: true,
+              onToggleTheme: (_) {},
+              onSelectAccentTheme: (_) {},
+              isPermanentSidebar: true,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final titleFinder = find.text(longTitle);
+    final timeFinder = find.text('2026-11-22');
+    expect(titleFinder, findsOneWidget);
+    expect(timeFinder, findsOneWidget);
+
+    final titleRect = tester.getRect(titleFinder);
+    final timeRect = tester.getRect(timeFinder);
+    expect(titleRect.width, greaterThanOrEqualTo(180.0));
+    expect(titleRect.bottom, lessThanOrEqualTo(timeRect.top + 2.0));
   });
 }
 

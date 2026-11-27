@@ -73,6 +73,8 @@ class HubState {
   final bool isInitializing;
   final bool isShowingCachedData;
   final DateTime? activeCacheUpdatedAt;
+  final NodePowerStatus? nodePowerStatus;
+  final bool isUpdatingNodePower;
 
   const HubState({
     this.nodes = const [],
@@ -108,6 +110,8 @@ class HubState {
     this.isInitializing = false,
     this.isShowingCachedData = false,
     this.activeCacheUpdatedAt,
+    this.nodePowerStatus,
+    this.isUpdatingNodePower = false,
   });
 
   String get effectiveSessionModel =>
@@ -186,6 +190,9 @@ class HubState {
     bool? isShowingCachedData,
     DateTime? activeCacheUpdatedAt,
     bool clearActiveCacheUpdatedAt = false,
+    NodePowerStatus? nodePowerStatus,
+    bool clearNodePowerStatus = false,
+    bool? isUpdatingNodePower,
   }) {
     return HubState(
       nodes: nodes ?? this.nodes,
@@ -226,6 +233,10 @@ class HubState {
       activeCacheUpdatedAt: clearActiveCacheUpdatedAt
           ? null
           : (activeCacheUpdatedAt ?? this.activeCacheUpdatedAt),
+      nodePowerStatus: clearNodePowerStatus
+          ? null
+          : (nodePowerStatus ?? this.nodePowerStatus),
+      isUpdatingNodePower: isUpdatingNodePower ?? this.isUpdatingNodePower,
     );
   }
 }
@@ -238,6 +249,8 @@ class HubController extends Notifier<HubState> {
   StreamSubscription<WsServerEvent>? _wsEventSub;
   StreamSubscription<WsConnState>? _wsStateSub;
   Timer? _quotaTimer;
+  Timer? _powerPollTimer;
+  int _powerPollIntervalSec = 0;
   bool _disposed = false;
   DateTime? _pausedAt;
   DateTime? _lastResumedAt;
@@ -260,6 +273,7 @@ class HubController extends Notifier<HubState> {
     ref.onDispose(() {
       _disposed = true;
       _quotaTimer?.cancel();
+      _powerPollTimer?.cancel();
       _cachePersistTimer?.cancel();
       _disposeSocketSync();
       if (AndroidNativeBridge.isAndroidNative) {
@@ -657,6 +671,7 @@ class HubController extends Notifier<HubState> {
         pendingAttachments: const [],
         isShowingCachedData: false,
         clearActiveCacheUpdatedAt: true,
+        clearNodePowerStatus: true,
       );
     }
 
@@ -667,6 +682,8 @@ class HubController extends Notifier<HubState> {
   Future<void> _connectAndLoadNode(String nodeId) async {
     _disposeSocketSync();
     _quotaTimer?.cancel();
+    _powerPollTimer?.cancel();
+    _powerPollIntervalSec = 0;
 
     final factory = ref.read(eventSocketFactoryProvider);
     final socket = factory(
@@ -716,6 +733,7 @@ class HubController extends Notifier<HubState> {
       refreshSessionTree(autoSelectFirst: true).then((_) => refreshFileRoots()),
       fetchQuota(),
       fetchModels(),
+      refreshNodePowerStatus(),
     ]);
   }
 
@@ -746,6 +764,7 @@ class HubController extends Notifier<HubState> {
     }));
     unawaited(refreshSessionTree());
     unawaited(fetchModels());
+    unawaited(refreshNodePowerStatus());
     if (state.activeSessionId.isNotEmpty) {
       await _syncActiveSessionSilent();
     }
@@ -2761,6 +2780,114 @@ class HubController extends Notifier<HubState> {
         return (file: null, error: null, cancelled: true);
       }
       return (file: null, error: '下载失败: $e', cancelled: false);
+    }
+  }
+
+  void _syncPowerPollTimer() {
+    final power = state.nodePowerStatus;
+    if (_disposed || power == null || !power.enabled || state.selectedNodeId.isEmpty) {
+      _powerPollTimer?.cancel();
+      _powerPollTimer = null;
+      _powerPollIntervalSec = 0;
+      return;
+    }
+    final desiredSec = (power.isCountdown || power.isSettling) ? 1 : 2;
+    if (_powerPollTimer != null && _powerPollIntervalSec == desiredSec) {
+      return;
+    }
+    _powerPollTimer?.cancel();
+    _powerPollIntervalSec = desiredSec;
+    _powerPollTimer = Timer.periodic(Duration(seconds: desiredSec), (_) {
+      if (!_disposed && state.selectedNodeId.isNotEmpty) {
+        unawaited(refreshNodePowerStatus());
+      }
+    });
+  }
+
+  Future<void> refreshNodePowerStatus() async {
+    final nodeId = state.selectedNodeId;
+    if (nodeId.isEmpty || _disposed) return;
+    final node = state.currentNode;
+    if (node != null && node.isLocal) {
+      if (!_disposed && state.selectedNodeId == nodeId) {
+        state = state.copyWith(
+          nodePowerStatus: const NodePowerStatus(
+            supported: false,
+            enabled: false,
+            state: 'off',
+            message: '网关宿主机不支持远程关机/睡眠',
+          ),
+        );
+        _syncPowerPollTimer();
+      }
+      return;
+    }
+    try {
+      final status = await _api.getNodePowerStatus(nodeId);
+      if (_disposed || state.selectedNodeId != nodeId) return;
+      state = state.copyWith(nodePowerStatus: status);
+      _syncPowerPollTimer();
+    } catch (_) {
+      // 旧版节点 Agent 尚未实现电源接口或节点离线时保持静默
+    }
+  }
+
+  Future<String?> scheduleNodePower({required String action}) async {
+    final nodeId = state.selectedNodeId;
+    if (nodeId.isEmpty) return '请先选择节点';
+    final node = state.currentNode;
+    if (node != null && node.isLocal) {
+      return '网关宿主机不支持远程关机或睡眠';
+    }
+    if (node != null && !node.canWrite) {
+      return '当前账号对该节点为只读权限';
+    }
+    state = state.copyWith(isUpdatingNodePower: true);
+    try {
+      final status = await _api.scheduleNodePower(nodeId, action: action);
+      if (_disposed) return null;
+      state = state.copyWith(
+        nodePowerStatus: status,
+        isUpdatingNodePower: false,
+      );
+      _syncPowerPollTimer();
+      return null;
+    } on ApiException catch (e) {
+      if (!_disposed) {
+        state = state.copyWith(isUpdatingNodePower: false);
+      }
+      return e.message;
+    } catch (e) {
+      if (!_disposed) {
+        state = state.copyWith(isUpdatingNodePower: false);
+      }
+      return '预约失败: $e';
+    }
+  }
+
+  Future<String?> cancelNodePower() async {
+    final nodeId = state.selectedNodeId;
+    if (nodeId.isEmpty) return '请先选择节点';
+    state = state.copyWith(isUpdatingNodePower: true);
+    try {
+      final status = await _api.cancelNodePower(nodeId);
+      if (_disposed) return null;
+      state = state.copyWith(
+        nodePowerStatus: status,
+        isUpdatingNodePower: false,
+      );
+      _syncPowerPollTimer();
+      return null;
+    } on ApiException catch (e) {
+      if (!_disposed) {
+        state = state.copyWith(isUpdatingNodePower: false);
+      }
+      return e.message;
+    } catch (e) {
+      if (!_disposed) {
+        state = state.copyWith(isUpdatingNodePower: false);
+      }
+      return '取消失败: $e';
     }
   }
 }

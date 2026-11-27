@@ -1028,145 +1028,167 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
   Widget _buildSessionTile(BuildContext context, SessionItem s, {required bool isIndented, String? projectTag}) {
     final isCurrent = s.id == widget.activeSessionId;
     final isRunning = widget.runningSessionIds.contains(s.id) || s.isRunning;
+    final primary = Theme.of(context).colorScheme.primary;
+    final showPinButton = widget.canWrite && widget.onTogglePinSession != null;
+    final showTimestamp = s.updatedAt.isNotEmpty && !isRunning;
+    final hasProjectTag = projectTag != null && projectTag.isNotEmpty;
+    final showMetaRow = hasProjectTag || showTimestamp || showPinButton || widget.canDelete;
 
     return Padding(
-      padding: EdgeInsets.only(left: isIndented ? 28 : 10, right: 10, bottom: 2),
+      padding: EdgeInsets.only(left: isIndented ? 18 : 8, right: 8, bottom: 2),
       child: Material(
         color: isCurrent ? (isDark ? const Color(0xFF222226) : const Color(0xFFE4E4E7)) : Colors.transparent,
         borderRadius: BorderRadius.circular(6),
         clipBehavior: Clip.antiAlias,
-        child: ListTile(
-        dense: true,
-        visualDensity: const VisualDensity(vertical: -3),
-        leading: isRunning
-            ? SizedBox(
-                width: 14,
-                height: 14,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    Theme.of(context).colorScheme.primary,
-                  ),
-                ),
-              )
-            : Icon(
-                s.isPinned ? Icons.push_pin_rounded : Icons.chat_bubble_outline_rounded,
-                size: 14,
-                color: s.isPinned
-                    ? Theme.of(context).colorScheme.primary
-                    : (isCurrent
-                        ? Theme.of(context).colorScheme.primary
-                        : (isDark ? Colors.white38 : Colors.black38)),
-              ),
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
+        child: InkWell(
+          onTap: () {
+            _closeIfDrawer(context);
+            widget.onSwitchSession(s);
+          },
+          onLongPress: showPinButton || widget.canDelete
+              ? () => _showSessionActionSheet(context, s)
+              : null,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: Text(
-                    s.title,
-                    style: TextStyle(
-                      color: isCurrent
-                          ? Theme.of(context).colorScheme.primary
-                          : (isDark ? Colors.white70 : Colors.black87),
-                      fontSize: 12,
-                      fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+                Row(
+                  children: [
+                    isRunning
+                        ? SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(primary),
+                            ),
+                          )
+                        : Icon(
+                            s.isPinned ? Icons.push_pin_rounded : Icons.chat_bubble_outline_rounded,
+                            size: 14,
+                            color: s.isPinned
+                                ? primary
+                                : (isCurrent
+                                    ? primary
+                                    : (isDark ? Colors.white38 : Colors.black38)),
+                          ),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text(
+                        s.title,
+                        style: TextStyle(
+                          color: isCurrent
+                              ? primary
+                              : (isDark ? Colors.white70 : Colors.black87),
+                          fontSize: 12.5,
+                          fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                    if (isRunning) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: Colors.redAccent.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(3),
+                          border: Border.all(color: Colors.redAccent.withValues(alpha: 0.4), width: 0.8),
+                        ),
+                        child: const Text(
+                          '运行中',
+                          style: TextStyle(color: Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
-                if (isRunning) ...[
-                  const SizedBox(width: 4),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                    decoration: BoxDecoration(
-                      color: Colors.redAccent.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(3),
-                      border: Border.all(color: Colors.redAccent.withValues(alpha: 0.4), width: 0.8),
-                    ),
-                    child: const Text(
-                      '运行中',
-                      style: TextStyle(color: Colors.redAccent, fontSize: 9, fontWeight: FontWeight.bold),
-                    ),
+                if (showMetaRow) ...[
+                  const SizedBox(height: 3),
+                  Row(
+                    children: [
+                      const SizedBox(width: 21),
+                      Expanded(
+                        child: Row(
+                          children: [
+                            if (hasProjectTag) ...[
+                              Icon(Icons.folder_outlined, size: 10.5, color: isDark ? Colors.white38 : Colors.black45),
+                              const SizedBox(width: 3),
+                              Flexible(
+                                child: Text(
+                                  projectTag,
+                                  style: TextStyle(fontSize: 10, color: isDark ? Colors.white38 : Colors.black45),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                            if (hasProjectTag && showTimestamp)
+                              Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 4),
+                                child: Text(
+                                  '·',
+                                  style: TextStyle(fontSize: 10, color: isDark ? Colors.white24 : Colors.black26),
+                                ),
+                              ),
+                            if (showTimestamp)
+                              Text(
+                                s.updatedAt,
+                                style: TextStyle(color: isDark ? Colors.white30 : Colors.black38, fontSize: 10),
+                                maxLines: 1,
+                              ),
+                          ],
+                        ),
+                      ),
+                      if (showPinButton || widget.canDelete)
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (showPinButton)
+                              Tooltip(
+                                message: s.isPinned ? '取消置顶' : '置顶会话',
+                                child: InkWell(
+                                  onTap: () => widget.onTogglePinSession!(s),
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(3),
+                                    child: Icon(
+                                      s.isPinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+                                      size: 13.5,
+                                      color: s.isPinned
+                                          ? primary
+                                          : (isDark ? Colors.white30 : Colors.black38),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            if (widget.canDelete) ...[
+                              const SizedBox(width: 2),
+                              InkWell(
+                                onTap: () => _confirmDeleteSession(context, s),
+                                borderRadius: BorderRadius.circular(12),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(3),
+                                  child: Icon(
+                                    Icons.delete_outline_rounded,
+                                    size: 14,
+                                    color: isDark ? Colors.white30 : Colors.black38,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                    ],
                   ),
                 ],
               ],
             ),
-            if (projectTag != null && projectTag.isNotEmpty) ...[
-              const SizedBox(height: 2),
-              Row(
-                children: [
-                  Icon(Icons.folder_outlined, size: 11, color: isDark ? Colors.white38 : Colors.black45),
-                  const SizedBox(width: 4),
-                  Flexible(
-                    child: Text(
-                      projectTag,
-                      style: TextStyle(fontSize: 10, color: isDark ? Colors.white38 : Colors.black45),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ],
+          ),
         ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (s.updatedAt.isNotEmpty && !isRunning)
-              Text(
-                s.updatedAt,
-                style: TextStyle(color: isDark ? Colors.white24 : Colors.black26, fontSize: 9),
-              ),
-            if (widget.canWrite && widget.onTogglePinSession != null) ...[
-              const SizedBox(width: 4),
-              Tooltip(
-                message: s.isPinned ? '取消置顶' : '置顶会话',
-                child: InkWell(
-                  onTap: () => widget.onTogglePinSession!(s),
-                  borderRadius: BorderRadius.circular(12),
-                  child: Padding(
-                    padding: const EdgeInsets.all(4),
-                    child: Icon(
-                      s.isPinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
-                      size: 14,
-                      color: s.isPinned
-                          ? Theme.of(context).colorScheme.primary
-                          : (isDark ? Colors.white30 : Colors.black38),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-            if (widget.canDelete) ...[
-              const SizedBox(width: 2),
-              InkWell(
-                onTap: () => _confirmDeleteSession(context, s),
-                borderRadius: BorderRadius.circular(12),
-                child: Padding(
-                  padding: const EdgeInsets.all(4),
-                  child: Icon(
-                    Icons.delete_outline_rounded,
-                    size: 15,
-                    color: isDark ? Colors.white30 : Colors.black38,
-                  ),
-                ),
-              ),
-            ],
-          ],
-        ),
-        onTap: () {
-          _closeIfDrawer(context);
-          widget.onSwitchSession(s);
-        },
-        onLongPress: (widget.canWrite && widget.onTogglePinSession != null) || widget.canDelete
-            ? () => _showSessionActionSheet(context, s)
-            : null,
-      ),
       ),
     );
   }

@@ -802,6 +802,39 @@ class ApiClient {
     );
   }
 
+  Future<NodePowerStatus> getNodePowerStatus(String nodeId) async {
+    return _exec(
+      () => _dio.get<dynamic>('/api/v2/nodes/$nodeId/power/status'),
+      (data) => NodePowerStatus.fromJson(Map<String, dynamic>.from(data as Map)),
+    );
+  }
+
+  Future<NodePowerStatus> scheduleNodePower(
+    String nodeId, {
+    String action = 'shutdown',
+    int settleSeconds = 20,
+    int countdownSeconds = 60,
+  }) async {
+    return _exec(
+      () => _dio.post<dynamic>(
+        '/api/v2/nodes/$nodeId/power/schedule',
+        data: {
+          'action': action,
+          'settle_seconds': settleSeconds,
+          'countdown_seconds': countdownSeconds,
+        },
+      ),
+      (data) => NodePowerStatus.fromJson(Map<String, dynamic>.from(data as Map)),
+    );
+  }
+
+  Future<NodePowerStatus> cancelNodePower(String nodeId) async {
+    return _exec(
+      () => _dio.post<dynamic>('/api/v2/nodes/$nodeId/power/cancel'),
+      (data) => NodePowerStatus.fromJson(Map<String, dynamic>.from(data as Map)),
+    );
+  }
+
   Future<int> downloadUrlToPath(
     String fullUrl,
     String savePath, {

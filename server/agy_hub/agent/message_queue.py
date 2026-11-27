@@ -117,6 +117,9 @@ class SessionMessageQueueManager:
     def _has_active_work(self) -> bool:
         return any((not entry.paused and len(entry.items) > 0) for entry in self._queues.values())
 
+    def total_pending_count(self) -> int:
+        return sum(len(entry.items) for entry in self._queues.values() if not entry.paused)
+
     def _to_response(self, sid: str, entry: _SessionQueueEntry | None) -> SessionQueueResponse:
         if entry is None:
             return SessionQueueResponse(session_id=sid)

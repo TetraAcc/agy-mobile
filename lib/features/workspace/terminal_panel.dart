@@ -25,6 +25,7 @@ class TerminalPanel extends StatefulWidget {
   final String activeSessionId;
   final bool isEmbedded;
   final bool isActive;
+  final VoidCallback? onMinimize;
   final VoidCallback? onClose;
   final ValueChanged<bool>? onConnectionChanged;
   final WebSocketConnectFn? wsConnectOverride;
@@ -40,6 +41,7 @@ class TerminalPanel extends StatefulWidget {
     this.activeSessionId = '',
     this.isEmbedded = false,
     this.isActive = true,
+    this.onMinimize,
     this.onClose,
     this.onConnectionChanged,
     this.wsConnectOverride,
@@ -720,11 +722,24 @@ class _TerminalPanelState extends State<TerminalPanel> {
                   icon: const Icon(Icons.refresh_rounded, size: 17),
                   onPressed: _reconnect,
                 ),
+                if (widget.onMinimize != null)
+                  IconButton(
+                    tooltip: '收起终端（后台保持运行）',
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
+                    onPressed: widget.onMinimize,
+                  ),
                 if (widget.onClose != null)
                   IconButton(
-                    tooltip: '关闭终端',
+                    tooltip: widget.onMinimize != null ? '结束终端会话' : '关闭终端',
                     visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.close_rounded, size: 18),
+                    icon: Icon(
+                      widget.onMinimize != null
+                          ? Icons.power_settings_new_rounded
+                          : Icons.close_rounded,
+                      size: widget.onMinimize != null ? 17 : 18,
+                      color: widget.onMinimize != null ? AppColors.statusRed(isDark) : null,
+                    ),
                     onPressed: widget.onClose,
                   ),
               ],

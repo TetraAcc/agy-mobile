@@ -1,7 +1,7 @@
 name: agy_remote
 description: "Cross-platform remote hub for Google Antigravity"
 publish_to: 'none'
-version: 2.3.5+5018
+version: 2.3.6+5019
 
 environment:
   sdk: '>=3.4.0 <4.0.0'

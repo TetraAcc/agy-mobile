@@ -111,6 +111,29 @@ class NodeUpdateApplyResponse(BaseModel):
     message: str = ""
 
 
+class NodePowerScheduleRequest(BaseModel):
+    action: Literal["shutdown", "sleep"] = "shutdown"
+    settle_seconds: int = Field(default=20, ge=0, le=600)
+    countdown_seconds: int = Field(default=60, ge=5, le=3600)
+
+
+class NodePowerStatusResponse(BaseModel):
+    supported: bool = True
+    enabled: bool = False
+    action: Literal["shutdown", "sleep"] = "shutdown"
+    state: Literal["off", "waiting_for_activity", "armed", "settling", "countdown", "executing"] = "off"
+    running_sessions: int = 0
+    queued_messages: int = 0
+    pending_approvals: int = 0
+    settle_seconds: int = 20
+    countdown_seconds: int = 60
+    remaining_seconds: int = 0
+    armed_by: str = ""
+    armed_at: float = 0.0
+    trigger_at: float = 0.0
+    message: str = ""
+
+
 class AppReleaseResponse(BaseModel):
     latest_version: str = ""
     tag_name: str = ""

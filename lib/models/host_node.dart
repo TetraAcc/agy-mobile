@@ -123,3 +123,63 @@ class NodeUpdateApplyResult {
     );
   }
 }
+
+class NodePowerStatus {
+  final bool supported;
+  final bool enabled;
+  final String action; // "shutdown" | "sleep"
+  final String state; // "off" | "waiting_for_activity" | "armed" | "settling" | "countdown" | "executing"
+  final int runningSessions;
+  final int queuedMessages;
+  final int pendingApprovals;
+  final int settleSeconds;
+  final int countdownSeconds;
+  final int remainingSeconds;
+  final String armedBy;
+  final double armedAt;
+  final double triggerAt;
+  final String message;
+
+  const NodePowerStatus({
+    this.supported = true,
+    this.enabled = false,
+    this.action = 'shutdown',
+    this.state = 'off',
+    this.runningSessions = 0,
+    this.queuedMessages = 0,
+    this.pendingApprovals = 0,
+    this.settleSeconds = 20,
+    this.countdownSeconds = 60,
+    this.remainingSeconds = 0,
+    this.armedBy = '',
+    this.armedAt = 0.0,
+    this.triggerAt = 0.0,
+    this.message = '',
+  });
+
+  String get actionLabel => action == 'sleep' ? '睡眠' : '关机';
+  bool get isWaitingForActivity => state == 'waiting_for_activity';
+  bool get isArmed => state == 'armed';
+  bool get isSettling => state == 'settling';
+  bool get isCountdown => state == 'countdown';
+  bool get isExecuting => state == 'executing';
+
+  factory NodePowerStatus.fromJson(Map<String, dynamic> json) {
+    return NodePowerStatus(
+      supported: json['supported'] != false,
+      enabled: json['enabled'] == true,
+      action: json['action']?.toString() == 'sleep' ? 'sleep' : 'shutdown',
+      state: json['state']?.toString() ?? 'off',
+      runningSessions: (json['running_sessions'] as num?)?.toInt() ?? 0,
+      queuedMessages: (json['queued_messages'] as num?)?.toInt() ?? 0,
+      pendingApprovals: (json['pending_approvals'] as num?)?.toInt() ?? 0,
+      settleSeconds: (json['settle_seconds'] as num?)?.toInt() ?? 20,
+      countdownSeconds: (json['countdown_seconds'] as num?)?.toInt() ?? 60,
+      remainingSeconds: (json['remaining_seconds'] as num?)?.toInt() ?? 0,
+      armedBy: json['armed_by']?.toString() ?? '',
+      armedAt: (json['armed_at'] as num?)?.toDouble() ?? 0.0,
+      triggerAt: (json['trigger_at'] as num?)?.toDouble() ?? 0.0,
+      message: json['message']?.toString() ?? '',
+    );
+  }
+}

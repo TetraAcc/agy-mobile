@@ -24,6 +24,7 @@ from agy_hub.agent.auth import (
 )
 from agy_hub.agent.config import AgentConfig, resolve_platform
 from agy_hub.agent.message_queue import SessionMessageQueueManager
+from agy_hub.agent.power import NodePowerManager
 from agy_hub.agent.providers.base import BaseEngineProvider, InvalidSessionIdError
 from agy_hub.agent.providers.deck import DeckEngineProvider
 from agy_hub.agent.providers.windows import WindowsEngineProvider
@@ -45,6 +46,8 @@ from agy_hub.common.schemas import (
     GitRepoItem,
     GitReposResponse,
     ModelsResponse,
+    NodePowerScheduleRequest,
+    NodePowerStatusResponse,
     NodeUpdateApplyRequest,
     NodeUpdateApplyResponse,
     NodeUpdateStatusResponse,
@@ -84,12 +87,18 @@ def create_agent_app(
     provider: BaseEngineProvider | None = None,
     registry: RootRegistry | None = None,
     updater: NodeSelfUpdater | None = None,
+    power_manager: NodePowerManager | None = None,
 ) -> FastAPI:
     root_registry = registry or RootRegistry()
     engine_provider = provider or _build_default_provider(config, root_registry)
     event_hub = SessionEventHub(engine_provider, poll_interval=config.poll_interval_seconds)
     queue_manager = SessionMessageQueueManager(engine_provider)
     self_updater = updater or NodeSelfUpdater()
+    node_power_manager = power_manager or NodePowerManager(
+        engine_provider,
+        queue_manager,
+        enabled=config.enable_remote_power,
+    )
     terminal_manager = TerminalManager(max_sessions=config.max_terminal_sessions)
 
     @asynccontextmanager
@@ -98,6 +107,7 @@ def create_agent_app(
         try:
             yield
         finally:
+            await node_power_manager.shutdown()
             await terminal_manager.close_all()
             await queue_manager.shutdown()
             await event_hub.shutdown()
@@ -110,6 +120,7 @@ def create_agent_app(
     app.state.event_hub = event_hub
     app.state.queue_manager = queue_manager
     app.state.updater = self_updater
+    app.state.power_manager = node_power_manager
     app.state.terminal_manager = terminal_manager
 
     @app.get("/internal/health")
@@ -901,5 +912,32 @@ def create_agent_app(
                 await websocket.close()
             except Exception:
                 pass
+
+    @app.get("/agent/power/status", response_model=NodePowerStatusResponse)
+    async def get_power_status(
+        _caller: GatewayCaller = Depends(require_gateway_signature),
+    ) -> NodePowerStatusResponse:
+        return await node_power_manager.refresh_status()
+
+    @app.post("/agent/power/schedule", response_model=NodePowerStatusResponse)
+    async def schedule_power_action(
+        payload: NodePowerScheduleRequest,
+        caller: GatewayCaller = Depends(require_write_caller),
+    ) -> NodePowerStatusResponse:
+        try:
+            return await node_power_manager.schedule(
+                action=payload.action,
+                armed_by=caller.username,
+                settle_seconds=payload.settle_seconds,
+                countdown_seconds=payload.countdown_seconds,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+    @app.post("/agent/power/cancel", response_model=NodePowerStatusResponse)
+    async def cancel_power_action(
+        caller: GatewayCaller = Depends(require_write_caller),
+    ) -> NodePowerStatusResponse:
+        return await node_power_manager.cancel(reason=f"已由 {caller.username or '用户'} 取消自动电源预约")
 
     return app

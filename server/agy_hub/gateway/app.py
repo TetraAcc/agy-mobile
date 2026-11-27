@@ -22,6 +22,7 @@ from agy_hub.common.schemas import (
     DownloadTicketResponse,
     LoginRequest,
     LoginResponse,
+    NodePowerStatusResponse,
     NodesResponse,
     RefreshRequest,
     UserCreateRequest,
@@ -409,6 +410,25 @@ def create_gateway_app(
                     can_write=True,
                     can_delete=False,
                 )
+            elif clean_subpath in ("power/status", "power/schedule", "power/cancel"):
+                require_write = request.method != "GET"
+                perms = auth_service.check_node_access(
+                    user,
+                    node_id,
+                    require_write=require_write,
+                )
+                if config.nodes[node_id].is_local:
+                    if request.method == "GET":
+                        return NodePowerStatusResponse(
+                            supported=False,
+                            enabled=False,
+                            state="off",
+                            message="网关宿主机不支持远程关机/睡眠",
+                        ).model_dump(mode="json")
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Gateway host node does not allow remote power control",
+                    )
             else:
                 require_delete = request.method == "DELETE"
                 require_write = request.method in ("POST", "PUT", "PATCH")
