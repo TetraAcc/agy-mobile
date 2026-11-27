@@ -154,6 +154,14 @@ def test_gateway_admin_nodes_and_update_rbac(tmp_path: Path) -> None:
         grants=[UserPermissionGrant(node_id="win", can_write=True, can_delete=True)],
     )
     db.create_user(
+        username="admin_other",
+        password="admin-other-password-123",
+        display_name="Admin Other",
+        role="admin",
+        default_node="",
+        grants=[],
+    )
+    db.create_user(
         username="member",
         password="member-password-123",
         display_name="Member",
@@ -197,6 +205,19 @@ def test_gateway_admin_nodes_and_update_rbac(tmp_path: Path) -> None:
         node_item = nodes_resp.json()["nodes"][0]
         assert node_item["online"] is True
         assert node_item["version"] != ""
+
+        # Admin without explicit grant for 'win' must NOT see or update unassigned nodes
+        a2_login = client.post(
+            "/api/v2/auth/login",
+            json={"username": "admin_other", "password": "admin-other-password-123"},
+        )
+        assert a2_login.status_code == 200
+        a2_hdr = {"Authorization": f"Bearer {a2_login.json()['tokens']['access_token']}"}
+        nodes_ungranted = client.get("/api/v2/admin/nodes", headers=a2_hdr)
+        assert nodes_ungranted.status_code == 200
+        assert nodes_ungranted.json()["nodes"] == []
+        assert client.get("/api/v2/nodes/win/update/status?fetch=false", headers=a2_hdr).status_code == 403
+        assert client.post("/api/v2/nodes/win/update/apply", headers=a2_hdr, json={}).status_code == 403
 
         # Admin can check update status
         status_resp = client.get("/api/v2/nodes/win/update/status?fetch=true", headers=a_hdr)
