@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import sqlite3
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -19,12 +20,15 @@ from agy_hub.common.schemas import (
     ActionAckResponse,
     ApprovalDecisionRequest,
     ApprovalDecisionResponse,
+    ArchivedSessionItem,
+    ArchivedSessionsResponse,
     CreateSessionResponse,
     DeleteSessionResponse,
     ModelOption,
     ModelsResponse,
     PinSessionResponse,
     QuotaResponse,
+    RestoreSessionResponse,
     SessionMessagesResponse,
     SessionSummary,
     SessionTreeResponse,
@@ -309,6 +313,58 @@ class BaseEngineProvider(ABC):
         tmp_path.write_text(updated, encoding="utf-8")
         os.replace(tmp_path, target)
 
+    def _update_annotation_archived_sync(self, session_id: str, archived: bool) -> None:
+        """Atomically update archived:true/false and archival_status_timestamp in annotations/<sid>.pbtxt."""
+        sid = self.validate_session_id(session_id)
+        ann_dir = self.annotations_dir
+        ann_dir.mkdir(parents=True, exist_ok=True)
+        target = ann_dir / f"{sid}.pbtxt"
+        val_str = "true" if archived else "false"
+        sec, nanos = divmod(time.time_ns(), 1_000_000_000)
+        ts_block = f"archival_status_timestamp:{{seconds:{sec}  nanos:{nanos}}}"
+
+        existing = ""
+        if target.exists():
+            try:
+                existing = target.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                existing = ""
+
+        if re.search(r"\barchived\s*:\s*(true|false)\b", existing, flags=re.IGNORECASE):
+            updated = re.sub(
+                r"\barchived\s*:\s*(true|false)\b",
+                f"archived:{val_str}",
+                existing,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        else:
+            sep = " " if existing and not existing.endswith((" ", "\n", "\t")) else ""
+            updated = f"{existing}{sep}archived:{val_str}"
+
+        if re.search(r"\barchival_status_timestamp\s*:\s*\{[^}]*\}", updated, flags=re.IGNORECASE):
+            updated = re.sub(
+                r"\barchival_status_timestamp\s*:\s*\{[^}]*\}",
+                ts_block,
+                updated,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        else:
+            sep = " " if updated and not updated.endswith((" ", "\n", "\t")) else ""
+            updated = f"{updated}{sep}{ts_block}"
+
+        tmp_path = target.with_suffix(".pbtxt.tmp")
+        tmp_path.write_text(updated, encoding="utf-8")
+        os.replace(tmp_path, target)
+
+    def _compute_effective_archived_ids(self, ann_map: dict[str, dict[str, bool]]) -> set[str]:
+        """Merge local archive fallback with desktop annotations, preferring explicit desktop unarchive."""
+        desktop_archived = {cid for cid, flags in ann_map.items() if flags.get("archived") is True}
+        desktop_unarchived = {cid for cid, flags in ann_map.items() if flags.get("archived") is False}
+        local_archived = self._load_archived_ids()
+        return (local_archived - desktop_unarchived) | desktop_archived
+
     def get_pinned_order(self) -> list[str]:
         """Optional ordering hint for pinned sessions (does not decide pinned status)."""
         return []
@@ -437,11 +493,12 @@ class BaseEngineProvider(ABC):
 
         return self._read_transcript_tail_status_sync(sid)
 
-    def _get_session_tree_sync(self, engine_alive: bool) -> SessionTreeResponse:
-        archived_ids = self._load_archived_ids()
+    def _query_raw_conversation_rows_sync(
+        self,
+    ) -> tuple[list[tuple[Any, ...]], dict[str, str], dict[str, str]] | None:
         conn = self._connect_ro()
         if conn is None:
-            return SessionTreeResponse(engine_alive=engine_alive)
+            return None
 
         try:
             cur = conn.cursor()
@@ -449,7 +506,7 @@ class BaseEngineProvider(ABC):
                 t[0] for t in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             }
             if "conversation_summaries" not in tables:
-                return SessionTreeResponse(engine_alive=engine_alive)
+                return [], {}, {}
 
             convo_to_project: dict[str, str] = {}
             if "conversations_fts" in tables:
@@ -505,13 +562,81 @@ class BaseEngineProvider(ABC):
                 f"{where_sql} ORDER BY {time_col} DESC"
             )
             rows = cur.execute(query).fetchall()
+            return rows, convo_to_project, pid_to_project
         finally:
             conn.close()
 
+    def _build_session_metadata(
+        self,
+        row: tuple[Any, ...],
+        convo_to_project: dict[str, str],
+        pid_to_project: dict[str, str],
+    ) -> dict[str, Any] | None:
+        cid, title, preview, ws_uris, mod_time, pid, status_val, idle_val = row
+        if not cid:
+            return None
+        cid_str = str(cid)
+        brain_subdir = self.brain_dir / cid_str
+        if not brain_subdir.exists():
+            return None
+
+        display_title = str(title).strip() if title else ""
+        if not display_title:
+            fallback = self._extract_fallback_title_sync(cid_str)
+            if fallback:
+                display_title = fallback
+            elif preview and str(preview).strip():
+                clean_prev = clean_display_content(str(preview).strip())
+                display_title = clean_prev[:32] + ("..." if len(clean_prev) > 32 else "")
+            else:
+                display_title = "新任务"
+
+        if "汇报给主代理" in display_title:
+            return None
+
+        fallback_name, proj_path = parse_project_name_and_path(ws_uris)
+        final_project: str | None = None
+        if cid_str in convo_to_project:
+            final_project = convo_to_project[cid_str]
+        elif pid and str(pid) != "outside-of-project" and str(pid) in pid_to_project:
+            final_project = pid_to_project[str(pid)]
+        elif fallback_name:
+            final_project = fallback_name
+
+        if final_project and final_project.lower() in _NON_PROJECT_DIRS:
+            final_project = None
+
+        ws_root_id = ""
+        if proj_path:
+            ws_root_id = self.registry.register_workspace(proj_path) or ""
+        for extra_path in parse_all_workspace_paths(ws_uris):
+            rid = self.registry.register_workspace(extra_path)
+            if not ws_root_id and rid:
+                ws_root_id = rid
+
+        raw_mod_str = str(mod_time or "")
+        time_str = raw_mod_str.split("T")[0].split(" ")[0] if raw_mod_str else ""
+        return {
+            "cid": cid_str,
+            "display_title": display_title,
+            "preview": str(preview or ""),
+            "final_project": final_project,
+            "proj_path": proj_path,
+            "ws_root_id": ws_root_id or "scratch",
+            "raw_mod_str": raw_mod_str,
+            "time_str": time_str,
+            "status_val": status_val,
+            "idle_val": idle_val,
+        }
+
+    def _get_session_tree_sync(self, engine_alive: bool) -> SessionTreeResponse:
+        queried = self._query_raw_conversation_rows_sync()
+        if queried is None:
+            return SessionTreeResponse(engine_alive=engine_alive)
+        rows, convo_to_project, pid_to_project = queried
+
         ann_map = self._read_annotations_map_sync()
-        desktop_archived = {cid for cid, flags in ann_map.items() if flags.get("archived") is True}
-        if desktop_archived:
-            archived_ids = archived_ids | desktop_archived
+        archived_ids = self._compute_effective_archived_ids(ann_map)
 
         pinned_cids = self.get_pinned_session_ids()
         pinned_order = self.get_pinned_order()
@@ -520,81 +645,43 @@ class BaseEngineProvider(ABC):
         project_latest_time: dict[str, str] = {}
         general_sessions: list[SessionSummary] = []
         running_session_ids: list[str] = []
+        archived_count = 0
 
         for r in rows:
-            cid, title, preview, ws_uris, mod_time, pid, status_val, idle_val = r
-            if not cid:
+            meta = self._build_session_metadata(r, convo_to_project, pid_to_project)
+            if meta is None:
                 continue
-            cid_str = str(cid)
+            cid_str = str(meta["cid"])
             if cid_str in archived_ids:
+                archived_count += 1
                 continue
-
-            brain_subdir = self.brain_dir / cid_str
-            if not brain_subdir.exists():
-                # Read-only policy: filter orphaned records in memory without writing DELETE to official DB
-                continue
-
-            display_title = str(title).strip() if title else ""
-            if not display_title:
-                fallback = self._extract_fallback_title_sync(cid_str)
-                if fallback:
-                    display_title = fallback
-                elif preview and str(preview).strip():
-                    clean_prev = clean_display_content(str(preview).strip())
-                    display_title = clean_prev[:32] + ("..." if len(clean_prev) > 32 else "")
-                else:
-                    display_title = "新任务"
-
-            if "汇报给主代理" in display_title:
-                continue
-
-            fallback_name, proj_path = parse_project_name_and_path(ws_uris)
-            final_project: str | None = None
-            if cid_str in convo_to_project:
-                final_project = convo_to_project[cid_str]
-            elif pid and str(pid) != "outside-of-project" and str(pid) in pid_to_project:
-                final_project = pid_to_project[str(pid)]
-            elif fallback_name:
-                final_project = fallback_name
-
-            if final_project and final_project.lower() in _NON_PROJECT_DIRS:
-                final_project = None
-
-            ws_root_id = ""
-            if proj_path:
-                ws_root_id = self.registry.register_workspace(proj_path) or ""
-            for extra_path in parse_all_workspace_paths(ws_uris):
-                rid = self.registry.register_workspace(extra_path)
-                if not ws_root_id and rid:
-                    ws_root_id = rid
 
             is_running = bool(
                 self.is_managed_process_running(cid_str)
-                or status_val == "CASCADE_RUN_STATUS_RUNNING"
-                or idle_val == 1
+                or meta["status_val"] == "CASCADE_RUN_STATUS_RUNNING"
+                or meta["idle_val"] == 1
             )
             if is_running:
                 running_session_ids.append(cid_str)
 
-            raw_mod_str = str(mod_time or "")
-            time_str = raw_mod_str.split("T")[0].split(" ")[0] if raw_mod_str else ""
             is_pinned = cid_str in pinned_cids
             summary = SessionSummary(
                 id=cid_str,
-                title=display_title,
-                preview=str(preview or ""),
-                updated_at=time_str,
-                last_modified=raw_mod_str,
+                title=str(meta["display_title"]),
+                preview=str(meta["preview"]),
+                updated_at=str(meta["time_str"]),
+                last_modified=str(meta["raw_mod_str"]),
                 is_pinned=is_pinned,
                 is_running=is_running,
-                workspace_path=proj_path or str(self.default_workspace),
-                root_id=ws_root_id or "scratch",
+                workspace_path=str(meta["proj_path"] or self.default_workspace),
+                root_id=str(meta["ws_root_id"]),
             )
 
+            final_project = meta["final_project"]
             if final_project:
-                projects_dict.setdefault(final_project, []).append(summary)
+                projects_dict.setdefault(str(final_project), []).append(summary)
                 if not is_pinned and final_project not in project_latest_time:
-                    project_latest_time[final_project] = str(mod_time or "")
+                    project_latest_time[str(final_project)] = str(meta["raw_mod_str"])
             else:
                 general_sessions.append(summary)
 
@@ -622,6 +709,7 @@ class BaseEngineProvider(ABC):
             general_sessions=general_sessions,
             engine_alive=engine_alive,
             running_session_ids=running_session_ids,
+            archived_count=archived_count,
         )
 
     def _get_session_messages_sync(
@@ -681,6 +769,7 @@ class BaseEngineProvider(ABC):
 
     def _archive_session_sync(self, session_id: str, purge_disk: bool = False) -> DeleteSessionResponse:
         sid = self.validate_session_id(session_id)
+        self._update_annotation_archived_sync(sid, True)
         archived = self._load_archived_ids()
         archived.add(sid)
         self._save_archived_ids(archived)
@@ -694,12 +783,65 @@ class BaseEngineProvider(ABC):
             ok=True,
             session_id=sid,
             archived=True,
-            message="Session archived without modifying official SQLite database",
+            message="已归档会话",
         )
+
+    def _restore_session_sync(self, session_id: str) -> RestoreSessionResponse:
+        sid = self.validate_session_id(session_id)
+        self._update_annotation_archived_sync(sid, False)
+        archived = self._load_archived_ids()
+        if sid in archived:
+            archived.discard(sid)
+            self._save_archived_ids(archived)
+        return RestoreSessionResponse(
+            ok=True,
+            session_id=sid,
+            archived=False,
+            message="已召回会话",
+        )
+
+    def _list_archived_sessions_sync(self) -> ArchivedSessionsResponse:
+        queried = self._query_raw_conversation_rows_sync()
+        if queried is None:
+            return ArchivedSessionsResponse(items=[])
+        rows, convo_to_project, pid_to_project = queried
+
+        ann_map = self._read_annotations_map_sync()
+        archived_ids = self._compute_effective_archived_ids(ann_map)
+        if not archived_ids:
+            return ArchivedSessionsResponse(items=[])
+
+        items: list[ArchivedSessionItem] = []
+        for r in rows:
+            meta = self._build_session_metadata(r, convo_to_project, pid_to_project)
+            if meta is None:
+                continue
+            cid_str = str(meta["cid"])
+            if cid_str not in archived_ids:
+                continue
+            items.append(
+                ArchivedSessionItem(
+                    id=cid_str,
+                    title=str(meta["display_title"]),
+                    preview=str(meta["preview"]),
+                    project_name=str(meta["final_project"] or ""),
+                    updated_at=str(meta["time_str"]),
+                    last_modified=str(meta["raw_mod_str"]),
+                    workspace_path=str(meta["proj_path"] or self.default_workspace),
+                    root_id=str(meta["ws_root_id"]),
+                )
+            )
+        return ArchivedSessionsResponse(items=items)
 
     async def get_session_tree(self) -> SessionTreeResponse:
         engine_alive = await self.is_engine_alive()
         return await asyncio.to_thread(self._get_session_tree_sync, engine_alive)
+
+    async def list_archived_sessions(self) -> ArchivedSessionsResponse:
+        return await asyncio.to_thread(self._list_archived_sessions_sync)
+
+    async def restore_session(self, session_id: str) -> RestoreSessionResponse:
+        return await asyncio.to_thread(self._restore_session_sync, session_id)
 
     async def is_session_running(self, session_id: str) -> bool:
         return await asyncio.to_thread(self._is_session_running_sync, session_id)

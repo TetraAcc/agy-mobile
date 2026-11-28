@@ -170,6 +170,29 @@ class SessionTreeResponse(BaseModel):
     general_sessions: list[SessionSummary] = Field(default_factory=list)
     engine_alive: bool = False
     running_session_ids: list[str] = Field(default_factory=list)
+    archived_count: int = 0
+
+
+class ArchivedSessionItem(BaseModel):
+    id: str
+    title: str
+    preview: str = ""
+    project_name: str = ""
+    updated_at: str = ""
+    last_modified: str = ""
+    workspace_path: str = ""
+    root_id: str = ""
+
+
+class ArchivedSessionsResponse(BaseModel):
+    items: list[ArchivedSessionItem] = Field(default_factory=list)
+
+
+class RestoreSessionResponse(BaseModel):
+    ok: bool = True
+    session_id: str
+    archived: bool = False
+    message: str = ""
 
 
 class ToolCallItem(BaseModel):
@@ -572,3 +595,59 @@ class ApprovalDecisionResponse(BaseModel):
     decision: str
     message: str = ""
     remaining_approvals: list[ToolApprovalItem] = Field(default_factory=list)
+
+
+class AutomationRunEvent(BaseModel):
+    event_id: str
+    timestamp_ms: int = 0
+    started_at_ms: int = 0
+    ok: bool = True
+    error: str = ""
+    conversation_id: str = ""
+
+
+class AutomationItem(BaseModel):
+    id: str
+    display_name: str
+    description: str = ""
+    enabled: bool = False
+    cron_expr: str = ""
+    timezone: str = ""
+    schedule_raw: str = ""
+    prompt: str = ""
+    workspace_path: str = ""
+    workspace_uris: list[str] = Field(default_factory=list)
+    access_grants: list[str] = Field(default_factory=list)
+    next_run_text: str = ""
+    last_run_at_ms: int = 0
+    last_run_ok: bool | None = None
+    last_run_error: str = ""
+    event_count: int = 0
+    recent_events: list[AutomationRunEvent] = Field(default_factory=list)
+
+
+class AutomationListResponse(BaseModel):
+    items: list[AutomationItem] = Field(default_factory=list)
+    config_dir: str = ""
+
+
+class AutomationUpsertRequest(BaseModel):
+    id: str = ""
+    display_name: str
+    description: str = ""
+    cron_expr: str
+    timezone: str = "Asia/Tokyo"
+    prompt: str
+    workspace_path: str = ""
+    enabled: bool | None = None
+    preserve_permissions: bool = True
+
+
+class AutomationToggleRequest(BaseModel):
+    enabled: bool
+
+
+class AutomationLogsResponse(BaseModel):
+    id: str
+    log_file: str = ""
+    lines: list[str] = Field(default_factory=list)

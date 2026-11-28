@@ -75,6 +75,7 @@ class HubState {
   final DateTime? activeCacheUpdatedAt;
   final NodePowerStatus? nodePowerStatus;
   final bool isUpdatingNodePower;
+  final int archivedSessionsCount;
 
   const HubState({
     this.nodes = const [],
@@ -112,6 +113,7 @@ class HubState {
     this.activeCacheUpdatedAt,
     this.nodePowerStatus,
     this.isUpdatingNodePower = false,
+    this.archivedSessionsCount = 0,
   });
 
   String get effectiveSessionModel =>
@@ -193,6 +195,7 @@ class HubState {
     NodePowerStatus? nodePowerStatus,
     bool clearNodePowerStatus = false,
     bool? isUpdatingNodePower,
+    int? archivedSessionsCount,
   }) {
     return HubState(
       nodes: nodes ?? this.nodes,
@@ -237,6 +240,7 @@ class HubState {
           ? null
           : (nodePowerStatus ?? this.nodePowerStatus),
       isUpdatingNodePower: isUpdatingNodePower ?? this.isUpdatingNodePower,
+      archivedSessionsCount: archivedSessionsCount ?? this.archivedSessionsCount,
     );
   }
 }
@@ -672,6 +676,7 @@ class HubController extends Notifier<HubState> {
         isShowingCachedData: false,
         clearActiveCacheUpdatedAt: true,
         clearNodePowerStatus: true,
+        archivedSessionsCount: 0,
       );
     }
 
@@ -936,6 +941,7 @@ class HubController extends Notifier<HubState> {
         projects: projectsForUi,
         generalSessions: generalForUi,
         runningSessionIds: mergedRunning,
+        archivedSessionsCount: tree.archivedCount,
       );
       final nextTrees = Map<String, CachedNodeTree>.from(_cacheSnapshot.treesByNode);
       nextTrees[nodeId] = CachedNodeTree(
@@ -2182,7 +2188,23 @@ class HubController extends Notifier<HubState> {
     } on ApiException catch (e) {
       return e.message;
     } catch (e) {
-      return '删除失败: $e';
+      return '归档失败: $e';
+    }
+  }
+
+  Future<String?> restoreSession(String sessionId) async {
+    final nodeId = state.selectedNodeId;
+    if (nodeId.isEmpty) return null;
+    if (!state.canWrite) return '当前账户无写入权限';
+
+    try {
+      await _api.restoreSession(nodeId, sessionId);
+      await refreshSessionTree(autoSelectFirst: false);
+      return null;
+    } on ApiException catch (e) {
+      return e.message;
+    } catch (e) {
+      return '召回失败: $e';
     }
   }
 
@@ -2375,6 +2397,10 @@ class HubController extends Notifier<HubState> {
 
   Future<FileContentData> readFileContent(String rootId, String relPath) async {
     return _api.getFileContent(state.selectedNodeId, rootId, relPath);
+  }
+
+  Future<FileContentData> previewOfficeFile(String rootId, String relPath) async {
+    return _api.getFilePreview(state.selectedNodeId, rootId, relPath);
   }
 
   Future<FileSaveResult> saveFileContent(

@@ -134,8 +134,12 @@ class MessageCard extends StatelessWidget {
 
     final askQuestions = _askQuestions;
     final pluginCards = RichPresenceParser.extractPluginCards(msg.content);
-    final displayMarkdown =
+    final agentEmbeds = RichPresenceParser.extractAgentEmbeds(msg.content);
+    var displayMarkdown =
         pluginCards.isNotEmpty ? RichPresenceParser.stripPluginCardTags(msg.content) : msg.content;
+    if (agentEmbeds.isNotEmpty) {
+      displayMarkdown = RichPresenceParser.stripAgentEmbedTags(displayMarkdown);
+    }
     final actionNotice = RichPresenceParser.detectActionNeededNotice(
       msg.content,
       hasPluginCards: pluginCards.isNotEmpty,
@@ -144,6 +148,7 @@ class MessageCard extends StatelessWidget {
     final hasTurnChanges = turnChanges != null && turnChanges!.totalFiles > 0 && turnChanges!.files.isNotEmpty;
     if (displayMarkdown.trim().isEmpty &&
         pluginCards.isEmpty &&
+        agentEmbeds.isEmpty &&
         actionNotice == null &&
         askQuestions.isEmpty &&
         !hasTurnChanges &&
@@ -151,6 +156,13 @@ class MessageCard extends StatelessWidget {
         msg.status != 'WAITING_INPUT') {
       return const SizedBox.shrink();
     }
+    final embedPaths = agentEmbeds
+        .map((e) => FileUtils.parseFileLinkTarget(e.src).cleanPath
+            .replaceAll('file:///', '')
+            .replaceAll('file://', '')
+            .trim()
+            .toLowerCase())
+        .toSet();
 
     final assistantBody = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -179,6 +191,19 @@ class MessageCard extends StatelessWidget {
               nodeName: nodeName,
               onQuickReply: onSubmitQuickReply,
             ),
+          for (final embed in agentEmbeds)
+            AgentEmbedCard(
+              info: embed,
+              isDark: isDark,
+              onOpenPreview: () {
+                final fileName = FileUtils.extractFilename(embed.src);
+                if (onOpenFile != null) {
+                  onOpenFile!(embed.src, filename: fileName);
+                } else {
+                  onDownloadFile(embed.src, filename: fileName);
+                }
+              },
+            ),
           if (actionNotice != null)
             ActionNeededCard(
               notice: actionNotice,
@@ -186,7 +211,14 @@ class MessageCard extends StatelessWidget {
               onQuickReply: onSubmitQuickReply,
             ),
           for (final fPath in FileUtils.extractDownloadableFiles(displayMarkdown))
-            _buildDownloadCard(context, fPath),
+            if (!embedPaths.contains(
+              FileUtils.parseFileLinkTarget(fPath).cleanPath
+                  .replaceAll('file:///', '')
+                  .replaceAll('file://', '')
+                  .trim()
+                  .toLowerCase(),
+            ))
+              _buildDownloadCard(context, fPath),
           if (askQuestions.isNotEmpty)
             _AskQuestionCard(
               questions: askQuestions,
@@ -729,7 +761,9 @@ class MessageCard extends StatelessWidget {
     final canPreview = onOpenFile != null &&
         (!FileUtils.isBinaryFile(cleanPath) ||
             FileUtils.isImageFile(cleanPath) ||
-            FileUtils.isPdfFile(cleanPath));
+            FileUtils.isPdfFile(cleanPath) ||
+            FileUtils.isOfficePreviewableFile(cleanPath) ||
+            FileUtils.isHtmlFile(cleanPath));
 
     return InkWell(
       onTap: canPreview

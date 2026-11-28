@@ -1,8 +1,27 @@
 import 'package:flutter/material.dart';
 
 import '../../core/config/responsive_layout.dart';
+import '../../core/config/sidebar_prefs.dart';
 import '../../core/theme/app_colors.dart';
 import '../../models/models.dart';
+
+export '../../core/config/sidebar_prefs.dart' show SidebarGroupBy;
+
+DateTime? parseSessionActivityTime(SessionItem session) {
+  for (final rawCandidate in [session.lastModified.trim(), session.updatedAt.trim()]) {
+    if (rawCandidate.isEmpty) continue;
+    final numeric = num.tryParse(rawCandidate);
+    if (numeric != null && numeric > 0) {
+      final millis = numeric >= 1e11 ? numeric.round() : (numeric * 1000).round();
+      return DateTime.fromMillisecondsSinceEpoch(millis, isUtc: true).toLocal();
+    }
+    final parsed = DateTime.tryParse(rawCandidate);
+    if (parsed != null) {
+      return parsed.toLocal();
+    }
+  }
+  return null;
+}
 
 class QuotaDrawer extends StatefulWidget {
   final List<HostNode> nodes;
@@ -30,6 +49,17 @@ class QuotaDrawer extends StatefulWidget {
   final String currentDisplayName;
   final VoidCallback? onLogout;
   final bool isPermanentSidebar;
+  final SidebarGroupBy groupBy;
+  final ValueChanged<SidebarGroupBy>? onGroupByChanged;
+  final DateTime Function()? nowProvider;
+  final VoidCallback? onOpenAutomations;
+  final int enabledAutomationsCount;
+  final bool isAutomationsOpen;
+  final VoidCallback? onOpenArchivedSessions;
+  final int archivedSessionsCount;
+  final VoidCallback? onOpenSettings;
+  final VoidCallback? onOpenAccountSettings;
+  final bool hasAppUpdate;
 
   const QuotaDrawer({
     super.key,
@@ -58,16 +88,50 @@ class QuotaDrawer extends StatefulWidget {
     this.currentDisplayName = '',
     this.onLogout,
     this.isPermanentSidebar = false,
+    this.groupBy = SidebarGroupBy.project,
+    this.onGroupByChanged,
+    this.nowProvider,
+    this.onOpenAutomations,
+    this.enabledAutomationsCount = 0,
+    this.isAutomationsOpen = false,
+    this.onOpenArchivedSessions,
+    this.archivedSessionsCount = 0,
+    this.onOpenSettings,
+    this.onOpenAccountSettings,
+    this.hasAppUpdate = false,
   });
 
   @override
   State<QuotaDrawer> createState() => _QuotaDrawerState();
 }
 
+typedef _DrawerSessionEntry = ({
+  SessionItem session,
+  String? projectName,
+  DateTime? activityTime,
+  int order,
+});
+
 class _QuotaDrawerState extends State<QuotaDrawer> {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   bool _isQuotaExpanded = false;
+  late SidebarGroupBy _groupBy;
+  final Map<String, bool> _activitySectionExpanded = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _groupBy = widget.groupBy;
+  }
+
+  @override
+  void didUpdateWidget(covariant QuotaDrawer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.groupBy != oldWidget.groupBy && widget.groupBy != _groupBy) {
+      _groupBy = widget.groupBy;
+    }
+  }
 
   @override
   void dispose() {
@@ -76,6 +140,12 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
   }
 
   bool get isDark => widget.isDark;
+
+  void _setGroupBy(SidebarGroupBy mode) {
+    if (_groupBy == mode) return;
+    setState(() => _groupBy = mode);
+    widget.onGroupByChanged?.call(mode);
+  }
 
   void _closeIfDrawer(BuildContext context) {
     if (!widget.isPermanentSidebar) {
@@ -114,6 +184,51 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
       }
     }
     return out;
+  }
+
+  List<_DrawerSessionEntry> _collectAllEntries() {
+    final seen = <String>{};
+    final out = <_DrawerSessionEntry>[];
+    var order = 0;
+    for (final entry in widget.projects.entries) {
+      for (final s in entry.value) {
+        if (seen.add(s.id)) {
+          out.add((
+            session: s,
+            projectName: entry.key,
+            activityTime: parseSessionActivityTime(s),
+            order: order++,
+          ));
+        }
+      }
+    }
+    for (final s in widget.generalSessions) {
+      if (seen.add(s.id)) {
+        out.add((
+          session: s,
+          projectName: null,
+          activityTime: parseSessionActivityTime(s),
+          order: order++,
+        ));
+      }
+    }
+    return out;
+  }
+
+  bool _isSessionRunning(SessionItem s) => widget.runningSessionIds.contains(s.id) || s.isRunning;
+
+  int _compareEntriesByRecency(_DrawerSessionEntry a, _DrawerSessionEntry b) {
+    final at = a.activityTime;
+    final bt = b.activityTime;
+    if (at != null && bt != null) {
+      final cmp = bt.compareTo(at);
+      if (cmp != 0) return cmp;
+    } else if (bt != null) {
+      return 1;
+    } else if (at != null) {
+      return -1;
+    }
+    return a.order.compareTo(b.order);
   }
 
   Widget _buildSearchResults(BuildContext context) {
@@ -177,6 +292,524 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
     );
   }
 
+  Widget _buildAutomationsEntryButton(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
+    final green = AppColors.statusGreen(isDark);
+    final selected = widget.isAutomationsOpen;
+    return Material(
+      color: selected
+          ? primary.withValues(alpha: isDark ? 0.16 : 0.10)
+          : Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        key: const ValueKey('sidebar_automations_entry'),
+        onTap: () {
+          _closeIfDrawer(context);
+          widget.onOpenAutomations?.call();
+        },
+        child: Container(
+          height: 32,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: selected ? primary.withValues(alpha: 0.45) : Colors.transparent,
+              width: 0.9,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                Icons.schedule_rounded,
+                size: 16,
+                color: selected ? primary : (isDark ? Colors.white60 : Colors.black54),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '自动化',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: selected ? FontWeight.bold : FontWeight.w500,
+                    color: selected
+                        ? (isDark ? Colors.white : primary)
+                        : (isDark ? Colors.white70 : Colors.black87),
+                  ),
+                ),
+              ),
+              if (widget.enabledAutomationsCount > 0)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: green.withValues(alpha: 0.16),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '${widget.enabledAutomationsCount}',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: green,
+                      height: 1.2,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildGroupBySwitcher(BuildContext context) {
+    final runningCount = _collectAllEntries().where((e) => _isSessionRunning(e.session)).length;
+    return Container(
+      height: 28,
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF18181B) : const Color(0xFFF4F4F5),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7),
+          width: 0.8,
+        ),
+      ),
+      child: Row(
+        children: [
+          _buildGroupBySegment(
+            context,
+            key: const ValueKey('sidebar_group_by_project'),
+            mode: SidebarGroupBy.project,
+            icon: Icons.folder_outlined,
+            label: '按项目',
+          ),
+          _buildGroupBySegment(
+            context,
+            key: const ValueKey('sidebar_group_by_activity'),
+            mode: SidebarGroupBy.activity,
+            icon: Icons.bolt_rounded,
+            label: '按活跃',
+            badgeCount: runningCount,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildGroupBySegment(
+    BuildContext context, {
+    required Key key,
+    required SidebarGroupBy mode,
+    required IconData icon,
+    required String label,
+    int badgeCount = 0,
+  }) {
+    final selected = _groupBy == mode;
+    final primary = Theme.of(context).colorScheme.primary;
+    final statusGreen = AppColors.statusGreen(isDark);
+    return Expanded(
+      child: InkWell(
+        key: key,
+        onTap: () => _setGroupBy(mode),
+        borderRadius: BorderRadius.circular(6),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected
+                ? primary.withValues(alpha: isDark ? 0.18 : 0.12)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: selected ? primary.withValues(alpha: 0.4) : Colors.transparent,
+              width: 0.8,
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 13,
+                color: selected ? primary : (isDark ? Colors.white54 : Colors.black54),
+              ),
+              const SizedBox(width: 4),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: selected ? FontWeight.bold : FontWeight.w500,
+                    color: selected
+                        ? (isDark ? Colors.white : primary)
+                        : (isDark ? Colors.white60 : Colors.black54),
+                  ),
+                ),
+              ),
+              if (badgeCount > 0) ...[
+                const SizedBox(width: 5),
+                Semantics(
+                  label: '当前有 $badgeCount 个运行中会话',
+                  child: Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: statusGreen,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProjectGroupedList(BuildContext context) {
+    final pinnedEntries = _collectPinnedEntries();
+    final sortedGeneral = _sortPinnedFirst(widget.generalSessions);
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      children: [
+        if (pinnedEntries.isNotEmpty) ...[
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.push_pin_rounded,
+                  size: 12,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  '已置顶 (${pinnedEntries.length})',
+                  style: TextStyle(
+                    color: isDark ? Colors.white54 : Colors.black54,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          for (final item in pinnedEntries)
+            _buildSessionTile(
+              context,
+              item.session,
+              isIndented: false,
+              projectTag: item.projectName,
+            ),
+          Divider(color: isDark ? Colors.white10 : Colors.black12, height: 16),
+        ],
+        if (widget.projects.isNotEmpty) ...[
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            child: Text(
+              '项目列表',
+              style: TextStyle(
+                color: isDark ? Colors.white38 : Colors.black38,
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          for (final entry in widget.projects.entries) ...[
+            Builder(
+              builder: (context) {
+                final runningCount = entry.value.where(_isSessionRunning).length;
+                return Theme(
+                  data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                  child: ExpansionTile(
+                    initiallyExpanded: entry.value.any((s) => s.id == widget.activeSessionId),
+                    tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 0),
+                    leading: Icon(
+                      Icons.folder_outlined,
+                      color: Theme.of(context).colorScheme.primary,
+                      size: 18,
+                    ),
+                    title: Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            entry.key,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: isDark ? Colors.white : Colors.black87,
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        if (runningCount > 0) ...[
+                          const SizedBox(width: 8),
+                          _ProjectBreathingDot(
+                            key: ValueKey('proj_breathing_${entry.key}'),
+                            color: AppColors.statusGreen(isDark),
+                            count: runningCount,
+                          ),
+                        ],
+                      ],
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (widget.canWrite && entry.value.isNotEmpty)
+                          IconButton(
+                            icon: const Icon(Icons.add_circle_outline_rounded, size: 18),
+                            color: Theme.of(context).colorScheme.primary,
+                            tooltip: '在此项目内新建会话',
+                            splashRadius: 16,
+                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                            padding: EdgeInsets.zero,
+                            onPressed: () {
+                              final firstWithWs = entry.value.firstWhere(
+                                (s) => s.workspacePath.isNotEmpty,
+                                orElse: () => entry.value.first,
+                              );
+                              _closeIfDrawer(context);
+                              widget.onNewSessionInProject?.call(
+                                entry.key,
+                                firstWithWs.workspacePath,
+                                firstWithWs.rootId,
+                              );
+                            },
+                          ),
+                        const SizedBox(width: 2),
+                        Icon(
+                          Icons.expand_more_rounded,
+                          size: 18,
+                          color: isDark ? Colors.white54 : Colors.black45,
+                        ),
+                      ],
+                    ),
+                    children: _sortPinnedFirst(entry.value)
+                        .map((s) => _buildSessionTile(context, s, isIndented: true))
+                        .toList(),
+                  ),
+                );
+              },
+            ),
+          ],
+          Divider(color: isDark ? Colors.white10 : Colors.black12, height: 16),
+        ],
+        if (sortedGeneral.isNotEmpty) ...[
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            child: Text(
+              '会话列表',
+              style: TextStyle(
+                color: isDark ? Colors.white38 : Colors.black38,
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          for (final s in sortedGeneral)
+            _buildSessionTile(context, s, isIndented: false),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildActivityGroupedList(BuildContext context) {
+    final allEntries = _collectAllEntries();
+    if (allEntries.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 36, horizontal: 20),
+          child: Text(
+            '暂无会话',
+            style: TextStyle(fontSize: 12, color: isDark ? Colors.white38 : Colors.black45),
+          ),
+        ),
+      );
+    }
+
+    final now = (widget.nowProvider ?? DateTime.now)();
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final recent7Start = todayStart.subtract(const Duration(days: 6));
+
+    final running = <_DrawerSessionEntry>[];
+    final pinned = <_DrawerSessionEntry>[];
+    final today = <_DrawerSessionEntry>[];
+    final recent7 = <_DrawerSessionEntry>[];
+    final older = <_DrawerSessionEntry>[];
+
+    for (final entry in allEntries) {
+      if (_isSessionRunning(entry.session)) {
+        running.add(entry);
+      } else if (entry.session.isPinned) {
+        pinned.add(entry);
+      } else {
+        final t = entry.activityTime;
+        if (t != null && !t.isBefore(todayStart)) {
+          today.add(entry);
+        } else if (t != null && !t.isBefore(recent7Start)) {
+          recent7.add(entry);
+        } else {
+          older.add(entry);
+        }
+      }
+    }
+
+    running.sort((a, b) {
+      final pinCmp = (b.session.isPinned ? 1 : 0).compareTo(a.session.isPinned ? 1 : 0);
+      return pinCmp != 0 ? pinCmp : _compareEntriesByRecency(a, b);
+    });
+    pinned.sort(_compareEntriesByRecency);
+    today.sort(_compareEntriesByRecency);
+    recent7.sort(_compareEntriesByRecency);
+    older.sort(_compareEntriesByRecency);
+
+    final primary = Theme.of(context).colorScheme.primary;
+    final green = AppColors.statusGreen(isDark);
+    final olderDefaultExpanded =
+        (running.isEmpty && pinned.isEmpty && today.isEmpty && recent7.isEmpty) ||
+            older.any((e) => e.session.id == widget.activeSessionId);
+
+    final sections = <({
+      String key,
+      String title,
+      Widget leading,
+      List<_DrawerSessionEntry> items,
+      bool defaultExpanded,
+    })>[
+      if (running.isNotEmpty)
+        (
+          key: 'running',
+          title: '运行中 (${running.length})',
+          leading: _ProjectBreathingDot(
+            key: const ValueKey('activity_running_dot'),
+            color: green,
+            count: 1,
+          ),
+          items: running,
+          defaultExpanded: true,
+        ),
+      if (pinned.isNotEmpty)
+        (
+          key: 'pinned',
+          title: '已置顶 (${pinned.length})',
+          leading: Icon(Icons.push_pin_rounded, size: 12, color: primary),
+          items: pinned,
+          defaultExpanded: true,
+        ),
+      if (today.isNotEmpty)
+        (
+          key: 'today',
+          title: '今日活跃 (${today.length})',
+          leading: Icon(Icons.today_rounded, size: 12.5, color: isDark ? Colors.white54 : Colors.black54),
+          items: today,
+          defaultExpanded: true,
+        ),
+      if (recent7.isNotEmpty)
+        (
+          key: 'recent7',
+          title: '近 7 天 (${recent7.length})',
+          leading: Icon(Icons.date_range_rounded, size: 12.5, color: isDark ? Colors.white54 : Colors.black54),
+          items: recent7,
+          defaultExpanded: true,
+        ),
+      if (older.isNotEmpty)
+        (
+          key: 'older',
+          title: '更早 (${older.length})',
+          leading: Icon(Icons.history_rounded, size: 12.5, color: isDark ? Colors.white38 : Colors.black45),
+          items: older,
+          defaultExpanded: olderDefaultExpanded,
+        ),
+    ];
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      children: [
+        for (var i = 0; i < sections.length; i++) ...[
+          if (i > 0) Divider(color: isDark ? Colors.white10 : Colors.black12, height: 14),
+          Builder(
+            builder: (context) {
+              final sec = sections[i];
+              final isExpanded = _activitySectionExpanded[sec.key] ?? sec.defaultExpanded;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildActivitySectionHeader(
+                    context,
+                    sectionKey: sec.key,
+                    title: sec.title,
+                    leading: sec.leading,
+                    isExpanded: isExpanded,
+                    onToggle: () {
+                      setState(() {
+                        _activitySectionExpanded[sec.key] = !isExpanded;
+                      });
+                    },
+                  ),
+                  if (isExpanded)
+                    for (final item in sec.items)
+                      _buildSessionTile(
+                        context,
+                        item.session,
+                        isIndented: false,
+                        projectTag: item.projectName,
+                      ),
+                ],
+              );
+            },
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildActivitySectionHeader(
+    BuildContext context, {
+    required String sectionKey,
+    required String title,
+    required Widget leading,
+    required bool isExpanded,
+    required VoidCallback onToggle,
+  }) {
+    return InkWell(
+      key: ValueKey('activity_section_$sectionKey'),
+      onTap: onToggle,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        child: Row(
+          children: [
+            leading,
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: isDark ? Colors.white60 : Colors.black54,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            Icon(
+              isExpanded ? Icons.keyboard_arrow_down_rounded : Icons.keyboard_arrow_right_rounded,
+              size: 16,
+              color: isDark ? Colors.white38 : Colors.black38,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final content = SafeArea(
@@ -212,6 +845,10 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                       style: const TextStyle(fontSize: 12.5),
                     ),
                   ),
+                  if (widget.onOpenAutomations != null) ...[
+                    const SizedBox(height: 5),
+                    _buildAutomationsEntryButton(context),
+                  ],
                   const SizedBox(height: 6),
                   Container(
                     height: 32,
@@ -257,327 +894,173 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                       onChanged: (val) => setState(() => _searchQuery = val.trim()),
                     ),
                   ),
+                  const SizedBox(height: 6),
+                  _buildGroupBySwitcher(context),
                 ],
               ),
             ),
             Expanded(
               child: _searchQuery.isNotEmpty
                   ? _buildSearchResults(context)
-                  : Builder(
-                      builder: (context) {
-                        final pinnedEntries = _collectPinnedEntries();
-                        final sortedGeneral = _sortPinnedFirst(widget.generalSessions);
-                        return ListView(
-                          padding: const EdgeInsets.symmetric(vertical: 8),
-                          children: [
-                            if (pinnedEntries.isNotEmpty) ...[
-                              Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      Icons.push_pin_rounded,
-                                      size: 12,
-                                      color: Theme.of(context).colorScheme.primary,
-                                    ),
-                                    const SizedBox(width: 5),
-                                    Text(
-                                      '已置顶 (${pinnedEntries.length})',
-                                      style: TextStyle(
-                                        color: isDark ? Colors.white54 : Colors.black54,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              for (final item in pinnedEntries)
-                                _buildSessionTile(
-                                  context,
-                                  item.session,
-                                  isIndented: false,
-                                  projectTag: item.projectName,
-                                ),
-                              Divider(color: isDark ? Colors.white10 : Colors.black12, height: 16),
-                            ],
-                            if (widget.projects.isNotEmpty) ...[
-                              Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                                child: Text(
-                                  '项目列表',
-                                  style: TextStyle(
-                                    color: isDark ? Colors.white38 : Colors.black38,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                              for (final entry in widget.projects.entries) ...[
-                                Builder(
-                                  builder: (context) {
-                                    final runningCount = entry.value
-                                        .where((s) => widget.runningSessionIds.contains(s.id) || s.isRunning)
-                                        .length;
-                                    return Theme(
-                                      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-                                      child: ExpansionTile(
-                                        initiallyExpanded: entry.value.any((s) => s.id == widget.activeSessionId),
-                                        tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 0),
-                                        leading: Icon(
-                                          Icons.folder_outlined,
-                                          color: Theme.of(context).colorScheme.primary,
-                                          size: 18,
-                                        ),
-                                        title: Row(
-                                          children: [
-                                            Flexible(
-                                              child: Text(
-                                                entry.key,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: TextStyle(
-                                                  color: isDark ? Colors.white : Colors.black87,
-                                                  fontSize: 13,
-                                                  fontWeight: FontWeight.bold,
-                                                ),
-                                              ),
-                                            ),
-                                            if (runningCount > 0) ...[
-                                              const SizedBox(width: 8),
-                                              _ProjectBreathingDot(
-                                                key: ValueKey('proj_breathing_${entry.key}'),
-                                                color: AppColors.statusGreen(isDark),
-                                                count: runningCount,
-                                              ),
-                                            ],
-                                          ],
-                                        ),
-                                    trailing: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        if (widget.canWrite && entry.value.isNotEmpty)
-                                          IconButton(
-                                            icon: const Icon(Icons.add_circle_outline_rounded, size: 18),
-                                            color: Theme.of(context).colorScheme.primary,
-                                            tooltip: '在此项目内新建会话',
-                                            splashRadius: 16,
-                                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                                            padding: EdgeInsets.zero,
-                                            onPressed: () {
-                                              final firstWithWs = entry.value.firstWhere(
-                                                (s) => s.workspacePath.isNotEmpty,
-                                                orElse: () => entry.value.first,
-                                              );
-                                              _closeIfDrawer(context);
-                                              widget.onNewSessionInProject?.call(
-                                                entry.key,
-                                                firstWithWs.workspacePath,
-                                                firstWithWs.rootId,
-                                              );
-                                            },
-                                          ),
-                                        const SizedBox(width: 2),
-                                        Icon(
-                                          Icons.expand_more_rounded,
-                                          size: 18,
-                                          color: isDark ? Colors.white54 : Colors.black45,
-                                        ),
-                                      ],
-                                    ),
-                                    children: _sortPinnedFirst(entry.value)
-                                        .map((s) => _buildSessionTile(context, s, isIndented: true))
-                                        .toList(),
-                                  ),
-                                );
-                                  },
-                                ),
-                              ],
-                              Divider(color: isDark ? Colors.white10 : Colors.black12, height: 16),
-                            ],
-                            if (sortedGeneral.isNotEmpty) ...[
-                              Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                                child: Text(
-                                  '会话列表',
-                                  style: TextStyle(
-                                    color: isDark ? Colors.white38 : Colors.black38,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                              for (final s in sortedGeneral)
-                                _buildSessionTile(context, s, isIndented: false),
-                            ],
-                          ],
-                        );
-                      },
-                    ),
+                  : (_groupBy == SidebarGroupBy.activity
+                      ? _buildActivityGroupedList(context)
+                      : _buildProjectGroupedList(context)),
             ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-              decoration: BoxDecoration(
-                border: Border(top: BorderSide(color: isDark ? Colors.white10 : Colors.black12)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        '护眼强调色',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: isDark ? Colors.white60 : Colors.black54,
-                        ),
-                      ),
-                      Text(
-                        AppColors.getThemeById(widget.currentAccentThemeId).name.split(' ').first,
-                        style: TextStyle(
-                          fontSize: 10.5,
-                          color: Theme.of(context).colorScheme.primary,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: AppColors.accentThemes.map((theme) {
-                      final isSelected = theme.id == widget.currentAccentThemeId;
-                      final swatch = theme.previewFor(isDark);
-                      return InkWell(
-                        onTap: () => widget.onSelectAccentTheme(theme),
-                        borderRadius: BorderRadius.circular(16),
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 200),
-                          width: 25,
-                          height: 25,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: swatch,
-                            border: Border.all(
-                              color: isSelected
-                                  ? (isDark ? Colors.white : Colors.black87)
-                                  : Colors.transparent,
-                              width: 2,
-                            ),
-                            boxShadow: [
-                              if (isSelected)
-                                BoxShadow(
-                                  color: swatch.withValues(alpha: 0.4),
-                                  blurRadius: 6,
-                                  spreadRadius: 1,
-                                ),
-                            ],
-                          ),
-                          child: isSelected
-                              ? Center(
-                                  child: Icon(
-                                    Icons.check_rounded,
-                                    size: 13,
-                                    color: isDark ? const Color(0xFF111113) : Colors.white,
-                                  ),
-                                )
-                              : null,
-                        ),
-                      );
-                    }).toList(),
-                  ),
-                ],
-              ),
-            ),
-            if (widget.currentDisplayName.isNotEmpty)
+            if (widget.onOpenArchivedSessions != null)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                 decoration: BoxDecoration(
                   border: Border(top: BorderSide(color: isDark ? Colors.white10 : Colors.black12)),
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Row(
+                child: InkWell(
+                  key: const ValueKey('sidebar_archived_entry'),
+                  onTap: () {
+                    _closeIfDrawer(context);
+                    widget.onOpenArchivedSessions!();
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    child: Row(
                       children: [
-                        CircleAvatar(
-                          radius: 12,
-                          backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.2),
-                          child: Icon(
-                            Icons.person_rounded,
-                            size: 14,
-                            color: Theme.of(context).colorScheme.primary,
+                        Icon(
+                          Icons.archive_outlined,
+                          size: 15,
+                          color: isDark ? Colors.white54 : Colors.black54,
+                        ),
+                        const SizedBox(width: 7),
+                        Expanded(
+                          child: Text(
+                            '已归档',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              color: isDark ? Colors.white70 : Colors.black87,
+                            ),
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        Text(
-                          widget.currentDisplayName,
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: isDark ? Colors.white : Colors.black87,
+                        if (widget.archivedSessionsCount > 0) ...[
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.06),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              '${widget.archivedSessionsCount}',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
+                                color: isDark ? Colors.white60 : Colors.black54,
+                              ),
+                            ),
                           ),
+                          const SizedBox(width: 2),
+                        ],
+                        Icon(
+                          Icons.chevron_right_rounded,
+                          size: 16,
+                          color: isDark ? Colors.white38 : Colors.black38,
                         ),
                       ],
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.logout_rounded, size: 18),
-                      tooltip: '退出登录',
-                      color: Colors.redAccent.shade200,
-                      splashRadius: 16,
-                      constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                      padding: EdgeInsets.zero,
-                      onPressed: widget.onLogout,
-                    ),
-                  ],
+                  ),
                 ),
               ),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
                 border: Border(top: BorderSide(color: isDark ? Colors.white10 : Colors.black12)),
               ),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
-                    children: [
-                      Icon(
-                        isDark ? Icons.dark_mode_outlined : Icons.light_mode_outlined,
-                        size: 16,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        isDark ? '夜间模式' : '日间模式',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: isDark ? Colors.white70 : Colors.black87,
+                  Expanded(
+                    child: InkWell(
+                      key: const ValueKey('sidebar_footer_account'),
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () {
+                        _closeIfDrawer(context);
+                        final cb = widget.onOpenAccountSettings ?? widget.onOpenSettings ?? widget.onLogout;
+                        cb?.call();
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                        child: Row(
+                          children: [
+                            CircleAvatar(
+                              radius: 12,
+                              backgroundColor:
+                                  Theme.of(context).colorScheme.primary.withValues(alpha: 0.18),
+                              child: Icon(
+                                Icons.person_rounded,
+                                size: 14,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                widget.currentDisplayName.trim().isNotEmpty
+                                    ? widget.currentDisplayName.trim()
+                                    : '账号',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: isDark ? Colors.white : Colors.black87,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ],
+                    ),
                   ),
-                  Row(
-                    children: [
-                      Text(
-                        const String.fromEnvironment('APP_VERSION', defaultValue: 'v2.2.0'),
-                        style: TextStyle(
-                          fontSize: 10,
-                          color: isDark ? Colors.white24 : Colors.black26,
-                          letterSpacing: 0.5,
+                  IconButton(
+                    key: const ValueKey('sidebar_footer_theme_toggle'),
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                    padding: EdgeInsets.zero,
+                    tooltip: isDark ? '切换为日间模式' : '切换为夜间模式',
+                    icon: Icon(
+                      isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
+                      size: 18,
+                      color: isDark ? Colors.white70 : Colors.black54,
+                    ),
+                    onPressed: () => widget.onToggleTheme(!isDark),
+                  ),
+                  IconButton(
+                    key: const ValueKey('sidebar_footer_settings'),
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                    padding: EdgeInsets.zero,
+                    tooltip: widget.hasAppUpdate ? '设置（有新版本可用）' : '设置',
+                    icon: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Icon(
+                          Icons.settings_outlined,
+                          size: 18,
+                          color: isDark ? Colors.white70 : Colors.black54,
                         ),
-                      ),
-                      const SizedBox(width: 4),
-                      Transform.scale(
-                        scale: 0.8,
-                        child: Switch(
-                          value: isDark,
-                          activeThumbColor: Theme.of(context).colorScheme.primary,
-                          onChanged: widget.onToggleTheme,
-                        ),
-                      ),
-                    ],
+                        if (widget.hasAppUpdate)
+                          Positioned(
+                            right: -2,
+                            top: -2,
+                            child: Container(
+                              width: 7,
+                              height: 7,
+                              decoration: const BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.redAccent,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    onPressed: () {
+                      _closeIfDrawer(context);
+                      widget.onOpenSettings?.call();
+                    },
                   ),
                 ],
               ),
@@ -1167,15 +1650,18 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                               ),
                             if (widget.canDelete) ...[
                               const SizedBox(width: 2),
-                              InkWell(
-                                onTap: () => _confirmDeleteSession(context, s),
-                                borderRadius: BorderRadius.circular(12),
-                                child: Padding(
-                                  padding: const EdgeInsets.all(3),
-                                  child: Icon(
-                                    Icons.delete_outline_rounded,
-                                    size: 14,
-                                    color: isDark ? Colors.white30 : Colors.black38,
+                              Tooltip(
+                                message: '归档会话',
+                                child: InkWell(
+                                  onTap: () => _confirmDeleteSession(context, s),
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(3),
+                                    child: Icon(
+                                      Icons.archive_outlined,
+                                      size: 14,
+                                      color: isDark ? Colors.white30 : Colors.black38,
+                                    ),
                                   ),
                                 ),
                               ),
@@ -1235,8 +1721,8 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
                   ),
                 if (widget.canDelete)
                   ListTile(
-                    leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
-                    title: const Text('归档并移除会话', style: TextStyle(color: Colors.redAccent)),
+                    leading: const Icon(Icons.archive_outlined, color: Colors.redAccent),
+                    title: const Text('归档会话', style: TextStyle(color: Colors.redAccent)),
                     onTap: () {
                       Navigator.pop(ctx);
                       _confirmDeleteSession(context, s);
@@ -1257,9 +1743,9 @@ class _QuotaDrawerState extends State<QuotaDrawer> {
         return AlertDialog(
           backgroundColor: isDark ? const Color(0xFF222226) : Colors.white,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('归档并移除会话？', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          title: const Text('归档会话？', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           content: Text(
-            '确定要从列表归档移除「${s.title}」吗？\n不会破坏桌面端底层 SQLite 主库。',
+            '确定要归档「${s.title}」吗？\n归档后将从会话列表隐藏，可随时在「已归档」中召回。',
             style: TextStyle(fontSize: 13, color: isDark ? Colors.white70 : Colors.black87),
           ),
           actions: [

@@ -44,6 +44,18 @@ class ActionNeededNotice {
   });
 }
 
+class AgentEmbedInfo {
+  final String src;
+  final String title;
+  final String summary;
+
+  const AgentEmbedInfo({
+    required this.src,
+    required this.title,
+    required this.summary,
+  });
+}
+
 class ToolChipPresentation {
   final String label;
   final IconData icon;
@@ -63,6 +75,18 @@ class RichPresenceParser {
   static final RegExp _inlineCodeRe = RegExp(r'`[^`\n]+`');
   static final RegExp _pluginCardTagRe = RegExp(
     r'''<plugin-card\b[^>]*\bcatalog-id\s*=\s*(?:"([^"]+)"|'([^']+)')[^>]*>(?:\s*</plugin-card>)?|<plugin-card\b[^>]*\bcatalog-id\s*=\s*(?:"([^"]+)"|'([^']+)')[^>]*/\s*>''',
+    caseSensitive: false,
+  );
+  static final RegExp _agentEmbedTagRe = RegExp(
+    r'<agent-embed\b([^>]*)>([\s\S]*?)</agent-embed>|<agent-embed\b([^>]*)/\s*>',
+    caseSensitive: false,
+  );
+  static final RegExp _embedSrcAttrRe = RegExp(
+    r'''\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')''',
+    caseSensitive: false,
+  );
+  static final RegExp _embedTitleAttrRe = RegExp(
+    r'''\btitle\s*=\s*(?:"([^"]+)"|'([^']+)')''',
     caseSensitive: false,
   );
   static final RegExp _authContextRe = RegExp(
@@ -219,6 +243,71 @@ class RichPresenceParser {
     if (!markdown.toLowerCase().contains('<plugin-card')) return markdown;
     final masked = _maskCodeSegments(markdown);
     final matches = _pluginCardTagRe.allMatches(masked).toList();
+    if (matches.isEmpty) return markdown;
+
+    final buf = StringBuffer();
+    var cursor = 0;
+    for (final m in matches) {
+      if (m.start > cursor) {
+        buf.write(markdown.substring(cursor, m.start));
+      }
+      cursor = m.end;
+    }
+    if (cursor < markdown.length) {
+      buf.write(markdown.substring(cursor));
+    }
+
+    return buf
+        .toString()
+        .replaceAll(RegExp(r'\n{3,}'), '\n\n')
+        .trim();
+  }
+
+  /// Extract all `<agent-embed src="...">` tags outside fenced/inline code blocks.
+  static List<AgentEmbedInfo> extractAgentEmbeds(String markdown) {
+    if (!markdown.toLowerCase().contains('<agent-embed')) return const [];
+    final masked = _maskCodeSegments(markdown);
+    final matches = _agentEmbedTagRe.allMatches(masked).toList();
+    if (matches.isEmpty) return const [];
+
+    final seen = <String>{};
+    final result = <AgentEmbedInfo>[];
+    for (final m in matches) {
+      final rawAttrs = (m.group(1) ?? m.group(3) ?? '').trim();
+      final srcMatch = _embedSrcAttrRe.firstMatch(rawAttrs);
+      final rawSrc = (srcMatch?.group(1) ?? srcMatch?.group(2) ?? '').trim();
+      if (rawSrc.isEmpty) continue;
+
+      final dedupeKey = rawSrc.toLowerCase();
+      if (!seen.add(dedupeKey)) continue;
+
+      final titleMatch = _embedTitleAttrRe.firstMatch(rawAttrs);
+      var title = (titleMatch?.group(1) ?? titleMatch?.group(2) ?? '').trim();
+      if (title.isEmpty) {
+        final fileName = FileUtils.extractFilename(rawSrc);
+        final stem = fileName.contains('.')
+            ? fileName.substring(0, fileName.lastIndexOf('.'))
+            : fileName;
+        title = _prettifySlug(stem);
+      }
+
+      final rawBody = (m.group(2) ?? '').replaceAll(RegExp(r'<[^>]+>'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+      result.add(
+        AgentEmbedInfo(
+          src: rawSrc,
+          title: title,
+          summary: rawBody,
+        ),
+      );
+    }
+    return result;
+  }
+
+  /// Remove real `<agent-embed ...>` tags outside code spans while preserving code examples intact.
+  static String stripAgentEmbedTags(String markdown) {
+    if (!markdown.toLowerCase().contains('<agent-embed')) return markdown;
+    final masked = _maskCodeSegments(markdown);
+    final matches = _agentEmbedTagRe.allMatches(masked).toList();
     if (matches.isEmpty) return markdown;
 
     final buf = StringBuffer();
@@ -783,6 +872,136 @@ class _ActionNeededCardState extends State<ActionNeededCard> {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class AgentEmbedCard extends StatelessWidget {
+  final AgentEmbedInfo info;
+  final bool isDark;
+  final VoidCallback? onOpenPreview;
+
+  const AgentEmbedCard({
+    super.key,
+    required this.info,
+    required this.isDark,
+    this.onOpenPreview,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
+    final fileName = FileUtils.extractFilename(info.src);
+    final bgColor = isDark ? const Color(0xFF16181F) : const Color(0xFFF8FAFC);
+    final borderColor = isDark ? const Color(0xFF2C2F3A) : const Color(0xFFE2E8F0);
+
+    return Container(
+      margin: const EdgeInsets.only(top: 10),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(11),
+        border: Border.all(color: borderColor),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(11),
+        onTap: onOpenPreview,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      color: primary.withValues(alpha: isDark ? 0.18 : 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(Icons.code_rounded, size: 17, color: primary),
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                info.title,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  color: isDark ? Colors.white : const Color(0xFF18181B),
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                              decoration: BoxDecoration(
+                                color: primary.withValues(alpha: isDark ? 0.22 : 0.12),
+                                borderRadius: BorderRadius.circular(5),
+                              ),
+                              child: Text(
+                                'HTML 交互预览',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                  color: primary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 1),
+                        Text(
+                          fileName,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontFamily: 'monospace',
+                            color: isDark ? Colors.white54 : Colors.black54,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.tonalIcon(
+                    onPressed: onOpenPreview,
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    icon: const Icon(Icons.web_asset_rounded, size: 14),
+                    label: const Text('预览', style: TextStyle(fontSize: 12)),
+                  ),
+                ],
+              ),
+              if (info.summary.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  info.summary,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    height: 1.48,
+                    color: isDark ? const Color(0xFFD4D4D8) : const Color(0xFF3F3F46),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }

@@ -1,4 +1,5 @@
 export 'agent_message.dart';
+export 'automation_models.dart';
 export 'desktop_parity.dart';
 export 'file_item.dart';
 export 'host_node.dart';

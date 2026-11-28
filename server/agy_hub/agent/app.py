@@ -22,6 +22,7 @@ from agy_hub.agent.auth import (
     require_write_caller,
     verify_ws_gateway_signature,
 )
+from agy_hub.agent.automations import AutomationError, AutomationStore
 from agy_hub.agent.config import AgentConfig, resolve_platform
 from agy_hub.agent.message_queue import SessionMessageQueueManager
 from agy_hub.agent.power import NodePowerManager
@@ -31,11 +32,17 @@ from agy_hub.agent.providers.windows import WindowsEngineProvider
 from agy_hub.agent.terminal import PtySession, TerminalManager, TerminalUnavailableError
 from agy_hub.agent.updater import NodeSelfUpdater
 from agy_hub.agent.watcher import SessionEventHub
+from agy_hub.common.office_preview import OfficePreviewError, extract_office_preview_markdown
 from agy_hub.common.sandbox import BinaryFileError, RootRegistry, SandboxError, is_sensitive_path
 from agy_hub.common.schemas import (
     ActionAckResponse,
     ApprovalDecisionRequest,
     ApprovalDecisionResponse,
+    AutomationItem,
+    AutomationListResponse,
+    AutomationLogsResponse,
+    AutomationToggleRequest,
+    AutomationUpsertRequest,
     CreateSessionRequest,
     CreateSessionResponse,
     DeleteSessionResponse,
@@ -56,6 +63,8 @@ from agy_hub.common.schemas import (
     PinSessionResponse,
     QueuePauseRequest,
     QuotaResponse,
+    RestoreSessionResponse,
+    ArchivedSessionsResponse,
     SendMessageRequest,
     SessionArtifactsResponse,
     SessionChangesResponse,
@@ -88,6 +97,7 @@ def create_agent_app(
     registry: RootRegistry | None = None,
     updater: NodeSelfUpdater | None = None,
     power_manager: NodePowerManager | None = None,
+    automation_store: AutomationStore | None = None,
 ) -> FastAPI:
     root_registry = registry or RootRegistry()
     engine_provider = provider or _build_default_provider(config, root_registry)
@@ -100,6 +110,7 @@ def create_agent_app(
         enabled=config.enable_remote_power,
     )
     terminal_manager = TerminalManager(max_sessions=config.max_terminal_sessions)
+    store_automations = automation_store or AutomationStore()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -122,6 +133,7 @@ def create_agent_app(
     app.state.updater = self_updater
     app.state.power_manager = node_power_manager
     app.state.terminal_manager = terminal_manager
+    app.state.automation_store = store_automations
 
     @app.get("/internal/health")
     async def internal_health() -> dict[str, Any]:
@@ -164,6 +176,22 @@ def create_agent_app(
     @app.get("/agent/sessions", response_model=SessionTreeResponse)
     async def list_sessions(_caller: GatewayCaller = Depends(require_gateway_signature)) -> SessionTreeResponse:
         return await engine_provider.get_session_tree()
+
+    @app.get("/agent/sessions/archived", response_model=ArchivedSessionsResponse)
+    async def list_archived_sessions(
+        _caller: GatewayCaller = Depends(require_gateway_signature),
+    ) -> ArchivedSessionsResponse:
+        return await engine_provider.list_archived_sessions()
+
+    @app.post("/agent/sessions/{sid}/restore", response_model=RestoreSessionResponse)
+    async def restore_session(
+        sid: str,
+        _caller: GatewayCaller = Depends(require_write_caller),
+    ) -> RestoreSessionResponse:
+        try:
+            return await engine_provider.restore_session(sid)
+        except InvalidSessionIdError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     @app.post("/agent/sessions", response_model=CreateSessionResponse)
     async def create_session(
@@ -524,6 +552,39 @@ def create_agent_app(
         except SandboxError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
+    @app.get("/agent/files/preview", response_model=FileContentResponse)
+    async def preview_office_file(
+        root_id: str = Query(..., min_length=1),
+        path: str = Query(..., min_length=1),
+        _caller: GatewayCaller = Depends(require_gateway_signature),
+    ) -> FileContentResponse:
+        try:
+            target = root_registry.resolve_in_root(root_id, path)
+            _, root_path, _ = root_registry.get_root(root_id)
+        except SandboxError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+        try:
+            md_text, truncated = await asyncio.to_thread(extract_office_preview_markdown, target)
+        except OfficePreviewError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        stat = target.stat()
+        try:
+            rel_path = target.relative_to(root_path).as_posix()
+        except ValueError:
+            rel_path = path.replace("\\", "/")
+        return FileContentResponse(
+            root_id=root_id,
+            path=rel_path,
+            name=target.name,
+            content=md_text,
+            total_lines=len(md_text.splitlines()),
+            truncated=truncated,
+            size=stat.st_size,
+            mtime=stat.st_mtime,
+        )
+
     @app.put("/agent/files/content", response_model=WriteFileContentResponse)
     async def write_file_content(
         payload: WriteFileContentRequest,
@@ -557,6 +618,8 @@ def create_agent_app(
         return FileResponse(target, filename=target.name, content_disposition_type="attachment")
 
     _INLINE_MEDIA_MIME = {
+        ".html": "text/html; charset=utf-8",
+        ".htm": "text/html; charset=utf-8",
         ".pdf": "application/pdf",
         ".svg": "image/svg+xml",
         ".png": "image/png",
@@ -939,5 +1002,84 @@ def create_agent_app(
         caller: GatewayCaller = Depends(require_write_caller),
     ) -> NodePowerStatusResponse:
         return await node_power_manager.cancel(reason=f"已由 {caller.username or '用户'} 取消自动电源预约")
+
+    @app.get("/agent/automations", response_model=AutomationListResponse)
+    async def list_automations(
+        _caller: GatewayCaller = Depends(require_gateway_signature),
+    ) -> AutomationListResponse:
+        try:
+            return await asyncio.to_thread(store_automations.list_automations)
+        except AutomationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    @app.post("/agent/automations", response_model=AutomationItem)
+    async def create_automation(
+        payload: AutomationUpsertRequest,
+        _caller: GatewayCaller = Depends(require_write_caller),
+    ) -> AutomationItem:
+        try:
+            return await asyncio.to_thread(store_automations.create_automation, payload)
+        except AutomationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    @app.put("/agent/automations/{aid}", response_model=AutomationItem)
+    async def update_automation(
+        aid: str,
+        payload: AutomationUpsertRequest,
+        _caller: GatewayCaller = Depends(require_write_caller),
+    ) -> AutomationItem:
+        try:
+            return await asyncio.to_thread(store_automations.update_automation, aid, payload)
+        except AutomationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    @app.post("/agent/automations/{aid}/toggle", response_model=AutomationItem)
+    async def toggle_automation(
+        aid: str,
+        payload: AutomationToggleRequest,
+        _caller: GatewayCaller = Depends(require_write_caller),
+    ) -> AutomationItem:
+        try:
+            return await asyncio.to_thread(store_automations.toggle_automation, aid, payload.enabled)
+        except AutomationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    @app.delete("/agent/automations/{aid}", response_model=ActionAckResponse)
+    async def delete_automation(
+        aid: str,
+        _caller: GatewayCaller = Depends(require_delete_caller),
+    ) -> ActionAckResponse:
+        try:
+            await asyncio.to_thread(store_automations.delete_automation, aid)
+            return ActionAckResponse(ok=True, message=f"已删除自动化 {aid}")
+        except AutomationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    @app.get("/agent/automations/{aid}/logs", response_model=AutomationLogsResponse)
+    async def get_automation_logs(
+        aid: str,
+        tail: int = Query(default=80, ge=1, le=500),
+        _caller: GatewayCaller = Depends(require_gateway_signature),
+    ) -> AutomationLogsResponse:
+        try:
+            return await asyncio.to_thread(store_automations.get_logs, aid, tail=tail)
+        except AutomationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    @app.post("/agent/automations/{aid}/run", response_model=CreateSessionResponse)
+    async def run_automation_now(
+        aid: str,
+        _caller: GatewayCaller = Depends(require_write_caller),
+    ) -> CreateSessionResponse:
+        try:
+            item = await asyncio.to_thread(store_automations.get_automation, aid)
+        except AutomationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+        if not item.prompt.strip():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该自动化未配置执行指令 Prompt")
+        return await engine_provider.create_session(
+            content=item.prompt,
+            workspace_path=item.workspace_path,
+        )
 
     return app

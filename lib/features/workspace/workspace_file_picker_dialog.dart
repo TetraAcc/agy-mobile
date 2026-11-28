@@ -260,6 +260,7 @@ class WorkspaceFilePickerDialog extends StatelessWidget {
                               final isPdf = FileUtils.isPdfFile(item.path);
                               final isImg = FileUtils.isImageFile(item.path);
                               final isMedia = FileUtils.isMediaStreamFile(item.path);
+                              final isOffice = FileUtils.isOfficePreviewableFile(item.path);
                               final isBin = FileUtils.isBinaryFile(item.path);
 
                               VoidCallback? previewAction;
@@ -276,9 +277,9 @@ class WorkspaceFilePickerDialog extends StatelessWidget {
                                 previewAction = () => mediaCb(item.path);
                                 previewTooltip = '播放音视频';
                                 previewIcon = Icons.play_circle_outline_rounded;
-                              } else if (!isBin) {
+                              } else if (isOffice || !isBin) {
                                 previewAction = () => onReadFile(item.path);
-                                previewTooltip = '查看内容';
+                                previewTooltip = isOffice ? '预览文档内容' : '查看内容';
                               }
 
                               return ListTile(

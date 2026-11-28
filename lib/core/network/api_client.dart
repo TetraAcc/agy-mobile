@@ -373,6 +373,27 @@ class ApiClient {
     );
   }
 
+  Future<List<ArchivedSessionItem>> getArchivedSessions(String nodeId) async {
+    return _exec(
+      () => _dio.get<dynamic>('/api/v2/nodes/$nodeId/sessions/archived'),
+      (data) {
+        final map = Map<String, dynamic>.from(data as Map);
+        final raw = map['items'] as List<dynamic>? ?? const [];
+        return raw
+            .whereType<Map>()
+            .map((e) => ArchivedSessionItem.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+      },
+    );
+  }
+
+  Future<void> restoreSession(String nodeId, String sessionId) async {
+    await _exec<void>(
+      () => _dio.post<dynamic>('/api/v2/nodes/$nodeId/sessions/$sessionId/restore'),
+      (_) {},
+    );
+  }
+
   Future<(bool ok, String message)> sendMessage(
     String nodeId,
     String sessionId, {
@@ -634,6 +655,16 @@ class ApiClient {
     );
   }
 
+  Future<FileContentData> getFilePreview(String nodeId, String rootId, String path) async {
+    return _exec(
+      () => _dio.get<dynamic>(
+        '/api/v2/nodes/$nodeId/files/preview',
+        queryParameters: {'root_id': rootId, 'path': path},
+      ),
+      (data) => FileContentData.fromJson(Map<String, dynamic>.from(data as Map)),
+    );
+  }
+
   Future<FileSaveResult> saveFileContent({
     required String nodeId,
     required String rootId,
@@ -832,6 +863,122 @@ class ApiClient {
     return _exec(
       () => _dio.post<dynamic>('/api/v2/nodes/$nodeId/power/cancel'),
       (data) => NodePowerStatus.fromJson(Map<String, dynamic>.from(data as Map)),
+    );
+  }
+
+  Future<AutomationListResponse> getAutomations(String nodeId) async {
+    return _exec(
+      () => _dio.get<dynamic>('/api/v2/nodes/$nodeId/automations'),
+      (data) => AutomationListResponse.fromJson(Map<String, dynamic>.from(data as Map)),
+    );
+  }
+
+  Future<AutomationItem> createAutomation(
+    String nodeId, {
+    required String id,
+    required String displayName,
+    String description = '',
+    required String cronExpr,
+    String timezone = 'Asia/Tokyo',
+    required String prompt,
+    String workspacePath = '',
+    bool enabled = false,
+  }) async {
+    return _exec(
+      () => _dio.post<dynamic>(
+        '/api/v2/nodes/$nodeId/automations',
+        data: {
+          'id': id,
+          'display_name': displayName,
+          'description': description,
+          'cron_expr': cronExpr,
+          'timezone': timezone,
+          'prompt': prompt,
+          'workspace_path': workspacePath,
+          'enabled': enabled,
+        },
+      ),
+      (data) => AutomationItem.fromJson(Map<String, dynamic>.from(data as Map)),
+    );
+  }
+
+  Future<AutomationItem> updateAutomation(
+    String nodeId,
+    String automationId, {
+    required String displayName,
+    String description = '',
+    required String cronExpr,
+    String timezone = 'Asia/Tokyo',
+    required String prompt,
+    String workspacePath = '',
+    bool preservePermissions = true,
+  }) async {
+    return _exec(
+      () => _dio.put<dynamic>(
+        '/api/v2/nodes/$nodeId/automations/$automationId',
+        data: {
+          'display_name': displayName,
+          'description': description,
+          'cron_expr': cronExpr,
+          'timezone': timezone,
+          'prompt': prompt,
+          'workspace_path': workspacePath,
+          'preserve_permissions': preservePermissions,
+        },
+      ),
+      (data) => AutomationItem.fromJson(Map<String, dynamic>.from(data as Map)),
+    );
+  }
+
+  Future<AutomationItem> toggleAutomation(
+    String nodeId,
+    String automationId, {
+    required bool enabled,
+  }) async {
+    return _exec(
+      () => _dio.post<dynamic>(
+        '/api/v2/nodes/$nodeId/automations/$automationId/toggle',
+        data: {'enabled': enabled},
+      ),
+      (data) => AutomationItem.fromJson(Map<String, dynamic>.from(data as Map)),
+    );
+  }
+
+  Future<void> deleteAutomation(String nodeId, String automationId) async {
+    await _exec<void>(
+      () => _dio.delete<dynamic>('/api/v2/nodes/$nodeId/automations/$automationId'),
+      (_) {},
+    );
+  }
+
+  Future<AutomationLogsResponse> getAutomationLogs(
+    String nodeId,
+    String automationId, {
+    int tail = 80,
+  }) async {
+    return _exec(
+      () => _dio.get<dynamic>(
+        '/api/v2/nodes/$nodeId/automations/$automationId/logs',
+        queryParameters: {'tail': tail},
+      ),
+      (data) => AutomationLogsResponse.fromJson(Map<String, dynamic>.from(data as Map)),
+    );
+  }
+
+  Future<(bool ok, String sessionId, String message)> runAutomationNow(
+    String nodeId,
+    String automationId,
+  ) async {
+    return _exec(
+      () => _dio.post<dynamic>('/api/v2/nodes/$nodeId/automations/$automationId/run'),
+      (data) {
+        final map = Map<String, dynamic>.from(data as Map);
+        return (
+          map['ok'] == true,
+          map['session_id']?.toString() ?? '',
+          map['message']?.toString() ?? '',
+        );
+      },
     );
   }
 

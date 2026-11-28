@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:markdown/markdown.dart' as md;
 
 import '../../core/network/api_client.dart';
 import '../../core/utils/file_utils.dart';
 import '../../models/models.dart';
+import 'web_embed_frame.dart';
 
 class FileViewerSheet extends StatefulWidget {
   final String? rootId;
@@ -17,10 +19,13 @@ class FileViewerSheet extends StatefulWidget {
   final double mtime;
   final bool canWrite;
   final bool isEmbedded;
+  final bool isOfficePreview;
+  final String? pdfEmbedUrl;
   final int? highlightStartLine;
   final int? highlightEndLine;
   final VoidCallback? onClose;
   final VoidCallback? onDownload;
+  final VoidCallback? onOpenExternal;
   final Future<FileSaveResult> Function(String content, double? expectedMtime)? onSave;
   final ValueChanged<String>? onInsertReference;
 
@@ -36,10 +41,13 @@ class FileViewerSheet extends StatefulWidget {
     this.mtime = 0.0,
     this.canWrite = false,
     this.isEmbedded = false,
+    this.isOfficePreview = false,
+    this.pdfEmbedUrl,
     this.highlightStartLine,
     this.highlightEndLine,
     this.onClose,
     this.onDownload,
+    this.onOpenExternal,
     this.onSave,
     this.onInsertReference,
   });
@@ -55,15 +63,19 @@ class FileViewerSheet extends StatefulWidget {
     required int size,
     double mtime = 0.0,
     bool canWrite = false,
+    bool isOfficePreview = false,
+    String? pdfEmbedUrl,
     int? highlightStartLine,
     int? highlightEndLine,
     Future<FileSaveResult> Function(String content, double? expectedMtime)? onSave,
     ValueChanged<String>? onInsertReference,
+    VoidCallback? onOpenExternal,
     required void Function(String path) onDownloadFallback,
   }) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final hasPdfEmbed = pdfEmbedUrl != null && pdfEmbedUrl.isNotEmpty;
 
-    if (content.contains('\x00') || FileUtils.isBinaryFile(name)) {
+    if (!isOfficePreview && !hasPdfEmbed && (content.contains('\x00') || FileUtils.isBinaryFile(name))) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('📦 文件 [$name] 为二进制文件，已自动转为下载通道'),
@@ -98,9 +110,12 @@ class FileViewerSheet extends StatefulWidget {
         size: size,
         mtime: mtime,
         canWrite: canWrite,
+        isOfficePreview: isOfficePreview,
+        pdfEmbedUrl: pdfEmbedUrl,
         highlightStartLine: highlightStartLine,
         highlightEndLine: highlightEndLine,
         onDownload: () => onDownloadFallback(path),
+        onOpenExternal: onOpenExternal,
         onSave: onSave,
         onInsertReference: onInsertReference,
       ),
@@ -119,11 +134,16 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
   bool _isEditing = false;
   bool _isSaving = false;
   bool _markdownPreview = false;
+  bool _htmlPreview = false;
+  int _embedReloadNonce = 0;
   String? _saveError;
   late final TextEditingController _editController;
   final ScrollController _verticalScroll = ScrollController();
 
-  bool get _isMarkdownFile => FileUtils.isMarkdownFile(widget.name);
+  bool get _isPdfMode => widget.pdfEmbedUrl != null && widget.pdfEmbedUrl!.isNotEmpty;
+  bool get _isHtmlFile => !widget.isOfficePreview && !_isPdfMode && FileUtils.isHtmlFile(widget.name);
+  bool get _isMarkdownFile => !widget.isOfficePreview && !_isPdfMode && FileUtils.isMarkdownFile(widget.name);
+  bool get _isMarkdownMode => widget.isOfficePreview || (_isMarkdownFile && _markdownPreview);
 
   @override
   void initState() {
@@ -138,7 +158,9 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
     _totalLines = widget.totalLines;
     _size = widget.size;
     _mtime = widget.mtime;
-    _markdownPreview = _isMarkdownFile && widget.highlightStartLine == null;
+    _markdownPreview = (_isMarkdownFile && widget.highlightStartLine == null) || widget.isOfficePreview;
+    _htmlPreview = _isHtmlFile && widget.highlightStartLine == null;
+    _embedReloadNonce = 0;
   }
 
   @override
@@ -146,6 +168,8 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.path != widget.path ||
         oldWidget.content != widget.content ||
+        oldWidget.pdfEmbedUrl != widget.pdfEmbedUrl ||
+        oldWidget.isOfficePreview != widget.isOfficePreview ||
         oldWidget.highlightStartLine != widget.highlightStartLine) {
       _isEditing = false;
       _saveError = null;
@@ -157,7 +181,7 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
 
   void _scheduleScrollToHighlight() {
     final target = widget.highlightStartLine;
-    if (target == null || target <= 1 || _markdownPreview) return;
+    if (target == null || target <= 1 || _isMarkdownMode || (_isHtmlFile && _htmlPreview) || _isPdfMode) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_verticalScroll.hasClients) return;
       final approxOffset = ((target - 3).clamp(0, 100000) * 18.0).toDouble();
@@ -174,7 +198,12 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
   }
 
   bool get _canEditNow =>
-      widget.canWrite && !widget.truncated && widget.onSave != null && widget.rootId != null;
+      !widget.isOfficePreview &&
+      !_isPdfMode &&
+      widget.canWrite &&
+      !widget.truncated &&
+      widget.onSave != null &&
+      widget.rootId != null;
 
   void _enterEditMode() {
     _editController.text = _content;
@@ -300,6 +329,26 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    if (!_isEditing && _isHtmlFile) ...[
+                      IconButton(
+                        key: const ValueKey('file_viewer_html_toggle'),
+                        tooltip: _htmlPreview ? '查看 HTML 源码' : '切换交互预览',
+                        visualDensity: VisualDensity.compact,
+                        icon: Icon(
+                          _htmlPreview ? Icons.code_rounded : Icons.web_asset_rounded,
+                          size: 18,
+                          color: _htmlPreview ? primary : null,
+                        ),
+                        onPressed: () => setState(() => _htmlPreview = !_htmlPreview),
+                      ),
+                      if (_htmlPreview)
+                        IconButton(
+                          tooltip: '刷新预览',
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(Icons.refresh_rounded, size: 18),
+                          onPressed: () => setState(() => _embedReloadNonce += 1),
+                        ),
+                    ],
                     if (!_isEditing && _isMarkdownFile)
                       IconButton(
                         tooltip: _markdownPreview ? '切换源码视图' : '切换 Markdown 预览',
@@ -310,6 +359,13 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
                           color: _markdownPreview ? primary : null,
                         ),
                         onPressed: () => setState(() => _markdownPreview = !_markdownPreview),
+                      ),
+                    if (!_isEditing && widget.onOpenExternal != null && (_isHtmlFile || _isPdfMode))
+                      IconButton(
+                        tooltip: '在新窗口打开',
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                        onPressed: widget.onOpenExternal,
                       ),
                     if (!_isEditing && widget.onInsertReference != null)
                       TextButton.icon(
@@ -366,17 +422,18 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
                           visualDensity: VisualDensity.compact,
                           onPressed: widget.onDownload,
                         ),
-                      IconButton(
-                        icon: const Icon(Icons.copy_rounded, size: 17),
-                        tooltip: '复制全文',
-                        visualDensity: VisualDensity.compact,
-                        onPressed: () {
-                          Clipboard.setData(ClipboardData(text: _content));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('已复制到剪贴板')),
-                          );
-                        },
-                      ),
+                      if (!_isPdfMode)
+                        IconButton(
+                          icon: const Icon(Icons.copy_rounded, size: 17),
+                          tooltip: '复制全文',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: _content));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('已复制到剪贴板')),
+                            );
+                          },
+                        ),
                       if (!widget.isEmbedded || widget.onClose != null)
                         IconButton(
                           icon: const Icon(Icons.close_rounded, size: 19),
@@ -415,21 +472,35 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
               ),
               child: Row(
                 children: [
-                  Text(
-                    widget.truncated ? '共 $_totalLines 行 (已显示前 2000 行，暂不可编辑)' : '共 $_totalLines 行',
-                    style: TextStyle(fontSize: 11, color: isDark ? Colors.white60 : Colors.black54),
+                  Expanded(
+                    child: Text(
+                      _isPdfMode
+                          ? 'PDF 内嵌预览'
+                          : (widget.isOfficePreview
+                              ? (widget.truncated
+                                  ? 'Office 文档预览（只读 · 内容已截断，完整版请下载）'
+                                  : 'Office 文档内容预览（只读 · 如需原版排版请下载）')
+                              : (widget.truncated
+                                  ? '共 $_totalLines 行 (已显示前 2000 行，暂不可编辑)'
+                                  : '共 $_totalLines 行')),
+                      style: TextStyle(fontSize: 11, color: isDark ? Colors.white60 : Colors.black54),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
-                  const Spacer(),
-                  Text(
-                    '${(_size / 1024).toStringAsFixed(1)} KB',
-                    style: TextStyle(fontSize: 11, color: isDark ? Colors.white38 : Colors.black38),
-                  ),
+                  if (_size > 0) ...[
+                    const SizedBox(width: 8),
+                    Text(
+                      '${(_size / 1024).toStringAsFixed(1)} KB',
+                      style: TextStyle(fontSize: 11, color: isDark ? Colors.white38 : Colors.black38),
+                    ),
+                  ],
                 ],
               ),
             ),
             Expanded(
               child: Container(
                 width: double.infinity,
+                clipBehavior: Clip.antiAlias,
                 decoration: BoxDecoration(
                   color: isDark ? const Color(0xFF090D16) : const Color(0xFFF8F8F9),
                   borderRadius: BorderRadius.circular(10),
@@ -439,44 +510,78 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
                         : (isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
                   ),
                 ),
-                child: _isEditing
-                    ? TextField(
-                        controller: _editController,
-                        maxLines: null,
-                        expands: true,
-                        keyboardType: TextInputType.multiline,
-                        style: TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: 12.5,
-                          color: isDark ? const Color(0xFFE4E4E7) : const Color(0xFF222226),
-                          height: 1.5,
-                        ),
-                        decoration: const InputDecoration(
-                          border: InputBorder.none,
-                          contentPadding: EdgeInsets.all(12),
-                        ),
+                child: _isPdfMode
+                    ? WebEmbedFrame.url(
+                        url: widget.pdfEmbedUrl!,
+                        isDark: isDark,
+                        reloadNonce: _embedReloadNonce,
+                        onOpenExternal: widget.onOpenExternal,
+                        onDownload: widget.onDownload,
                       )
-                    : (_markdownPreview
-                        ? SingleChildScrollView(
-                            padding: const EdgeInsets.all(14),
-                            child: MarkdownBody(
-                              data: _content,
-                              selectable: true,
-                              styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-                                p: TextStyle(
-                                  fontSize: 13.5,
-                                  height: 1.65,
-                                  color: isDark ? const Color(0xFFE4E4E7) : const Color(0xFF18181B),
-                                ),
-                                code: TextStyle(
-                                  fontFamily: 'monospace',
-                                  fontSize: 12,
-                                  backgroundColor: isDark ? const Color(0xFF222226) : const Color(0xFFE4E4E7),
-                                ),
-                              ),
+                    : (_isEditing
+                        ? TextField(
+                            controller: _editController,
+                            maxLines: null,
+                            expands: true,
+                            keyboardType: TextInputType.multiline,
+                            style: TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 12.5,
+                              color: isDark ? const Color(0xFFE4E4E7) : const Color(0xFF222226),
+                              height: 1.5,
+                            ),
+                            decoration: const InputDecoration(
+                              border: InputBorder.none,
+                              contentPadding: EdgeInsets.all(12),
                             ),
                           )
-                        : SingleChildScrollView(
+                        : (_isHtmlFile && _htmlPreview
+                            ? WebEmbedFrame.html(
+                                htmlContent: _content,
+                                isDark: isDark,
+                                primaryColor: primary,
+                                reloadNonce: _embedReloadNonce,
+                                onOpenExternal: widget.onOpenExternal,
+                                onSwitchToSource: () => setState(() => _htmlPreview = false),
+                              )
+                            : (_isMarkdownMode
+                                ? SingleChildScrollView(
+                                    padding: const EdgeInsets.all(14),
+                                    child: MarkdownBody(
+                                      data: _content,
+                                      selectable: true,
+                                      extensionSet: md.ExtensionSet.gitHubWeb,
+                                      styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+                                        p: TextStyle(
+                                          fontSize: 13.5,
+                                          height: 1.65,
+                                          color: isDark ? const Color(0xFFE4E4E7) : const Color(0xFF18181B),
+                                        ),
+                                        code: TextStyle(
+                                          fontFamily: 'monospace',
+                                          fontSize: 12,
+                                          backgroundColor:
+                                              isDark ? const Color(0xFF222226) : const Color(0xFFE4E4E7),
+                                        ),
+                                        tableHead: TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 12.5,
+                                          color: isDark ? Colors.white : const Color(0xFF18181B),
+                                        ),
+                                        tableBody: TextStyle(
+                                          fontSize: 12.5,
+                                          color: isDark ? const Color(0xFFE4E4E7) : const Color(0xFF27272A),
+                                        ),
+                                        tableBorder: TableBorder.all(
+                                          color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFD4D4D8),
+                                          width: 0.8,
+                                        ),
+                                        tableCellsPadding:
+                                            const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                      ),
+                                    ),
+                                  )
+                                : SingleChildScrollView(
                             controller: _verticalScroll,
                             child: SingleChildScrollView(
                               scrollDirection: Axis.horizontal,
@@ -567,7 +672,7 @@ class _FileViewerSheetState extends State<FileViewerSheet> {
                                       ),
                               ),
                             ),
-                          )),
+                          )))),
               ),
             ),
           ],

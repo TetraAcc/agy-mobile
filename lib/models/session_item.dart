@@ -73,17 +73,64 @@ class SessionItem {
   }
 }
 
+class ArchivedSessionItem {
+  final String id;
+  final String title;
+  final String preview;
+  final String projectName;
+  final String updatedAt;
+  final String lastModified;
+  final String workspacePath;
+  final String rootId;
+
+  const ArchivedSessionItem({
+    required this.id,
+    required this.title,
+    this.preview = '',
+    this.projectName = '',
+    this.updatedAt = '',
+    this.lastModified = '',
+    this.workspacePath = '',
+    this.rootId = '',
+  });
+
+  factory ArchivedSessionItem.fromJson(Map<String, dynamic> json) {
+    return ArchivedSessionItem(
+      id: json['id']?.toString() ?? '',
+      title: json['title']?.toString() ?? '未命名会话',
+      preview: json['preview']?.toString() ?? '',
+      projectName: json['project_name']?.toString() ?? '',
+      updatedAt: json['updated_at']?.toString() ?? '',
+      lastModified: json['last_modified']?.toString() ?? '',
+      workspacePath: json['workspace_path']?.toString() ?? '',
+      rootId: json['root_id']?.toString() ?? '',
+    );
+  }
+
+  SessionItem toSessionItem() => SessionItem(
+        id: id,
+        title: title,
+        preview: preview,
+        updatedAt: updatedAt,
+        lastModified: lastModified,
+        workspacePath: workspacePath,
+        rootId: rootId,
+      );
+}
+
 class SessionTreeData {
   final Map<String, List<SessionItem>> projects;
   final List<SessionItem> generalSessions;
   final bool engineAlive;
   final Set<String> runningSessionIds;
+  final int archivedCount;
 
   const SessionTreeData({
     this.projects = const {},
     this.generalSessions = const [],
     this.engineAlive = false,
     this.runningSessionIds = const {},
+    this.archivedCount = 0,
   });
 
   factory SessionTreeData.fromJson(Map<String, dynamic> json) {
@@ -121,6 +168,7 @@ class SessionTreeData {
       generalSessions: parsedGeneral,
       engineAlive: json['engine_alive'] == true,
       runningSessionIds: runningIds,
+      archivedCount: (json['archived_count'] as num?)?.toInt() ?? 0,
     );
   }
 }

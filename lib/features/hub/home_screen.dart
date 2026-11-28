@@ -8,17 +8,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/config/app_update_service.dart';
 import '../../core/config/composer_prefs.dart';
 import '../../core/config/responsive_layout.dart';
+import '../../core/config/sidebar_prefs.dart';
 import '../../core/network/api_client.dart';
 import '../../core/platform/android_native_bridge.dart';
 import '../../core/platform/platform_bridge.dart';
 import '../../core/theme/app_colors.dart';
-import '../../core/theme/app_fonts.dart';
 import '../../core/theme/theme_provider.dart';
 import '../../core/utils/duration_utils.dart';
 import '../../core/utils/file_utils.dart';
 import '../../core/utils/search_highlight_utils.dart';
 import '../../models/models.dart';
 import '../auth/auth_controller.dart';
+import '../automations/automations_panel.dart';
 import '../chat/bottom_input_bar.dart';
 import '../chat/context_menu_sheet.dart';
 import '../chat/message_card.dart';
@@ -28,8 +29,10 @@ import '../chat/quick_commands_sheet.dart';
 import '../chat/session_queue_bar.dart';
 import '../chat/session_steps_bar.dart';
 import '../chat/tool_approval_card.dart';
+import '../sessions/archived_sessions_dialog.dart';
 import '../sessions/new_session_dialog.dart';
 import '../sessions/quota_drawer.dart';
+import '../settings/settings_view.dart';
 import '../workspace/change_review_sheet.dart';
 import '../workspace/file_viewer_sheet.dart';
 import '../workspace/session_artifacts_sheet.dart';
@@ -81,6 +84,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   ({
     FileContentData data,
     bool canWrite,
+    bool isOfficePreview,
+    String? pdfEmbedUrl,
+    VoidCallback? onOpenExternal,
     int? startLine,
     int? endLine,
   })? _sidePreviewFile;
@@ -89,6 +95,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   int _sidePreviewReqId = 0;
   String _currentAppVersion = kFallbackAppVersion;
   AppReleaseInfo? _availableAppUpdate;
+  bool _showAutomationsView = false;
+  int _enabledAutomationsCount = 0;
+  int _automationsCountReqId = 0;
 
   List<ReviewCommentItem> _commentsForSession(String sessionId) {
     if (sessionId.isEmpty || sessionId != _commentSessionId) return const [];
@@ -429,10 +438,67 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
   }
 
+  Future<void> _refreshAutomationsCount([String? nodeIdOverride]) async {
+    final targetNode = nodeIdOverride ?? ref.read(hubControllerProvider).selectedNodeId;
+    if (targetNode.isEmpty) {
+      if (mounted && _enabledAutomationsCount != 0) {
+        setState(() => _enabledAutomationsCount = 0);
+      }
+      return;
+    }
+    final reqId = ++_automationsCountReqId;
+    try {
+      final resp = await ref.read(apiClientProvider).getAutomations(targetNode);
+      if (!mounted || reqId != _automationsCountReqId) return;
+      final currentNode = ref.read(hubControllerProvider).selectedNodeId;
+      if (currentNode != targetNode) return;
+      final count = resp.items.where((e) => e.enabled).length;
+      if (_enabledAutomationsCount != count) {
+        setState(() => _enabledAutomationsCount = count);
+      }
+    } catch (_) {
+      if (!mounted || reqId != _automationsCountReqId) return;
+      if (_enabledAutomationsCount != 0) {
+        setState(() => _enabledAutomationsCount = 0);
+      }
+    }
+  }
+
+  Future<void> _openAutomationSession(String sessionId, String title) async {
+    if (sessionId.isEmpty) return;
+    final hubState = ref.read(hubControllerProvider);
+    final hubNotifier = ref.read(hubControllerProvider.notifier);
+    SessionItem? found;
+    for (final list in hubState.projects.values) {
+      for (final s in list) {
+        if (s.id == sessionId) {
+          found = s;
+          break;
+        }
+      }
+      if (found != null) break;
+    }
+    found ??= hubState.generalSessions.cast<SessionItem?>().firstWhere(
+          (s) => s?.id == sessionId,
+          orElse: () => null,
+        );
+    final target = found ?? SessionItem(id: sessionId, title: title.isNotEmpty ? title : '自动化任务');
+    if (mounted && _showAutomationsView) {
+      setState(() => _showAutomationsView = false);
+    }
+    await hubNotifier.selectSession(target);
+    unawaited(hubNotifier.refreshSessionTree());
+  }
+
   Future<void> _handleSwitchNode(String nodeId) async {
+    if (mounted && _showAutomationsView) {
+      setState(() => _showAutomationsView = false);
+    }
     final err = await ref.read(hubControllerProvider.notifier).switchNode(nodeId);
     if (err != null) {
       _showSnack(err, isError: true);
+    } else {
+      unawaited(_refreshAutomationsCount(nodeId));
     }
   }
 
@@ -441,8 +507,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (err != null) {
       _showSnack(err, isError: true);
     } else {
-      _showSnack('已归档移除该会话');
+      _showSnack('已归档会话');
     }
+  }
+
+  void _showArchivedSessionsDialog() {
+    final hubState = ref.read(hubControllerProvider);
+    final nodeId = hubState.selectedNodeId;
+    if (nodeId.isEmpty) {
+      _showSnack('尚未选择控制节点');
+      return;
+    }
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final api = ref.read(apiClientProvider);
+    final hubNotifier = ref.read(hubControllerProvider.notifier);
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => ArchivedSessionsDialog(
+        isDark: isDark,
+        canWrite: hubState.canWrite,
+        onLoad: () => api.getArchivedSessions(nodeId),
+        onRestore: (item) => hubNotifier.restoreSession(item.id),
+        onOpenSession: (item) {
+          if (mounted && _showAutomationsView) {
+            setState(() => _showAutomationsView = false);
+          }
+          hubNotifier.selectSession(item.toSessionItem());
+        },
+      ),
+    );
   }
 
   Future<void> _handleTogglePinSession(SessionItem session) async {
@@ -552,6 +646,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final hub = ref.read(hubControllerProvider.notifier);
     final hubState = ref.read(hubControllerProvider);
     final useSidePanel = mounted && ResponsiveLayout.useSideWorkspacePanel(context);
+    VoidCallback? externalCbFor(String rId, String pathVal) =>
+        FileUtils.isHtmlFile(pathVal) ? () => _openMediaExternal(pathVal, rootId: rId) : null;
 
     if (useSidePanel) {
       final reqId = ++_sidePreviewReqId;
@@ -582,6 +678,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           _sidePreviewFile = (
             data: data,
             canWrite: hubState.canWrite && !isProtectedBrain,
+            isOfficePreview: false,
+            pdfEmbedUrl: null,
+            onOpenExternal: externalCbFor(data.rootId, data.path),
             startLine: startLine,
             endLine: endLine,
           );
@@ -636,6 +735,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         canWrite: hubState.canWrite && !isProtectedBrain,
         highlightStartLine: startLine,
         highlightEndLine: endLine,
+        onOpenExternal: externalCbFor(data.rootId, data.path),
         onSave: (newContent, expectedMtime) => hub.saveFileContent(
           data.rootId,
           data.path,
@@ -653,6 +753,165 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     } catch (e) {
       return '读取异常: $e';
     }
+  }
+
+  Future<String?> _openOfficePreview(
+    String rootId,
+    String relPath, {
+    String? filename,
+  }) async {
+    final hub = ref.read(hubControllerProvider.notifier);
+    final useSidePanel = mounted && ResponsiveLayout.useSideWorkspacePanel(context);
+
+    if (useSidePanel) {
+      final reqId = ++_sidePreviewReqId;
+      setState(() {
+        _rightPanelOpen = true;
+        _rightPanelTab = 0;
+        _loadingSidePreview = true;
+        _sidePreviewError = null;
+      });
+      try {
+        final data = await hub.previewOfficeFile(rootId, relPath);
+        if (!mounted || reqId != _sidePreviewReqId) return null;
+        setState(() {
+          _loadingSidePreview = false;
+          _sidePreviewError = null;
+          _sidePreviewFile = (
+            data: data,
+            canWrite: false,
+            isOfficePreview: true,
+            pdfEmbedUrl: null,
+            onOpenExternal: null,
+            startLine: null,
+            endLine: null,
+          );
+        });
+        return null;
+      } on ApiException catch (e) {
+        final msg = '文档预览失败: ${e.message}';
+        if (mounted && reqId == _sidePreviewReqId) {
+          setState(() {
+            _loadingSidePreview = false;
+            _sidePreviewError = msg;
+          });
+        }
+        return msg;
+      } catch (e) {
+        final msg = '文档预览异常: $e';
+        if (mounted && reqId == _sidePreviewReqId) {
+          setState(() {
+            _loadingSidePreview = false;
+            _sidePreviewError = msg;
+          });
+        }
+        return msg;
+      }
+    }
+
+    try {
+      final data = await hub.previewOfficeFile(rootId, relPath);
+      if (!mounted) return null;
+      FileViewerSheet.show(
+        context,
+        rootId: data.rootId,
+        name: data.name,
+        path: data.path,
+        content: data.content,
+        totalLines: data.totalLines,
+        truncated: data.truncated,
+        size: data.size,
+        mtime: data.mtime,
+        canWrite: false,
+        isOfficePreview: true,
+        onInsertReference: _insertText,
+        onDownloadFallback: (p) => _downloadFile(
+          p,
+          rootId: data.rootId,
+          filename: filename ?? data.name,
+        ),
+      );
+      return null;
+    } on ApiException catch (e) {
+      return '文档预览失败: ${e.message}';
+    } catch (e) {
+      return '文档预览异常: $e';
+    }
+  }
+
+  Future<void> _openPdfInlineOrExternal(
+    String cleanPath, {
+    String? rootId,
+    String? filename,
+  }) async {
+    if (!kIsWeb) {
+      await _openMediaExternal(cleanPath, rootId: rootId);
+      return;
+    }
+    final hub = ref.read(hubControllerProvider.notifier);
+    final resolved = await hub.resolveFileTargetWithRefresh(cleanPath, rootId: rootId);
+    if (!mounted) return;
+    if (resolved == null || resolved.relPath.isEmpty) {
+      await _openMediaExternal(cleanPath, rootId: rootId);
+      return;
+    }
+    final embedUrl = hub.buildDirectMediaUrlForRoot(resolved.rootId, resolved.relPath);
+    if (embedUrl == null || embedUrl.isEmpty) {
+      await _openMediaExternal(cleanPath, rootId: rootId);
+      return;
+    }
+    final displayName = (filename != null && filename.trim().isNotEmpty)
+        ? filename.trim()
+        : FileUtils.extractFilename(resolved.relPath);
+    final data = FileContentData(
+      rootId: resolved.rootId,
+      path: resolved.relPath,
+      name: displayName,
+      content: '',
+      totalLines: 0,
+      truncated: false,
+      size: 0,
+    );
+    void openExternal() => _openMediaExternal(resolved.relPath, rootId: resolved.rootId);
+
+    if (ResponsiveLayout.useSideWorkspacePanel(context)) {
+      _sidePreviewReqId++;
+      setState(() {
+        _rightPanelOpen = true;
+        _rightPanelTab = 0;
+        _loadingSidePreview = false;
+        _sidePreviewError = null;
+        _sidePreviewFile = (
+          data: data,
+          canWrite: false,
+          isOfficePreview: false,
+          pdfEmbedUrl: embedUrl,
+          onOpenExternal: openExternal,
+          startLine: null,
+          endLine: null,
+        );
+      });
+      return;
+    }
+
+    FileViewerSheet.show(
+      context,
+      rootId: resolved.rootId,
+      name: displayName,
+      path: resolved.relPath,
+      content: '',
+      totalLines: 0,
+      truncated: false,
+      size: 0,
+      canWrite: false,
+      pdfEmbedUrl: embedUrl,
+      onOpenExternal: openExternal,
+      onDownloadFallback: (p) => _downloadFile(
+        p,
+        rootId: resolved.rootId,
+        filename: displayName,
+      ),
+    );
   }
 
   void _openTerminalPanel(HubState hubState) {
@@ -820,8 +1079,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       _openImagePreviewDialog(cleanPath, rootId: rootId, filename: filename);
       return;
     }
-    if (FileUtils.isPdfFile(cleanPath) || FileUtils.isMediaStreamFile(cleanPath)) {
+    if (FileUtils.isPdfFile(cleanPath)) {
+      await _openPdfInlineOrExternal(cleanPath, rootId: rootId, filename: filename);
+      return;
+    }
+    if (FileUtils.isMediaStreamFile(cleanPath)) {
       await _openMediaExternal(cleanPath, rootId: rootId);
+      return;
+    }
+    if (FileUtils.isOfficePreviewableFile(cleanPath)) {
+      final hub = ref.read(hubControllerProvider.notifier);
+      final resolved = await hub.resolveFileTargetWithRefresh(cleanPath, rootId: rootId);
+      if (!mounted) return;
+      if (resolved != null && resolved.relPath.isNotEmpty) {
+        final err = await _openOfficePreview(
+          resolved.rootId,
+          resolved.relPath,
+          filename: filename,
+        );
+        if (err != null && mounted && !ResponsiveLayout.useSideWorkspacePanel(context)) {
+          _showSnack(err, isError: true);
+        }
+        return;
+      }
+      await _downloadFile(cleanPath, rootId: rootId, filename: filename);
       return;
     }
     if (FileUtils.isBinaryFile(cleanPath)) {
@@ -874,6 +1155,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         isDark: isDark,
         onBrowse: (rootId, subPath) => hub.browseFiles(rootId, subPath: subPath),
         onReadFile: _readAndOpenTextFile,
+        onReadOfficeFile: (rootId, relPath) => _openOfficePreview(rootId, relPath),
+        onOpenPdfInline: kIsWeb
+            ? (rootId, relPath) {
+                Navigator.of(ctx).pop();
+                unawaited(_openPdfInlineOrExternal(relPath, rootId: rootId));
+              }
+            : null,
         onDownload: (rootId, relPath) => _downloadFileResult(relPath, rootId: rootId),
         onOpenMediaExternal: (rootId, relPath) => _openMediaExternalResult(relPath, rootId: rootId),
         buildDirectMediaUrl: (rootId, relPath) => hub.buildDirectMediaUrlForRoot(rootId, relPath),
@@ -946,6 +1234,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       canWrite: hubState.canWrite,
       onLoadArtifacts: () => hub.fetchSessionArtifacts(),
       onPreviewText: (item) async {
+        if (FileUtils.isPdfFile(item.relPath) || FileUtils.isOfficePreviewableFile(item.relPath)) {
+          await _openChatFile(item.relPath, rootId: item.rootId, filename: item.name);
+          return;
+        }
         final err = await _readAndOpenTextFile(item.rootId, item.relPath);
         if (err != null && mounted) {
           _showSnack(err, isError: true);
@@ -1413,26 +1705,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     );
   }
 
-  void _showSettingsDialog() {
+  void _showSettingsDialog({SettingsCategory? initialCategory}) {
     final auth = ref.read(authControllerProvider);
-    showDialog(
-      context: context,
-      builder: (_) => _GeneralSettingsDialog(
-        currentUrl: auth.serverConfig.baseUrl,
-        currentAppVersion: _currentAppVersion,
-        initialAppUpdate: _availableAppUpdate,
-        onUpdateBadgeChanged: (nextUpdate) {
-          if (mounted) {
-            setState(() => _availableAppUpdate = nextUpdate);
-          }
-        },
-        onSaveUrl: (newUrl) async {
-          await ref.read(authControllerProvider.notifier).updateServerUrl(newUrl);
-          if (mounted) {
-            _showSnack('已保存网关地址: $newUrl（下次重连生效）');
-          }
-        },
-      ),
+    SettingsView.open(
+      context,
+      initialCategory: initialCategory,
+      user: widget.user,
+      currentUrl: auth.serverConfig.baseUrl,
+      currentAppVersion: _currentAppVersion,
+      initialAppUpdate: _availableAppUpdate,
+      onUpdateBadgeChanged: (nextUpdate) {
+        if (mounted) {
+          setState(() => _availableAppUpdate = nextUpdate);
+        }
+      },
+      onSaveUrl: (newUrl) async {
+        await ref.read(authControllerProvider.notifier).updateServerUrl(newUrl);
+        if (mounted) {
+          _showSnack('已保存网关地址: $newUrl（下次重连生效）');
+        }
+      },
+      onLogout: _confirmLogout,
     );
   }
 
@@ -1578,6 +1871,51 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     );
   }
 
+  Widget _buildAutomationsBody(HubState hubState, bool isDark) {
+    final api = ref.read(apiClientProvider);
+    final nodeId = hubState.selectedNodeId;
+    final nodeName = hubState.currentNode?.name ?? nodeId;
+    return AutomationsPanel(
+      nodeId: nodeId,
+      nodeName: nodeName,
+      isDark: isDark,
+      canWrite: hubState.canWrite,
+      canDelete: hubState.canDelete,
+      onLoad: (nid) => api.getAutomations(nid),
+      onToggle: (nid, id, enabled) => api.toggleAutomation(nid, id, enabled: enabled),
+      onRunNow: (nid, id) => api.runAutomationNow(nid, id),
+      onCreate: (nid, form) => api.createAutomation(
+        nid,
+        id: form.id,
+        displayName: form.displayName,
+        description: form.description,
+        cronExpr: form.cronExpr,
+        timezone: form.timezone,
+        prompt: form.prompt,
+        workspacePath: form.workspacePath,
+      ),
+      onUpdate: (nid, id, form) => api.updateAutomation(
+        nid,
+        id,
+        displayName: form.displayName,
+        description: form.description,
+        cronExpr: form.cronExpr,
+        timezone: form.timezone,
+        prompt: form.prompt,
+        workspacePath: form.workspacePath,
+      ),
+      onDelete: (nid, id) => api.deleteAutomation(nid, id),
+      onLoadLogs: (nid, id) => api.getAutomationLogs(nid, id),
+      onOpenSession: _openAutomationSession,
+      onClose: () => setState(() => _showAutomationsView = false),
+      onCountChanged: (count) {
+        if (mounted && _enabledAutomationsCount != count) {
+          setState(() => _enabledAutomationsCount = count);
+        }
+      },
+    );
+  }
+
   Widget _buildSidebar(
     HubState hubState,
     HubController hubNotifier,
@@ -1585,6 +1923,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     bool isDark, {
     required bool isPermanent,
   }) {
+    final sidebarGroupBy = ref.watch(sidebarPrefsProvider);
     return QuotaDrawer(
       nodes: hubState.nodes,
       selectedNode: hubState.selectedNodeId,
@@ -1598,17 +1937,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       },
       canWrite: hubState.canWrite,
       canDelete: hubState.canDelete,
-      onNewSession: () => _showNewSessionDialog(),
-      onNewSessionInProject: (projName, wsPath, rootId) => _showNewSessionDialog(
-        initialProjectName: projName,
-        initialWorkspacePath: wsPath,
-        initialRootId: rootId,
-      ),
+      onNewSession: () {
+        if (_showAutomationsView) {
+          setState(() => _showAutomationsView = false);
+        }
+        _showNewSessionDialog();
+      },
+      onNewSessionInProject: (projName, wsPath, rootId) {
+        if (_showAutomationsView) {
+          setState(() => _showAutomationsView = false);
+        }
+        _showNewSessionDialog(
+          initialProjectName: projName,
+          initialWorkspacePath: wsPath,
+          initialRootId: rootId,
+        );
+      },
       projects: hubState.projects,
       generalSessions: hubState.generalSessions,
       activeSessionId: hubState.activeSessionId,
       runningSessionIds: hubState.runningSessionIds,
-      onSwitchSession: (s) => hubNotifier.selectSession(s),
+      onSwitchSession: (s) {
+        if (_showAutomationsView) {
+          setState(() => _showAutomationsView = false);
+        }
+        hubNotifier.selectSession(s);
+      },
       onTogglePinSession: _handleTogglePinSession,
       onDeleteSession: _handleDeleteSession,
       isDark: isDark,
@@ -1621,6 +1975,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       currentDisplayName: widget.user.displayName,
       onLogout: _confirmLogout,
       isPermanentSidebar: isPermanent,
+      groupBy: sidebarGroupBy,
+      onGroupByChanged: (mode) {
+        HapticFeedback.selectionClick();
+        ref.read(sidebarPrefsProvider.notifier).setGroupBy(mode);
+      },
+      onOpenAutomations: () {
+        setState(() => _showAutomationsView = true);
+      },
+      enabledAutomationsCount: _enabledAutomationsCount,
+      isAutomationsOpen: _showAutomationsView,
+      onOpenArchivedSessions: _showArchivedSessionsDialog,
+      archivedSessionsCount: hubState.archivedSessionsCount,
+      onOpenSettings: () => _showSettingsDialog(),
+      onOpenAccountSettings: () => _showSettingsDialog(initialCategory: SettingsCategory.account),
+      hasAppUpdate: _availableAppUpdate != null,
     );
   }
 
@@ -1637,10 +2006,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             _terminalMounted = false;
             _terminalLive = false;
             _mobileTerminalOpen = false;
+            _showAutomationsView = false;
             if (next.selectedNodeId.isEmpty) {
               _rightPanelOpen = false;
+              _enabledAutomationsCount = 0;
             }
           });
+          if (next.selectedNodeId.isNotEmpty) {
+            unawaited(_refreshAutomationsCount(next.selectedNodeId));
+          }
         }
       }
       if (next.selectedNodeId.isNotEmpty && _queuedShares.isNotEmpty) {
@@ -1732,6 +2106,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           Navigator.of(context).pop();
           return;
         }
+        if (_showAutomationsView) {
+          setState(() => _showAutomationsView = false);
+          return;
+        }
         if (!useSideWorkspacePanel && _mobileTerminalOpen) {
           setState(() => _mobileTerminalOpen = false);
           return;
@@ -1764,6 +2142,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           hubNotifier.refreshNodes();
           hubNotifier.fetchQuota();
           unawaited(hubNotifier.fetchModels());
+          unawaited(_refreshAutomationsCount());
         }
       },
       appBar: AppBar(
@@ -1794,7 +2173,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              hubState.activeSessionTitle,
+              _showAutomationsView ? 'Automations 自动化' : hubState.activeSessionTitle,
               style: TextStyle(
                 fontSize: 14.5,
                 fontWeight: FontWeight.w600,
@@ -1834,7 +2213,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         ),
         actions: [
           _buildNodeSwitchButton(context, hubState, isDark),
-          if (hubState.activeSessionId.isNotEmpty) ...[
+          if (!_showAutomationsView && hubState.activeSessionId.isNotEmpty) ...[
             IconButton(
               visualDensity: VisualDensity.compact,
               icon: Icon(_isChatSearching ? Icons.search_off_rounded : Icons.search_rounded, size: 20),
@@ -1912,45 +2291,47 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 });
               },
             ),
-          IconButton(
-            visualDensity: VisualDensity.compact,
-            icon: Icon(isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded, size: 20),
-            tooltip: isDark ? '切换为日间模式' : '切换为夜间模式',
-            onPressed: () {
-              HapticFeedback.lightImpact();
-              ref.read(themeProvider.notifier).setDarkMode(!isDark);
-            },
-          ),
-          IconButton(
-            visualDensity: VisualDensity.compact,
-            icon: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                const Icon(Icons.settings_outlined),
-                if (_availableAppUpdate != null)
-                  Positioned(
-                    right: -2,
-                    top: -2,
-                    child: Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.redAccent,
-                        border: Border.all(
-                          color: isDark ? AppColors.darkBg : AppColors.lightBg,
-                          width: 1.2,
+          if (usePermanentSidebar) ...[
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              icon: Icon(isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded, size: 20),
+              tooltip: isDark ? '切换为日间模式' : '切换为夜间模式',
+              onPressed: () {
+                HapticFeedback.lightImpact();
+                ref.read(themeProvider.notifier).setDarkMode(!isDark);
+              },
+            ),
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              icon: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  const Icon(Icons.settings_outlined),
+                  if (_availableAppUpdate != null)
+                    Positioned(
+                      right: -2,
+                      top: -2,
+                      child: Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.redAccent,
+                          border: Border.all(
+                            color: isDark ? AppColors.darkBg : AppColors.lightBg,
+                            width: 1.2,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-              ],
+                ],
+              ),
+              tooltip: _availableAppUpdate != null
+                  ? '通用设置（有新版本 v${_availableAppUpdate!.latestVersion}）'
+                  : '通用设置',
+              onPressed: () => _showSettingsDialog(),
             ),
-            tooltip: _availableAppUpdate != null
-                ? '通用设置（有新版本 v${_availableAppUpdate!.latestVersion}）'
-                : '通用设置',
-            onPressed: _showSettingsDialog,
-          ),
+          ],
         ],
       ),
       body: Stack(
@@ -1960,7 +2341,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               if (showPermanentSidebar)
                 _buildSidebar(hubState, hubNotifier, themeState, isDark, isPermanent: true),
           Expanded(
-            child: Column(
+            child: _showAutomationsView
+                ? _buildAutomationsBody(hubState, isDark)
+                : Column(
               children: [
           if (hubState.nodePowerStatus != null && hubState.nodePowerStatus!.enabled)
             NodePowerBanner(
@@ -2713,7 +3096,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
     final data = preview.data;
     return FileViewerSheet(
-      key: ValueKey('side-file-${data.rootId}:${data.path}:${preview.startLine}:${preview.endLine}'),
+      key: ValueKey(
+        'side-file-${data.rootId}:${data.path}:${preview.isOfficePreview}:${preview.pdfEmbedUrl}:${preview.startLine}:${preview.endLine}',
+      ),
       rootId: data.rootId,
       name: data.name,
       path: data.path,
@@ -2724,37 +3109,45 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       mtime: data.mtime,
       canWrite: preview.canWrite,
       isEmbedded: true,
+      isOfficePreview: preview.isOfficePreview,
+      pdfEmbedUrl: preview.pdfEmbedUrl,
       highlightStartLine: preview.startLine,
       highlightEndLine: preview.endLine,
+      onOpenExternal: preview.onOpenExternal,
       onDownload: () => _downloadFile(data.path, rootId: data.rootId, filename: data.name),
-      onSave: (newContent, expectedMtime) async {
-        final result = await hubNotifier.saveFileContent(
-          data.rootId,
-          data.path,
-          newContent,
-          expectedMtime: expectedMtime,
-        );
-        if (mounted) {
-          setState(() {
-            _sidePreviewFile = (
-              data: FileContentData(
-                rootId: data.rootId,
-                path: data.path,
-                name: data.name,
-                content: newContent,
-                totalLines: result.totalLines,
-                truncated: false,
-                size: result.size,
-                mtime: result.mtime,
-              ),
-              canWrite: preview.canWrite,
-              startLine: preview.startLine,
-              endLine: preview.endLine,
-            );
-          });
-        }
-        return result;
-      },
+      onSave: (preview.isOfficePreview || (preview.pdfEmbedUrl != null && preview.pdfEmbedUrl!.isNotEmpty))
+          ? null
+          : (newContent, expectedMtime) async {
+              final result = await hubNotifier.saveFileContent(
+                data.rootId,
+                data.path,
+                newContent,
+                expectedMtime: expectedMtime,
+              );
+              if (mounted) {
+                setState(() {
+                  _sidePreviewFile = (
+                    data: FileContentData(
+                      rootId: data.rootId,
+                      path: data.path,
+                      name: data.name,
+                      content: newContent,
+                      totalLines: result.totalLines,
+                      truncated: false,
+                      size: result.size,
+                      mtime: result.mtime,
+                    ),
+                    canWrite: preview.canWrite,
+                    isOfficePreview: preview.isOfficePreview,
+                    pdfEmbedUrl: preview.pdfEmbedUrl,
+                    onOpenExternal: preview.onOpenExternal,
+                    startLine: preview.startLine,
+                    endLine: preview.endLine,
+                  );
+                });
+              }
+              return result;
+            },
       onInsertReference: _insertText,
     );
   }
@@ -2898,6 +3291,8 @@ class _WorkspaceBrowserSheet extends StatefulWidget {
   final bool isDark;
   final Future<FileTreeData> Function(String rootId, String subPath) onBrowse;
   final Future<String?> Function(String rootId, String relPath) onReadFile;
+  final Future<String?> Function(String rootId, String relPath)? onReadOfficeFile;
+  final void Function(String rootId, String relPath)? onOpenPdfInline;
   final Future<String?> Function(String rootId, String relPath) onDownload;
   final Future<String?> Function(String rootId, String relPath) onOpenMediaExternal;
   final String? Function(String rootId, String relPath) buildDirectMediaUrl;
@@ -2910,6 +3305,8 @@ class _WorkspaceBrowserSheet extends StatefulWidget {
     required this.isDark,
     required this.onBrowse,
     required this.onReadFile,
+    this.onReadOfficeFile,
+    this.onOpenPdfInline,
     required this.onDownload,
     required this.onOpenMediaExternal,
     required this.buildDirectMediaUrl,
@@ -2996,7 +3393,9 @@ class _WorkspaceBrowserSheetState extends State<_WorkspaceBrowserSheet> {
   }
 
   Future<void> _handleReadFile(String relPath) async {
-    final err = await widget.onReadFile(_rootId, relPath);
+    final err = FileUtils.isOfficePreviewableFile(relPath) && widget.onReadOfficeFile != null
+        ? await widget.onReadOfficeFile!(_rootId, relPath)
+        : await widget.onReadFile(_rootId, relPath);
     if (!mounted || err == null) return;
     setState(() {
       _statusIsBusy = false;
@@ -3007,6 +3406,10 @@ class _WorkspaceBrowserSheetState extends State<_WorkspaceBrowserSheet> {
 
   Future<void> _handlePreviewPdf(String relPath) async {
     final name = _basename(relPath);
+    if (kIsWeb && FileUtils.isPdfFile(relPath) && widget.onOpenPdfInline != null) {
+      widget.onOpenPdfInline!(_rootId, relPath);
+      return;
+    }
     if (kIsWeb) {
       final directUrl = widget.buildDirectMediaUrl(_rootId, relPath);
       if (directUrl == null) {
@@ -3183,1346 +3586,6 @@ class _WorkspaceBrowserSheetState extends State<_WorkspaceBrowserSheet> {
       onPreviewImage: _handlePreviewImage,
       onPreviewMedia: _handlePreviewPdf,
       onInsertRef: widget.onInsertRef,
-    );
-  }
-}
-
-class _GeneralSettingsDialog extends ConsumerStatefulWidget {
-  final String currentUrl;
-  final String currentAppVersion;
-  final AppReleaseInfo? initialAppUpdate;
-  final ValueChanged<AppReleaseInfo?>? onUpdateBadgeChanged;
-  final ValueChanged<String> onSaveUrl;
-
-  const _GeneralSettingsDialog({
-    required this.currentUrl,
-    this.currentAppVersion = kFallbackAppVersion,
-    this.initialAppUpdate,
-    this.onUpdateBadgeChanged,
-    required this.onSaveUrl,
-  });
-
-  @override
-  ConsumerState<_GeneralSettingsDialog> createState() => _GeneralSettingsDialogState();
-}
-
-class _GeneralSettingsDialogState extends ConsumerState<_GeneralSettingsDialog> {
-  late final TextEditingController _urlController;
-  bool _loadingNotifyStatus = true;
-  bool _discordConfigured = false;
-  double _notifyMinRunSeconds = 15;
-  double _notifyAskDelaySeconds = 10;
-  bool _sendingTestNotify = false;
-
-  late String _appVersion;
-  AppReleaseInfo? _latestRelease;
-  bool _checkingAppUpdate = false;
-  bool _appUpdateChecked = false;
-  String? _appUpdateError;
-  String? _downloadedApkPath;
-  bool _installingApk = false;
-
-  bool _loadingAdminNodes = false;
-  List<HostNode> _adminNodes = const [];
-  final Map<String, NodeUpdateStatus> _nodeUpdateStatuses = {};
-  final Map<String, String> _nodeUpdateErrors = {};
-  final Set<String> _checkingNodeIds = {};
-  final Set<String> _updatingNodeIds = {};
-  String _selectedPowerAction = 'shutdown';
-
-  @override
-  void initState() {
-    super.initState();
-    _urlController = TextEditingController(text: widget.currentUrl);
-    _appVersion = widget.currentAppVersion;
-    _latestRelease = widget.initialAppUpdate;
-    _appUpdateChecked = widget.initialAppUpdate != null;
-    final initialPower = ref.read(hubControllerProvider).nodePowerStatus;
-    if (initialPower != null && initialPower.enabled) {
-      _selectedPowerAction = initialPower.action;
-    }
-    _loadNotifyStatus();
-    unawaited(ref.read(hubControllerProvider.notifier).refreshNodePowerStatus());
-    if (AndroidNativeBridge.isAndroidNative) {
-      unawaited(_initAppUpdateSection());
-    }
-    if (ref.read(authControllerProvider).user?.role == 'admin') {
-      _loadAdminNodes();
-    }
-  }
-
-  Future<void> _initAppUpdateSection() async {
-    final ver = await AppUpdateService.resolveCurrentVersion();
-    if (!mounted) return;
-    setState(() => _appVersion = ver);
-    if (_latestRelease == null) {
-      await _checkAppUpdate(force: false);
-    }
-  }
-
-  Future<void> _checkAppUpdate({required bool force}) async {
-    if (_checkingAppUpdate) return;
-    setState(() {
-      _checkingAppUpdate = true;
-      _appUpdateError = null;
-    });
-    try {
-      final info = await ref.read(apiClientProvider).getAppLatestRelease(force: force);
-      if (!mounted) return;
-      final hasNew = isAppUpdateAvailable(_appVersion, info.latestVersion);
-      if (hasNew && force) {
-        await AppUpdateService.clearIgnoredVersion();
-      }
-      setState(() {
-        _latestRelease = info;
-        _appUpdateChecked = true;
-        _checkingAppUpdate = false;
-        if (info.error.isNotEmpty && info.source == 'gateway_fallback') {
-          _appUpdateError = '暂未连接到 GitHub Releases：${info.error}';
-        }
-      });
-      widget.onUpdateBadgeChanged?.call(hasNew ? info : null);
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _checkingAppUpdate = false;
-        _appUpdateChecked = true;
-        _appUpdateError = '检查版本失败: $e';
-      });
-    }
-  }
-
-  String _formatApkSize(int bytes) {
-    if (bytes <= 0) return '';
-    if (bytes >= 1048576) {
-      return '${(bytes / 1048576).toStringAsFixed(1)} MB';
-    }
-    if (bytes >= 1024) {
-      return '${(bytes / 1024).toStringAsFixed(0)} KB';
-    }
-    return '$bytes B';
-  }
-
-  Future<void> _downloadAndInstallApk(AppReleaseInfo release) async {
-    if (_installingApk) return;
-    if (_downloadedApkPath != null) {
-      await _triggerInstallApk(_downloadedApkPath!, release);
-      return;
-    }
-    if (release.apkUrl.trim().isEmpty) {
-      await PlatformBridge.openExternalUrl(release.htmlUrl);
-      return;
-    }
-    setState(() {
-      _installingApk = true;
-      _appUpdateError = null;
-    });
-    try {
-      final dl = await runWithDownloadProgressDialog<({String? path, String? error, bool cancelled})>(
-        context: context,
-        autoOpen: false,
-        titleOverride: '正在下载新版安装包...',
-        formatBytes: _formatApkSize,
-        task: (onProgress, cancelToken) => AppUpdateService.downloadApkToCache(
-          apkUrl: release.apkUrl,
-          filename: release.apkName.isNotEmpty
-              ? release.apkName
-              : 'agy-remote-v${release.latestVersion}.apk',
-          onProgress: onProgress,
-          cancelToken: cancelToken,
-        ),
-      );
-      if (!mounted) return;
-      if (dl.cancelled) return;
-      if (dl.error != null || dl.path == null) {
-        setState(() {
-          _appUpdateError = dl.error ?? '下载安装包失败，可尝试使用浏览器下载';
-        });
-        return;
-      }
-      _downloadedApkPath = dl.path;
-      await _triggerInstallApk(dl.path!, release);
-    } finally {
-      if (mounted) {
-        setState(() => _installingApk = false);
-      }
-    }
-  }
-
-  Future<void> _triggerInstallApk(String apkPath, AppReleaseInfo release) async {
-    final res = await AndroidNativeBridge.installApk(apkPath);
-    if (!mounted) return;
-    if (res.ok) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已拉起系统安装界面，请按提示完成覆盖升级')),
-      );
-      return;
-    }
-    setState(() {
-      _appUpdateError = res.error ?? '拉起安装器失败，可点击「浏览器下载」手动安装';
-    });
-    if (res.needsPermission) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('请先开启「允许安装未知应用」权限，返回后再次点击「立即安装」'),
-          duration: Duration(seconds: 4),
-        ),
-      );
-    } else if (release.htmlUrl.isNotEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(_appUpdateError!),
-          action: SnackBarAction(
-            label: '浏览器下载',
-            onPressed: () => PlatformBridge.openExternalUrl(release.htmlUrl),
-          ),
-        ),
-      );
-    }
-  }
-
-  Future<void> _loadAdminNodes() async {
-    setState(() => _loadingAdminNodes = true);
-    try {
-      final list = await ref.read(apiClientProvider).getAdminNodes();
-      if (!mounted) return;
-      setState(() {
-        _adminNodes = list;
-        _loadingAdminNodes = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _adminNodes = ref.read(hubControllerProvider).nodes;
-        _loadingAdminNodes = false;
-      });
-    }
-  }
-
-  Future<void> _checkNodeUpdate(HostNode node) async {
-    if (_checkingNodeIds.contains(node.id) || _updatingNodeIds.contains(node.id)) return;
-    setState(() {
-      _checkingNodeIds.add(node.id);
-      _nodeUpdateErrors.remove(node.id);
-    });
-    try {
-      final st = await ref.read(apiClientProvider).getNodeUpdateStatus(node.id, fetch: true);
-      if (!mounted) return;
-      setState(() {
-        _nodeUpdateStatuses[node.id] = st;
-      });
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _nodeUpdateErrors[node.id] = e.statusCode == 404
-            ? '该节点版本过旧，尚未支持远程更新（请先在该电脑运行一次 update_windows_agent.ps1）'
-            : e.message;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _nodeUpdateErrors[node.id] = '检查失败: $e';
-      });
-    } finally {
-      if (mounted) {
-        setState(() => _checkingNodeIds.remove(node.id));
-      }
-    }
-  }
-
-  Future<void> _applyNodeUpdate(HostNode node, {bool force = false}) async {
-    if (_updatingNodeIds.contains(node.id)) return;
-    setState(() {
-      _updatingNodeIds.add(node.id);
-      _nodeUpdateErrors.remove(node.id);
-    });
-    try {
-      final res = await ref.read(apiClientProvider).applyNodeUpdate(node.id, force: force);
-      if (!mounted) return;
-      if (res.ok) {
-        setState(() {
-          _nodeUpdateErrors[node.id] = res.message.isNotEmpty ? res.message : '节点更新指令已发送';
-          _nodeUpdateStatuses.remove(node.id);
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(res.message.isNotEmpty ? res.message : '${node.name} 正在重启升级...')),
-        );
-        if (res.restarting) {
-          Future.delayed(const Duration(seconds: 7), () {
-            if (!mounted) return;
-            _loadAdminNodes();
-            unawaited(ref.read(hubControllerProvider.notifier).refreshNodes());
-          });
-        }
-      } else {
-        setState(() {
-          _nodeUpdateErrors[node.id] = res.message.isNotEmpty ? res.message : '更新未执行';
-        });
-      }
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _nodeUpdateErrors[node.id] = e.statusCode == 404
-            ? '该节点版本过旧，请先手动更新一次'
-            : e.message;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _nodeUpdateErrors[node.id] = '更新失败: $e';
-      });
-    } finally {
-      if (mounted) {
-        setState(() => _updatingNodeIds.remove(node.id));
-      }
-    }
-  }
-
-  Future<void> _loadNotifyStatus() async {
-    try {
-      final st = await ref.read(apiClientProvider).getNotificationStatus();
-      if (!mounted) return;
-      setState(() {
-        _discordConfigured = st.discordConfigured;
-        _notifyMinRunSeconds = st.minRunSeconds;
-        _notifyAskDelaySeconds = st.askQuestionDelaySeconds;
-        _loadingNotifyStatus = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _loadingNotifyStatus = false);
-    }
-  }
-
-  Future<void> _sendTestNotification() async {
-    if (_sendingTestNotify) return;
-    setState(() => _sendingTestNotify = true);
-    try {
-      final (ok, msg) = await ref.read(apiClientProvider).sendTestNotification();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(msg.isNotEmpty ? msg : (ok ? '测试通知已发送' : '测试通知发送失败')),
-          backgroundColor: ok ? null : Colors.redAccent.shade700,
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('测试通知失败: $e'),
-          backgroundColor: Colors.redAccent.shade700,
-        ),
-      );
-    } finally {
-      if (mounted) {
-        setState(() => _sendingTestNotify = false);
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    _urlController.dispose();
-    super.dispose();
-  }
-
-  Widget _buildAppUpdateSection(bool isDark, Color primary) {
-    final release = _latestRelease;
-    final hasUpdate = release != null && isAppUpdateAvailable(_appVersion, release.latestVersion);
-    final sizeText = release != null ? _formatApkSize(release.apkSize) : '';
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Text(
-              '应用版本与更新',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
-            ),
-            const Spacer(),
-            TextButton(
-              onPressed: _checkingAppUpdate ? null : () => _checkAppUpdate(force: true),
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-              child: Text(
-                _checkingAppUpdate ? '检查中...' : '检查更新',
-                style: const TextStyle(fontSize: 11.5),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        Row(
-          children: [
-            Text(
-              '当前版本 v$_appVersion',
-              style: TextStyle(
-                fontSize: 12.5,
-                fontFamily: 'monospace',
-                color: isDark ? Colors.white70 : Colors.black87,
-              ),
-            ),
-            if (_appUpdateChecked && !hasUpdate && _appUpdateError == null) ...[
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: AppColors.statusGreen(isDark).withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  '已是最新',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.statusGreen(isDark),
-                  ),
-                ),
-              ),
-            ],
-          ],
-        ),
-        if (hasUpdate) ...[
-          const SizedBox(height: 8),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: primary.withValues(alpha: isDark ? 0.12 : 0.08),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: primary.withValues(alpha: 0.45)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.system_update_rounded, size: 16, color: primary),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        '发现新版本 v${release.latestVersion}${sizeText.isNotEmpty ? ' ($sizeText)' : ''}',
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w700,
-                          color: isDark ? Colors.white : Colors.black87,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                if (release.releaseNotes.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    release.releaseNotes,
-                    maxLines: 4,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 11,
-                      height: 1.4,
-                      color: isDark ? Colors.white70 : Colors.black54,
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  children: [
-                    FilledButton.icon(
-                      onPressed: _installingApk ? null : () => _downloadAndInstallApk(release),
-                      icon: Icon(
-                        _downloadedApkPath != null
-                            ? Icons.install_mobile_rounded
-                            : Icons.download_rounded,
-                        size: 14,
-                      ),
-                      label: Text(
-                        _downloadedApkPath != null ? '立即安装' : '下载并安装',
-                        style: const TextStyle(fontSize: 11.5),
-                      ),
-                      style: FilledButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                        minimumSize: Size.zero,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                    ),
-                    if (release.htmlUrl.isNotEmpty)
-                      OutlinedButton(
-                        onPressed: () => PlatformBridge.openExternalUrl(
-                          release.apkUrl.isNotEmpty ? release.apkUrl : release.htmlUrl,
-                        ),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          minimumSize: Size.zero,
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        child: const Text('浏览器下载', style: TextStyle(fontSize: 11.5)),
-                      ),
-                    TextButton(
-                      onPressed: () async {
-                        await AppUpdateService.setIgnoredVersion(release.latestVersion);
-                        if (!mounted) return;
-                        setState(() => _latestRelease = null);
-                        widget.onUpdateBadgeChanged?.call(null);
-                      },
-                      style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                        minimumSize: Size.zero,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                      child: Text(
-                        '忽略此版本',
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          color: isDark ? Colors.white54 : Colors.black54,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ],
-        if (_appUpdateError != null) ...[
-          const SizedBox(height: 6),
-          Text(
-            _appUpdateError!,
-            style: TextStyle(
-              fontSize: 11,
-              color: AppColors.statusAmber(isDark),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-
-  Widget _buildNodePowerSection(bool isDark, Color primary) {
-    final hubState = ref.watch(hubControllerProvider);
-    final hubNotifier = ref.read(hubControllerProvider.notifier);
-    final node = hubState.currentNode;
-    final power = hubState.nodePowerStatus;
-    final armed = power != null && power.enabled;
-    final activeAction = armed ? power.action : _selectedPowerAction;
-    final nodeName = node?.name ?? hubState.selectedNodeId;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Text(
-              '完成后自动电源',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
-            ),
-            const Spacer(),
-            if (nodeName.isNotEmpty)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                decoration: BoxDecoration(
-                  color: (armed ? AppColors.statusAmber(isDark) : primary).withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  armed ? '$nodeName · 已预约${power.actionLabel}' : nodeName,
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w600,
-                    color: armed ? AppColors.statusAmber(isDark) : primary,
-                  ),
-                ),
-              ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        if (node == null)
-          Text(
-            '请先选择一个可用节点。',
-            style: TextStyle(fontSize: 11.5, color: isDark ? Colors.white54 : Colors.black54),
-          )
-        else if (node.isLocal)
-          Text(
-            '当前为网关宿主机（${node.name}），系统策略禁止远程关机或睡眠。',
-            style: TextStyle(fontSize: 11.5, color: isDark ? Colors.white54 : Colors.black54),
-          )
-        else if (!node.canWrite)
-          Text(
-            '当前账号对 ${node.name} 为只读权限，无法预约关机或睡眠。',
-            style: TextStyle(fontSize: 11.5, color: isDark ? Colors.white54 : Colors.black54),
-          )
-        else if (power != null && !power.supported)
-          Text(
-            power.message.isNotEmpty ? power.message : '该节点未开启远程电源控制支持。',
-            style: TextStyle(fontSize: 11.5, color: isDark ? Colors.white54 : Colors.black54),
-          )
-        else ...[
-          Text(
-            armed && power.message.isNotEmpty
-                ? power.message
-                : '当该节点所有会话、排队队列和工具审批全部清空后，静默确认 20s 并进入 60s 可取消倒计时。',
-            style: TextStyle(
-              fontSize: 11,
-              color: armed
-                  ? AppColors.statusAmber(isDark)
-                  : (isDark ? Colors.white54 : Colors.black54),
-            ),
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Container(
-                decoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                padding: const EdgeInsets.all(3),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: const [
-                    (id: 'shutdown', label: '关机'),
-                    (id: 'sleep', label: '睡眠'),
-                  ].map((opt) {
-                    final selected = activeAction == opt.id;
-                    return InkWell(
-                      borderRadius: BorderRadius.circular(6),
-                      onTap: hubState.isUpdatingNodePower
-                          ? null
-                          : () async {
-                              setState(() => _selectedPowerAction = opt.id);
-                              if (armed && opt.id != power.action) {
-                                final err = await hubNotifier.scheduleNodePower(action: opt.id);
-                                if (err != null && mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
-                                }
-                              }
-                            },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: selected
-                              ? primary.withValues(alpha: isDark ? 0.22 : 0.14)
-                              : Colors.transparent,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          opt.label,
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-                            color: selected ? primary : (isDark ? Colors.white60 : Colors.black54),
-                          ),
-                        ),
-                      ),
-                    );
-                  }).toList(),
-                ),
-              ),
-              const Spacer(),
-              if (armed)
-                OutlinedButton.icon(
-                  onPressed: hubState.isUpdatingNodePower
-                      ? null
-                      : () async {
-                          final err = await hubNotifier.cancelNodePower();
-                          if (err != null && mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
-                          }
-                        },
-                  icon: Icon(Icons.close_rounded, size: 15, color: AppColors.statusRed(isDark)),
-                  label: Text(
-                    '取消预约',
-                    style: TextStyle(fontSize: 11.5, color: AppColors.statusRed(isDark)),
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    side: BorderSide(color: AppColors.statusRed(isDark).withValues(alpha: 0.6)),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                )
-              else
-                FilledButton.icon(
-                  onPressed: hubState.isUpdatingNodePower
-                      ? null
-                      : () async {
-                          final err = await hubNotifier.scheduleNodePower(action: _selectedPowerAction);
-                          if (err != null && mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
-                          }
-                        },
-                  icon: Icon(
-                    _selectedPowerAction == 'sleep'
-                        ? Icons.bedtime_rounded
-                        : Icons.power_settings_new_rounded,
-                    size: 15,
-                  ),
-                  label: Text(
-                    hubState.isUpdatingNodePower
-                        ? '提交中...'
-                        : '开启完成后${_selectedPowerAction == 'sleep' ? '睡眠' : '关机'}',
-                    style: const TextStyle(fontSize: 11.5),
-                  ),
-                  style: FilledButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  ),
-                ),
-            ],
-          ),
-        ],
-      ],
-    );
-  }
-
-  Widget _buildSegmented({
-    required String title,
-    required String subtitle,
-    required List<({String id, String label})> options,
-    required String selectedId,
-    required ValueChanged<String> onSelected,
-    required bool isDark,
-    required Color primary,
-  }) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: isDark ? Colors.white : Colors.black87,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                subtitle,
-                style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black54),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(width: 10),
-        Container(
-          padding: const EdgeInsets.all(3),
-          decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5),
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: options.map((opt) {
-              final active = opt.id == selectedId;
-              return InkWell(
-                onTap: () => onSelected(opt.id),
-                borderRadius: BorderRadius.circular(14),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                  decoration: BoxDecoration(
-                    color: active ? (isDark ? const Color(0xFF2C2C32) : Colors.white) : Colors.transparent,
-                    borderRadius: BorderRadius.circular(14),
-                    boxShadow: active && !isDark
-                        ? [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.06),
-                              blurRadius: 3,
-                              offset: const Offset(0, 1),
-                            ),
-                          ]
-                        : null,
-                  ),
-                  child: Text(
-                    opt.label,
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: active ? FontWeight.bold : FontWeight.normal,
-                      color: active ? primary : (isDark ? Colors.white60 : Colors.black54),
-                    ),
-                  ),
-                ),
-              );
-            }).toList(),
-          ),
-        ),
-      ],
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primary = Theme.of(context).colorScheme.primary;
-    final prefs = ref.watch(composerPrefsProvider);
-    final prefsNotifier = ref.read(composerPrefsProvider.notifier);
-    final themeState = ref.watch(themeProvider);
-    final themeNotifier = ref.read(themeProvider.notifier);
-
-    return AlertDialog(
-      backgroundColor: isDark ? const Color(0xFF18181B) : Colors.white,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      title: Text(
-        '通用设置',
-        style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: isDark ? Colors.white : Colors.black87),
-      ),
-      content: SizedBox(
-        width: 440,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (AndroidNativeBridge.isAndroidNative) ...[
-                _buildAppUpdateSection(isDark, primary),
-                const SizedBox(height: 16),
-                Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
-                const SizedBox(height: 12),
-              ],
-              Text(
-                'Input Box',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: primary,
-                ),
-              ),
-              const SizedBox(height: 10),
-              _buildSegmented(
-                title: '队列消息',
-                subtitle: '配置运行中发消息的时机',
-                options: const [
-                  (id: ComposerPrefs.queueModeQueue, label: '排队入列'),
-                  (id: ComposerPrefs.queueModeImmediate, label: '立即发送'),
-                ],
-                selectedId: prefs.queueMode,
-                onSelected: prefsNotifier.setQueueMode,
-                isDark: isDark,
-                primary: primary,
-              ),
-              const SizedBox(height: 14),
-              _buildSegmented(
-                title: '发送消息',
-                subtitle: prefs.isCtrlEnterToSend ? 'Ctrl+Enter 发送 / Enter 换行' : 'Enter 发送 / Shift+Enter 换行',
-                options: const [
-                  (id: ComposerPrefs.sendKeyEnter, label: 'Enter'),
-                  (id: ComposerPrefs.sendKeyCtrlEnter, label: 'Ctrl+Enter'),
-                ],
-                selectedId: prefs.sendKey,
-                onSelected: prefsNotifier.setSendKey,
-                isDark: isDark,
-                primary: primary,
-              ),
-              const SizedBox(height: 16),
-              Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
-              const SizedBox(height: 12),
-              Text(
-                '界面字体',
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
-              ),
-              const SizedBox(height: 8),
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  const spacing = 8.0;
-                  final maxWidth = constraints.maxWidth.isFinite ? constraints.maxWidth : 440.0;
-                  final itemWidth = ((maxWidth - spacing) / 2).floorToDouble();
-                  return Wrap(
-                    spacing: spacing,
-                    runSpacing: spacing,
-                    children: AppFonts.options.map((opt) {
-                      final isSelected = themeState.font.id == opt.id;
-                      final isLoading = themeState.loadingFontId == opt.id;
-                      return InkWell(
-                        borderRadius: BorderRadius.circular(10),
-                        onTap: themeState.loadingFontId != null
-                            ? null
-                            : () async {
-                                final ok = await themeNotifier.setFont(
-                                  opt,
-                                  baseUrl: widget.currentUrl,
-                                );
-                                if (!ok && context.mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text('字体文件暂不可用，已切换为系统相近字体 (${opt.name})'),
-                                      duration: const Duration(seconds: 2),
-                                    ),
-                                  );
-                                }
-                              },
-                        child: Container(
-                          width: itemWidth > 0 ? itemWidth : null,
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: isSelected
-                                ? primary.withValues(alpha: isDark ? 0.14 : 0.08)
-                                : (isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5)),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: isSelected
-                                  ? primary.withValues(alpha: 0.7)
-                                  : (isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
-                              width: isSelected ? 1.2 : 1,
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(
-                                      opt.name,
-                                      style: TextStyle(
-                                        fontSize: 12.5,
-                                        fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
-                                        color: isSelected
-                                            ? primary
-                                            : (isDark ? Colors.white : Colors.black87),
-                                      ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      opt.description,
-                                      style: TextStyle(
-                                        fontSize: 10,
-                                        color: isDark ? Colors.white54 : Colors.black54,
-                                      ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              if (isLoading)
-                                SizedBox(
-                                  width: 14,
-                                  height: 14,
-                                  child: CircularProgressIndicator(strokeWidth: 1.8, color: primary),
-                                )
-                              else if (isSelected)
-                                Icon(Icons.check_rounded, size: 15, color: primary),
-                            ],
-                          ),
-                        ),
-                      );
-                    }).toList(),
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
-              Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Text(
-                    '界面字号',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
-                  ),
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: primary.withValues(alpha: isDark ? 0.16 : 0.10),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      '${(themeState.fontScale * 100).round()}%',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: primary),
-                    ),
-                  ),
-                  const Spacer(),
-                  if ((themeState.fontScale - ThemeState.defaultFontScale).abs() > 0.001)
-                    TextButton(
-                      onPressed: () => themeNotifier.resetFontScale(),
-                      style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                        minimumSize: Size.zero,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                      child: const Text('重置', style: TextStyle(fontSize: 11.5)),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  IconButton(
-                    tooltip: '减小字号',
-                    icon: const Icon(Icons.text_decrease_rounded, size: 18),
-                    visualDensity: VisualDensity.compact,
-                    onPressed: themeState.fontScale <= ThemeState.minFontScale + 0.001
-                        ? null
-                        : () => themeNotifier.stepFontScale(-ThemeState.fontScaleStep),
-                  ),
-                  Expanded(
-                    child: Slider(
-                      value: themeState.fontScale.clamp(ThemeState.minFontScale, ThemeState.maxFontScale),
-                      min: ThemeState.minFontScale,
-                      max: ThemeState.maxFontScale,
-                      divisions: 16,
-                      label: '${(themeState.fontScale * 100).round()}%',
-                      onChanged: (val) => themeNotifier.setFontScale(val),
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: '增大字号',
-                    icon: const Icon(Icons.text_increase_rounded, size: 18),
-                    visualDensity: VisualDensity.compact,
-                    onPressed: themeState.fontScale >= ThemeState.maxFontScale - 0.001
-                        ? null
-                        : () => themeNotifier.stepFontScale(ThemeState.fontScaleStep),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: const [
-                  (label: '紧凑 90%', scale: 0.90),
-                  (label: '标准 100%', scale: 1.00),
-                  (label: '舒适 115%', scale: 1.15),
-                  (label: '大号 130%', scale: 1.30),
-                ].map((preset) {
-                  final selected = (themeState.fontScale - preset.scale).abs() < 0.015;
-                  return InkWell(
-                    borderRadius: BorderRadius.circular(8),
-                    onTap: () => themeNotifier.setFontScale(preset.scale),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: selected
-                            ? primary.withValues(alpha: isDark ? 0.16 : 0.10)
-                            : (isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5)),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: selected
-                              ? primary.withValues(alpha: 0.7)
-                              : (isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7)),
-                          width: selected ? 1.1 : 1,
-                        ),
-                      ),
-                      child: Text(
-                        preset.label,
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                          color: selected ? primary : (isDark ? Colors.white70 : Colors.black87),
-                        ),
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-              if (kIsWeb) ...[
-                const SizedBox(height: 6),
-                Text(
-                  'Web 端支持 Ctrl + 滚轮、Ctrl + / - 快捷缩放，Ctrl + 0 恢复默认',
-                  style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black45),
-                ),
-              ],
-              const SizedBox(height: 16),
-              Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
-              const SizedBox(height: 12),
-              _buildNodePowerSection(isDark, primary),
-              const SizedBox(height: 16),
-              Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Text(
-                    'Discord 离线通知',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
-                  ),
-                  const Spacer(),
-                  if (_loadingNotifyStatus)
-                    const SizedBox(
-                      width: 12,
-                      height: 12,
-                      child: CircularProgressIndicator(strokeWidth: 1.6),
-                    )
-                  else
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: (_discordConfigured
-                                ? AppColors.statusGreen(isDark)
-                                : (isDark ? Colors.white30 : Colors.black26))
-                            .withValues(alpha: 0.14),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        _discordConfigured ? '已在网关启用' : '未配置 Webhook',
-                        style: TextStyle(
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.w600,
-                          color: _discordConfigured
-                              ? AppColors.statusGreen(isDark)
-                              : (isDark ? Colors.white54 : Colors.black45),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Text(
-                _discordConfigured
-                    ? '离线或无活跃连接时，运行 >= ${_notifyMinRunSeconds.toInt()}s 完成、报错或 ask_question 超过 ${_notifyAskDelaySeconds.toInt()}s 未确认会自动推送至 Discord。'
-                    : '在网关 gateway_config.json 中填写 discord_webhook_url 后重启网关即可启用。',
-                style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black54),
-              ),
-              if (_discordConfigured && ref.watch(authControllerProvider).user?.role == 'admin') ...[
-                const SizedBox(height: 8),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: OutlinedButton.icon(
-                    onPressed: _sendingTestNotify ? null : _sendTestNotification,
-                    icon: _sendingTestNotify
-                        ? const SizedBox(
-                            width: 13,
-                            height: 13,
-                            child: CircularProgressIndicator(strokeWidth: 1.8),
-                          )
-                        : const Icon(Icons.notifications_active_outlined, size: 15),
-                    label: Text(
-                      _sendingTestNotify ? '发送中...' : '发送测试通知',
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                    style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
-                  ),
-                ),
-              ],
-              if (ref.watch(authControllerProvider).user?.role == 'admin') ...[
-                const SizedBox(height: 16),
-                Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Text(
-                      '节点版本与远程更新',
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
-                    ),
-                    const Spacer(),
-                    if (_loadingAdminNodes)
-                      const SizedBox(
-                        width: 12,
-                        height: 12,
-                        child: CircularProgressIndicator(strokeWidth: 1.6),
-                      )
-                    else
-                      InkWell(
-                        onTap: _loadAdminNodes,
-                        borderRadius: BorderRadius.circular(6),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.refresh_rounded, size: 13, color: isDark ? Colors.white54 : Colors.black54),
-                              const SizedBox(width: 3),
-                              Text(
-                                '刷新',
-                                style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black54),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                if (_adminNodes.isEmpty && !_loadingAdminNodes)
-                  Text(
-                    '暂无已注册节点',
-                    style: TextStyle(fontSize: 11.5, color: isDark ? Colors.white38 : Colors.black45),
-                  )
-                else
-                  ..._adminNodes.map((node) {
-                    final st = _nodeUpdateStatuses[node.id];
-                    final note = _nodeUpdateErrors[node.id] ?? st?.message ?? '';
-                    final isChecking = _checkingNodeIds.contains(node.id);
-                    final isUpdating = _updatingNodeIds.contains(node.id);
-                    final canTriggerUpdate = st != null && st.updateAvailable && st.canUpdate;
-                    final versionLabel = node.version.isNotEmpty ? 'v${node.version}' : '旧版 / 未知';
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: isDark ? const Color(0xFF111113) : const Color(0xFFF8F8F9),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: isDark ? const Color(0xFF2C2C32) : const Color(0xFFE4E4E7),
-                        ),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Container(
-                                width: 7,
-                                height: 7,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: node.isOnline
-                                      ? AppColors.statusGreen(isDark)
-                                      : (isDark ? Colors.white24 : Colors.black26),
-                                ),
-                              ),
-                              const SizedBox(width: 7),
-                              Expanded(
-                                child: Text(
-                                  '${node.name} ($versionLabel)',
-                                  style: TextStyle(
-                                    fontSize: 12.5,
-                                    fontWeight: FontWeight.w600,
-                                    color: isDark ? Colors.white : Colors.black87,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              if (node.isOnline) ...[
-                                TextButton(
-                                  onPressed: (isChecking || isUpdating) ? null : () => _checkNodeUpdate(node),
-                                  style: TextButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                    minimumSize: Size.zero,
-                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                  ),
-                                  child: Text(
-                                    isChecking ? '检查中...' : '检查更新',
-                                    style: const TextStyle(fontSize: 11.5),
-                                  ),
-                                ),
-                                if (canTriggerUpdate) ...[
-                                  const SizedBox(width: 4),
-                                  FilledButton(
-                                    onPressed: isUpdating
-                                        ? null
-                                        : () => _applyNodeUpdate(
-                                              node,
-                                              force: st.runningSessions > 0,
-                                            ),
-                                    style: FilledButton.styleFrom(
-                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                      minimumSize: Size.zero,
-                                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                    ),
-                                    child: Text(
-                                      isUpdating
-                                          ? '更新中...'
-                                          : (st.runningSessions > 0 ? '强制更新' : '一键更新'),
-                                      style: const TextStyle(fontSize: 11.5),
-                                    ),
-                                  ),
-                                ],
-                              ] else
-                                Text(
-                                  '离线',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    color: isDark ? Colors.white38 : Colors.black38,
-                                  ),
-                                ),
-                            ],
-                          ),
-                          if (note.isNotEmpty) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              note,
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: st != null && st.dirty
-                                    ? AppColors.statusAmber(isDark)
-                                    : (isDark ? Colors.white60 : Colors.black54),
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    );
-                  }),
-              ],
-              const SizedBox(height: 16),
-              Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
-              const SizedBox(height: 12),
-              Text(
-                '网关连接',
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: primary),
-              ),
-              const SizedBox(height: 6),
-              if (kIsWeb) ...[
-                Text(
-                  widget.currentUrl,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontFamily: 'monospace',
-                    color: isDark ? Colors.white70 : Colors.black87,
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  'Web 版自动连接当前同源网关。',
-                  style: TextStyle(fontSize: 11, color: isDark ? Colors.white38 : Colors.black45),
-                ),
-              ] else
-                TextField(
-                  controller: _urlController,
-                  keyboardType: TextInputType.url,
-                  style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 13),
-                  decoration: InputDecoration(
-                    hintText: 'https://agy.example.com',
-                    hintStyle: TextStyle(color: isDark ? Colors.white24 : Colors.black26),
-                    filled: true,
-                    fillColor: isDark ? const Color(0xFF111113) : const Color(0xFFF4F4F5),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-      actions: [
-        if (kIsWeb)
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: primary,
-              foregroundColor: isDark ? const Color(0xFF111113) : Colors.white,
-            ),
-            child: const Text('完成'),
-          )
-        else ...[
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          ElevatedButton(
-            onPressed: () {
-              final url = _urlController.text.trim();
-              Navigator.pop(context);
-              if (url.isNotEmpty) {
-                widget.onSaveUrl(url);
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: primary,
-              foregroundColor: isDark ? const Color(0xFF111113) : Colors.white,
-            ),
-            child: const Text('保存'),
-          ),
-        ],
-      ],
     );
   }
 }

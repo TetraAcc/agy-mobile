@@ -3,7 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../platform/android_native_bridge.dart';
 import '../platform/platform_bridge.dart';
 
-const String kFallbackAppVersion = '2.3.2';
+const String kFallbackAppVersion = '2.3.7';
 const String kAppVersionDefine = String.fromEnvironment('APP_VERSION', defaultValue: '');
 
 class AppReleaseInfo {

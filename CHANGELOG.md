@@ -4,6 +4,30 @@
 
 ---
 
+## [2.3.7] - 2026-11-28
+
+### Added
+- **Antigravity 原生 Automations 自动化管理**：
+  - Node Agent 直接对接 `~/.gemini/config/sidecars/*/sidecar.json`、`~/.gemini/config/config.json` 与 `~/.gemini/antigravity/sidecar_data/*`，提供自动化列表、启停切换、立即运行、历史会话跳转、调度日志查看与新建/编辑/删除接口；
+  - 侧边栏「新建会话」正下方新增原生风格「自动化」入口及 `AutomationsPanel` 看板。
+- **侧边栏分组切换（按项目 / 按活跃）**：
+  - 新增 `SidebarPrefsController` 持久化分组偏好，支持在「按项目」与「按活跃」（运行中 / 已置顶 / 今日 / 近 7 天 / 更早）视图间一键切换。
+- **桌面端同步会话归档与召回**：
+  - 归档/恢复会话同步写入 `~/.gemini/antigravity/annotations/<sid>.pbtxt` 的 `archived` 状态与时间戳；新增 `GET /agent/sessions/archived` 与 `POST /agent/sessions/{sid}/restore`；
+  - 侧边栏会话删除图标统一为归档语义，并在底部新增「已归档」入口与 `ArchivedSessionsDialog`（支持搜索、查看与一键召回）。
+- **多格式文件预览增强（HTML / `<agent-embed>` / PDF / Office）**：
+  - Web 端新增安全沙箱 `WebEmbedFrame`（`<iframe sandbox="allow-scripts">` + 主题 CSS 变量注入），支持 `.html`/`.htm` 交互预览、源码切换与刷新，非 Web 端提供浏览器打开与源码查看兜底；
+  - `MessageCard` 新增 `<agent-embed>` 解析并渲染 `AgentEmbedCard` 交互预览卡片；
+  - Web 端支持 PDF 同源内嵌预览；
+  - Node Agent 新增纯标准库 Office 解析器（`.docx` / `.xlsx` / `.pptx` → Markdown）及 `GET /agent/files/preview`，前端复用 `FileViewerSheet` 只读渲染表格与正文并保留原文件下载。
+
+### Changed
+- **侧边栏底部精简与响应式 5 分类设置页重构**：
+  - 将侧边栏底部精简为「已归档」与单行底栏（左侧头像+用户名直达账号设置，右侧主题切换与设置入口），手机窄屏同步隐藏 AppBar 右上角冗余的主题与设置按钮；
+  - 抽出独立的响应式 `SettingsView`：宽屏（≥ 720px）为居中分栏弹窗，手机端为全屏两级页（一级分类菜单带实时摘要 → 二级详情页），拆分为「外观与显示」「消息与输入」「节点控制」「连接与通知」「账号与关于」5 大分类，并将原英文 `'Input Box'` 全面中文化。
+
+---
+
 ## [2.2.0] - 2026-11-25
 
 ### Added

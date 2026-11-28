@@ -57,6 +57,16 @@ class FileUtils {
 
   static bool isPdfFile(String path) => _extensionOf(path) == 'pdf';
 
+  static bool isHtmlFile(String path) {
+    final ext = _extensionOf(path);
+    return ext == 'html' || ext == 'htm';
+  }
+
+  static bool isOfficePreviewableFile(String path) {
+    final ext = _extensionOf(path);
+    return ext == 'docx' || ext == 'xlsx' || ext == 'pptx';
+  }
+
   static bool isVideoFile(String path) {
     const videoExts = {'mp4', 'mkv', 'avi', 'mov', 'webm', 'm4v', '3gp', 'flv'};
     return videoExts.contains(_extensionOf(path));
@@ -159,7 +169,7 @@ class FileUtils {
   static List<String> extractDownloadableFiles(String text) {
     final List<String> files = [];
     final reg = RegExp(
-      r'(?:file:///)?([A-Za-z]:[\\/][^\s\n\r"\[\]<>]+\.(?:zip|tar\.gz|tgz|rar|7z|pdf|txt|py|json|bat|sh|csv|docx|xlsx|pptx)|/(?:home|tmp|root)[^\s\n\r"\[\]<>]+\.(?:zip|tar\.gz|tgz|rar|7z|pdf|txt|py|json|bat|sh|csv|docx|xlsx|pptx))',
+      r'(?:file:///)?([A-Za-z]:[\\/][^\s\n\r"\[\]<>]+\.(?:zip|tar\.gz|tgz|rar|7z|pdf|txt|py|json|bat|sh|csv|docx|xlsx|pptx|html|htm)|/(?:home|tmp|root)[^\s\n\r"\[\]<>]+\.(?:zip|tar\.gz|tgz|rar|7z|pdf|txt|py|json|bat|sh|csv|docx|xlsx|pptx|html|htm))',
       caseSensitive: false,
     );
     for (final m in reg.allMatches(text)) {

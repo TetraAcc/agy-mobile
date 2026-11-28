@@ -6,10 +6,12 @@ import 'package:agy_remote/core/config/offline_outbox_store.dart';
 import 'package:agy_remote/core/config/quick_commands_prefs.dart';
 import 'package:agy_remote/core/config/responsive_layout.dart';
 import 'package:agy_remote/core/config/server_config.dart';
+import 'package:agy_remote/core/config/sidebar_prefs.dart';
 import 'package:agy_remote/core/network/token_store.dart';
 import 'package:agy_remote/core/platform/platform_bridge.dart';
 import 'package:agy_remote/features/auth/auth_controller.dart';
 import 'package:agy_remote/features/auth/login_screen.dart';
+import 'package:agy_remote/features/automations/automations_panel.dart';
 import 'package:agy_remote/features/chat/bottom_input_bar.dart';
 import 'package:agy_remote/features/chat/code_block_builder.dart';
 import 'package:agy_remote/features/chat/context_menu_sheet.dart';
@@ -24,8 +26,10 @@ import 'package:agy_remote/features/chat/session_steps_bar.dart';
 import 'package:agy_remote/features/chat/tool_approval_card.dart';
 import 'package:agy_remote/features/hub/download_progress_dialog.dart';
 import 'package:agy_remote/features/hub/node_power_banner.dart';
+import 'package:agy_remote/features/sessions/archived_sessions_dialog.dart';
 import 'package:agy_remote/features/sessions/new_session_dialog.dart';
 import 'package:agy_remote/features/sessions/quota_drawer.dart';
+import 'package:agy_remote/features/settings/settings_view.dart';
 import 'package:agy_remote/features/workspace/change_review_sheet.dart';
 import 'package:agy_remote/features/workspace/file_viewer_sheet.dart';
 import 'package:agy_remote/features/workspace/session_changes_bar.dart';
@@ -2682,6 +2686,742 @@ void main() {
     final timeRect = tester.getRect(timeFinder);
     expect(titleRect.width, greaterThanOrEqualTo(180.0));
     expect(titleRect.bottom, lessThanOrEqualTo(timeRect.top + 2.0));
+  });
+
+  testWidgets('QuotaDrawer 支持在按项目与按活跃分组间切换，并按运行中/已置顶/今日/近7天/更早分类排序', (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    SidebarGroupBy? changedTo;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: ResponsiveLayout.permanentSidebarWidth,
+            height: 850,
+            child: QuotaDrawer(
+              nodes: const [
+                HostNode(id: 'win', name: 'Windows PC', isOnline: true, engineAlive: true, canWrite: true),
+              ],
+              selectedNode: 'win',
+              onSwitchNode: (_) {},
+              quotaData: null,
+              isLoadingQuota: false,
+              onRequestQuota: () {},
+              onNewSession: () {},
+              nowProvider: () => DateTime(2026, 11, 27, 15, 0),
+              onGroupByChanged: (mode) => changedTo = mode,
+              projects: const {
+                'ProjA': [
+                  SessionItem(
+                    id: 's_run',
+                    title: '正在构建任务',
+                    updatedAt: '2026-11-27',
+                    lastModified: '2026-11-27T14:55:00',
+                    isRunning: true,
+                  ),
+                  SessionItem(
+                    id: 's_today_old',
+                    title: '今日较早会话',
+                    updatedAt: '2026-11-27',
+                    lastModified: '2026-11-27T09:10:00',
+                  ),
+                ],
+                'ProjB': [
+                  SessionItem(
+                    id: 's_pin',
+                    title: '置顶待办会话',
+                    updatedAt: '2026-11-20',
+                    lastModified: '2026-11-20T10:00:00',
+                    isPinned: true,
+                  ),
+                  SessionItem(
+                    id: 's_recent',
+                    title: '三天前讨论',
+                    updatedAt: '2026-11-24',
+                    lastModified: '2026-11-24T12:00:00',
+                  ),
+                ],
+              },
+              generalSessions: const [
+                SessionItem(
+                  id: 's_today_new',
+                  title: '今日最新会话',
+                  updatedAt: '2026-11-27',
+                  lastModified: '2026-11-27T14:20:00',
+                ),
+                SessionItem(
+                  id: 's_older',
+                  title: '上个月旧会话',
+                  updatedAt: '2026-10-15',
+                  lastModified: '2026-10-15T08:00:00',
+                ),
+              ],
+              activeSessionId: null,
+              runningSessionIds: const {'s_run'},
+              onSwitchSession: (_) {},
+              onDeleteSession: (_) {},
+              isDark: true,
+              onToggleTheme: (_) {},
+              onSelectAccentTheme: (_) {},
+              isPermanentSidebar: true,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('项目列表'), findsOneWidget);
+    expect(find.text('按项目'), findsOneWidget);
+    expect(find.text('按活跃'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('sidebar_group_by_activity')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(changedTo, SidebarGroupBy.activity);
+    expect(find.text('项目列表'), findsNothing);
+    expect(find.text('运行中 (1)'), findsOneWidget);
+    expect(find.text('已置顶 (1)'), findsOneWidget);
+    expect(find.text('今日活跃 (2)'), findsOneWidget);
+    expect(find.text('近 7 天 (1)'), findsOneWidget);
+    expect(find.text('更早 (1)'), findsOneWidget);
+
+    expect(find.text('正在构建任务'), findsOneWidget);
+    expect(find.text('置顶待办会话'), findsOneWidget);
+    expect(find.text('今日最新会话'), findsOneWidget);
+    expect(find.text('今日较早会话'), findsOneWidget);
+    expect(find.text('三天前讨论'), findsOneWidget);
+    // 跨项目会话展示所属项目标签
+    expect(find.text('ProjA'), findsWidgets);
+    expect(find.text('ProjB'), findsWidgets);
+
+    // 今日活跃按时间倒序排列
+    expect(
+      tester.getTopLeft(find.text('今日最新会话')).dy,
+      lessThan(tester.getTopLeft(find.text('今日较早会话')).dy),
+    );
+
+    // 「更早」默认折叠，点击分节头后展开
+    expect(find.text('上个月旧会话'), findsNothing);
+    await tester.ensureVisible(find.byKey(const ValueKey('activity_section_older')));
+    await tester.tap(find.byKey(const ValueKey('activity_section_older')));
+    await tester.pump();
+    expect(find.text('上个月旧会话'), findsOneWidget);
+
+    // 切回「按项目」
+    await tester.tap(find.byKey(const ValueKey('sidebar_group_by_project')));
+    await tester.pump();
+    expect(changedTo, SidebarGroupBy.project);
+    expect(find.text('项目列表'), findsOneWidget);
+  });
+
+  test('SidebarPrefsController 持久化与恢复侧边栏 GroupBy 偏好', () async {
+    SharedPreferences.setMockInitialValues({});
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    expect(container.read(sidebarPrefsProvider), SidebarGroupBy.project);
+    await container.read(sidebarPrefsProvider.notifier).setGroupBy(SidebarGroupBy.activity);
+    expect(container.read(sidebarPrefsProvider), SidebarGroupBy.activity);
+
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('v2_sidebar_group_by'), 'activity');
+
+    final restored = ProviderContainer();
+    addTearDown(restored.dispose);
+    restored.read(sidebarPrefsProvider);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(restored.read(sidebarPrefsProvider), SidebarGroupBy.activity);
+  });
+
+  testWidgets('QuotaDrawer 将自动化入口置于新建会话正下方并响应点击与启用计数', (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    var openedCount = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: ResponsiveLayout.permanentSidebarWidth,
+            height: 800,
+            child: QuotaDrawer(
+              nodes: const [
+                HostNode(id: 'win', name: 'Windows PC', isOnline: true, engineAlive: true, canWrite: true),
+              ],
+              selectedNode: 'win',
+              onSwitchNode: (_) {},
+              quotaData: null,
+              isLoadingQuota: false,
+              onRequestQuota: () {},
+              onNewSession: () {},
+              projects: const {},
+              generalSessions: const [],
+              activeSessionId: null,
+              onSwitchSession: (_) {},
+              onDeleteSession: (_) {},
+              isDark: true,
+              onToggleTheme: (_) {},
+              onSelectAccentTheme: (_) {},
+              isPermanentSidebar: true,
+              onOpenAutomations: () => openedCount++,
+              enabledAutomationsCount: 2,
+              isAutomationsOpen: true,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final newBtn = find.text('新建会话');
+    final autoBtn = find.byKey(const ValueKey('sidebar_automations_entry'));
+    final searchHint = find.text('搜索会话标题、所属工程...');
+    expect(newBtn, findsOneWidget);
+    expect(autoBtn, findsOneWidget);
+    expect(searchHint, findsOneWidget);
+    expect(find.descendant(of: autoBtn, matching: find.text('自动化')), findsOneWidget);
+    expect(find.descendant(of: autoBtn, matching: find.text('2')), findsOneWidget);
+
+    final newRect = tester.getRect(newBtn);
+    final autoRect = tester.getRect(autoBtn);
+    final searchRect = tester.getRect(searchHint);
+    expect(autoRect.top, greaterThan(newRect.bottom - 2.0));
+    expect(autoRect.bottom, lessThan(searchRect.top + 2.0));
+
+    await tester.tap(autoBtn);
+    await tester.pump();
+    expect(openedCount, 1);
+  });
+
+  testWidgets('AutomationsPanel 支持展示原生自动化、切换启停、展开历史跳会话、加载日志与可视化新建 Cron',
+      (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final items = <AutomationItem>[
+      const AutomationItem(
+        id: 'daily-flight',
+        displayName: '每日大阪机票走势监控',
+        description: '抓取各地飞大阪报价',
+        enabled: true,
+        cronExpr: '0 9,21 * * *',
+        timezone: 'Asia/Tokyo',
+        prompt: 'Check flights',
+        workspacePath: 'C:/flight-monitor',
+        accessGrants: ['mcp(playwright/browser_navigate)'],
+        nextRunText: 'in 8h',
+        lastRunAtMs: 1795830621000,
+        lastRunOk: true,
+        eventCount: 1,
+        recentEvents: [
+          AutomationRunEvent(
+            eventId: 'evt-1',
+            timestampMs: 1795830621000,
+            ok: true,
+            conversationId: 'conv-flight-1',
+          ),
+        ],
+      ),
+    ];
+
+    String? openedSessionId;
+    int? lastEnabledCount;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AutomationsPanel(
+            nodeId: 'win',
+            nodeName: 'Windows PC',
+            isDark: true,
+            canWrite: true,
+            canDelete: true,
+            onLoad: (_) async => AutomationListResponse(items: List.of(items)),
+            onToggle: (_, id, enabled) async {
+              final cur = items.firstWhere((e) => e.id == id);
+              final next = AutomationItem(
+                id: cur.id,
+                displayName: cur.displayName,
+                description: cur.description,
+                enabled: enabled,
+                cronExpr: cur.cronExpr,
+                timezone: cur.timezone,
+                prompt: cur.prompt,
+                workspacePath: cur.workspacePath,
+                accessGrants: cur.accessGrants,
+                nextRunText: enabled ? 'in 8h' : '',
+                lastRunAtMs: cur.lastRunAtMs,
+                lastRunOk: cur.lastRunOk,
+                eventCount: cur.eventCount,
+                recentEvents: cur.recentEvents,
+              );
+              items[0] = next;
+              return next;
+            },
+            onRunNow: (_, __) async => (true, 'conv-run-now', 'OK'),
+            onCreate: (_, form) async {
+              final created = AutomationItem(
+                id: form.id,
+                displayName: form.displayName,
+                description: form.description,
+                enabled: false,
+                cronExpr: form.cronExpr,
+                timezone: form.timezone,
+                prompt: form.prompt,
+                workspacePath: form.workspacePath,
+              );
+              items.add(created);
+              return created;
+            },
+            onUpdate: (_, id, form) async => items.first,
+            onDelete: (_, __) async {},
+            onLoadLogs: (_, id) async => AutomationLogsResponse(
+              id: id,
+              lines: const ['2026-11-28 Scheduler started for CRON_TZ=Asia/Tokyo 0 9,21 * * *'],
+            ),
+            onOpenSession: (sid, _) => openedSessionId = sid,
+            onCountChanged: (cnt) => lastEnabledCount = cnt,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('每日大阪机票走势监控'), findsOneWidget);
+    expect(find.text('每天 09:00, 21:00 (Asia/Tokyo)'), findsOneWidget);
+    expect(lastEnabledCount, 1);
+
+    // 切换启停开关
+    await tester.tap(find.byKey(const ValueKey('automation_toggle_daily-flight')));
+    await tester.pumpAndSettle();
+    expect(lastEnabledCount, 0);
+    expect(find.text('未启用'), findsOneWidget);
+
+    // 展开历史并点击打开会话
+    await tester.tap(find.byKey(const ValueKey('automation_history_btn_daily-flight')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('automation_open_session_conv-flight-1')));
+    await tester.pump();
+    expect(openedSessionId, 'conv-flight-1');
+
+    // 加载调度日志
+    await tester.tap(find.byKey(const ValueKey('automation_logs_btn_daily-flight')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Scheduler started'), findsOneWidget);
+
+    // 新建自动化
+    await tester.tap(find.byKey(const ValueKey('automation_create_btn')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('automation_form_name')), 'Weekly Audit');
+    await tester.pump();
+    await tester.enterText(find.byKey(const ValueKey('automation_form_prompt')), 'Check all packages');
+    await tester.tap(find.byKey(const ValueKey('automation_form_submit')));
+    await tester.pumpAndSettle();
+    expect(find.text('Weekly Audit'), findsOneWidget);
+  });
+
+  testWidgets('QuotaDrawer 在底部展示已归档入口并响应点击，归档图标与提示语简洁一致', (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    var archivedEntryTaps = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: ResponsiveLayout.permanentSidebarWidth,
+            height: 800,
+            child: QuotaDrawer(
+              nodes: const [
+                HostNode(id: 'win', name: 'Windows PC', isOnline: true, engineAlive: true, canWrite: true, canDelete: true),
+              ],
+              selectedNode: 'win',
+              onSwitchNode: (_) {},
+              quotaData: null,
+              isLoadingQuota: false,
+              onRequestQuota: () {},
+              onNewSession: () {},
+              canWrite: true,
+              canDelete: true,
+              projects: const {},
+              generalSessions: const [
+                SessionItem(id: 's-1', title: '待归档会话'),
+              ],
+              activeSessionId: null,
+              onSwitchSession: (_) {},
+              onDeleteSession: (_) {},
+              isDark: true,
+              onToggleTheme: (_) {},
+              onSelectAccentTheme: (_) {},
+              isPermanentSidebar: true,
+              onOpenArchivedSessions: () => archivedEntryTaps++,
+              archivedSessionsCount: 3,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final entry = find.byKey(const ValueKey('sidebar_archived_entry'));
+    expect(entry, findsOneWidget);
+    expect(find.descendant(of: entry, matching: find.text('已归档')), findsOneWidget);
+    expect(find.descendant(of: entry, matching: find.text('3')), findsOneWidget);
+    expect(find.textContaining('双向同步'), findsNothing);
+
+    await tester.tap(entry);
+    await tester.pump();
+    expect(archivedEntryTaps, 1);
+
+    // 点击卡片归档图标弹出确认框
+    await tester.tap(find.byTooltip('归档会话'));
+    await tester.pumpAndSettle();
+    expect(find.text('归档会话？'), findsOneWidget);
+    expect(find.text('确认归档'), findsOneWidget);
+  });
+
+  testWidgets('ArchivedSessionsDialog 支持搜索已归档会话、查看与一键召回', (tester) async {
+    final archived = <ArchivedSessionItem>[
+      const ArchivedSessionItem(
+        id: 'arch-1',
+        title: 'Playwright 安装指南',
+        projectName: 'tools',
+        updatedAt: '2026-11-22',
+      ),
+      const ArchivedSessionItem(
+        id: 'arch-2',
+        title: '网关连接排查',
+        projectName: 'agy_mobile_app',
+        updatedAt: '2026-11-20',
+      ),
+    ];
+    String? restoredId;
+    String? openedId;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => ElevatedButton(
+              onPressed: () {
+                showDialog<void>(
+                  context: context,
+                  builder: (_) => ArchivedSessionsDialog(
+                    isDark: true,
+                    canWrite: true,
+                    onLoad: () async => List.of(archived),
+                    onRestore: (item) async {
+                      restoredId = item.id;
+                      return null;
+                    },
+                    onOpenSession: (item) => openedId = item.id,
+                  ),
+                );
+              },
+              child: const Text('Open'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('已归档会话'), findsOneWidget);
+    expect(find.text('Playwright 安装指南'), findsOneWidget);
+    expect(find.text('网关连接排查'), findsOneWidget);
+    expect(find.textContaining('双向同步'), findsNothing);
+
+    // 搜索过滤
+    await tester.enterText(find.byType(TextField), '网关');
+    await tester.pumpAndSettle();
+    expect(find.text('Playwright 安装指南'), findsNothing);
+    expect(find.text('网关连接排查'), findsOneWidget);
+
+    // 召回
+    await tester.tap(find.byKey(const ValueKey('restore_archived_arch-2')));
+    await tester.pumpAndSettle();
+    expect(restoredId, 'arch-2');
+    expect(find.text('网关连接排查'), findsNothing);
+
+    // 清空搜索并点击条目打开查看
+    await tester.enterText(find.byType(TextField), '');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Playwright 安装指南'));
+    await tester.pumpAndSettle();
+    expect(openedId, 'arch-1');
+  });
+
+  testWidgets('MessageCard 解析 agent-embed 标签为单一交互预览卡片且点击回调正常', (tester) async {
+    String? openedPath;
+    String? openedName;
+    const msg = AgentMessage(
+      stepIndex: 10,
+      source: 'MODEL',
+      msgType: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      content: '已生成交互原型：\n<agent-embed src="file:///C:/tmp/settings_refactor_ui_preview.html" title="Settings Refactor Preview">展示侧边栏与 5 分类设置页交互。</agent-embed>',
+      thinking: '',
+      toolCalls: [],
+      timestamp: '',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MessageCard(
+            msg: msg,
+            isDark: true,
+            resolveMediaUrl: (p) => p,
+            onDownloadFile: (_, {filename}) {},
+            onOpenFile: (path, {filename}) {
+              openedPath = path;
+              openedName = filename;
+            },
+            onOpenUrl: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AgentEmbedCard), findsOneWidget);
+    expect(find.text('Settings Refactor Preview'), findsOneWidget);
+    expect(find.text('HTML 交互预览'), findsOneWidget);
+    expect(find.text('展示侧边栏与 5 分类设置页交互。'), findsOneWidget);
+    expect(find.textContaining('<agent-embed'), findsNothing);
+
+    await tester.tap(find.text('预览'));
+    await tester.pump();
+    expect(openedPath, 'file:///C:/tmp/settings_refactor_ui_preview.html');
+    expect(openedName, 'settings_refactor_ui_preview.html');
+  });
+
+  testWidgets('FileViewerSheet 支持 HTML 预览/源码切换与 Office 只读 Markdown 预览', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: FileViewerSheet(
+            rootId: 'brain',
+            name: 'demo_preview.html',
+            path: 'demo_preview.html',
+            content: '<html><body><h1>Hello Preview</h1></body></html>',
+            totalLines: 1,
+            truncated: false,
+            size: 48,
+            canWrite: true,
+            isEmbedded: true,
+            onOpenExternal: () {},
+            onDownload: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 默认处于交互预览态（非 Web 展示浏览器引导，点击切换后展示 HTML 源码）
+    expect(find.textContaining('交互式 HTML 预览'), findsOneWidget);
+    expect(find.byKey(const ValueKey('file_viewer_html_toggle')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('file_viewer_html_toggle')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('<h1>Hello Preview</h1>'), findsOneWidget);
+
+    // Office 只读 Markdown 预览与 FileViewerSheet.show 不被 .docx 二进制检测拦截
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (ctx) => ElevatedButton(
+              onPressed: () => FileViewerSheet.show(
+                ctx,
+                rootId: 'brain',
+                name: 'report.docx',
+                path: 'report.docx',
+                content: '# 季度总结\n\n| 模块 | 进度 |\n| --- | --- |\n| 预览 | 已完成 |',
+                totalLines: 5,
+                truncated: false,
+                size: 2048,
+                canWrite: false,
+                isOfficePreview: true,
+                onDownloadFallback: (_) {},
+              ),
+              child: const Text('OpenDocx'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('OpenDocx'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Office 文档内容预览'), findsOneWidget);
+    expect(find.text('季度总结'), findsOneWidget);
+    expect(find.text('已完成'), findsOneWidget);
+    expect(find.text('编辑'), findsNothing);
+  });
+
+  testWidgets('QuotaDrawer 底部精简为单行控件并正确响应账号、主题与设置点击', (tester) async {
+    var themeToggledTo = <bool>[];
+    var settingsTapped = 0;
+    var accountTapped = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            child: QuotaDrawer(
+              nodes: const [
+                HostNode(id: 'win', name: 'Windows PC', isOnline: true, engineAlive: true),
+              ],
+              selectedNode: 'win',
+              onSwitchNode: (_) {},
+              quotaData: null,
+              isLoadingQuota: false,
+              onRequestQuota: () {},
+              onNewSession: () {},
+              projects: const {},
+              generalSessions: const [],
+              activeSessionId: '',
+              onSwitchSession: (_) {},
+              onDeleteSession: (_) {},
+              isDark: true,
+              onToggleTheme: (v) => themeToggledTo.add(v),
+              onSelectAccentTheme: (_) {},
+              currentDisplayName: 'Tetra',
+              isPermanentSidebar: true,
+              onOpenSettings: () => settingsTapped += 1,
+              onOpenAccountSettings: () => accountTapped += 1,
+              hasAppUpdate: true,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('护眼强调色'), findsNothing);
+    expect(find.text('夜间模式'), findsNothing);
+    expect(find.text('Tetra'), findsOneWidget);
+    expect(find.byKey(const ValueKey('sidebar_footer_account')), findsOneWidget);
+    expect(find.byKey(const ValueKey('sidebar_footer_theme_toggle')), findsOneWidget);
+    expect(find.byKey(const ValueKey('sidebar_footer_settings')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('sidebar_footer_account')));
+    await tester.pump();
+    expect(accountTapped, 1);
+
+    await tester.tap(find.byKey(const ValueKey('sidebar_footer_theme_toggle')));
+    await tester.pump();
+    expect(themeToggledTo, [false]);
+
+    await tester.tap(find.byKey(const ValueKey('sidebar_footer_settings')));
+    await tester.pump();
+    expect(settingsTapped, 1);
+  });
+
+  testWidgets('SettingsView 在宽屏展示分栏 5 分类且翻译消息与输入，手机端支持两级导航', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    const testUser = UserProfile(
+      id: 1,
+      username: 'tetra',
+      displayName: 'Tetra',
+      role: 'member',
+      defaultNode: 'win',
+    );
+
+    // 1) 宽屏分栏弹窗
+    tester.view.physicalSize = const Size(1024, 768);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    Widget buildHarness() {
+      return ProviderScope(
+        child: MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (ctx) => ElevatedButton(
+                onPressed: () => SettingsView.open(
+                  ctx,
+                  user: testUser,
+                  currentUrl: 'https://agy.tetraacc.me',
+                  onSaveUrl: (_) async {},
+                  onLogout: () {},
+                ),
+                child: const Text('OpenSettings'),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(buildHarness());
+
+    await tester.tap(find.text('OpenSettings'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('settings_nav_appearance')), findsOneWidget);
+    expect(find.byKey(const ValueKey('settings_nav_input')), findsOneWidget);
+    expect(find.byKey(const ValueKey('settings_nav_node')), findsOneWidget);
+    expect(find.byKey(const ValueKey('settings_nav_network')), findsOneWidget);
+    expect(find.byKey(const ValueKey('settings_nav_account')), findsOneWidget);
+    expect(find.text('护眼强调色'), findsOneWidget);
+    expect(find.text('Input Box'), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('settings_nav_input')));
+    await tester.pumpAndSettle();
+    expect(find.text('运行中发送策略'), findsOneWidget);
+    expect(find.text('发送快捷键'), findsOneWidget);
+    expect(find.text('Input Box'), findsNothing);
+
+    await tester.tap(find.byTooltip('关闭设置'));
+    await tester.pumpAndSettle();
+
+    // 2) 手机窄屏全屏两级导航
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1.0;
+    await tester.pumpWidget(buildHarness());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('OpenSettings'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('settings_mobile_item_appearance')), findsOneWidget);
+    expect(find.byKey(const ValueKey('settings_mobile_item_input')), findsOneWidget);
+    expect(find.byKey(const ValueKey('settings_mobile_item_account')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('settings_mobile_item_input')));
+    await tester.pumpAndSettle();
+    expect(find.text('运行中发送策略'), findsOneWidget);
+    expect(find.text('Input Box'), findsNothing);
+
+    await tester.tap(find.byTooltip('返回分类列表'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('settings_mobile_item_appearance')), findsOneWidget);
   });
 }
 
